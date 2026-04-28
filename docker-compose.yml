@@ -1,0 +1,62 @@
+name: auctions-app
+
+services:
+  dev:
+    build:
+      context: .
+      dockerfile: .devcontainer/Dockerfile
+      tags:
+        - auctions-dev:latest
+    container_name: auctions-dev-container
+    volumes:
+      - .:/workspace
+    command: sleep infinity
+    networks:
+      - net
+  db:
+    image: postgres:16
+    container_name: auctions-db-dev
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env.db.dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data_dev:/var/lib/postgresql/data
+    networks:
+      - net
+
+  redis:
+    image: redis:7-alpine
+    container_name: auctions-redis-dev
+    restart: unless-stopped
+    volumes:
+      - redis_data_dev:/data
+    networks:
+      - net
+
+  auction-worker:
+    build:
+      context: .
+      dockerfile: .devcontainer/Dockerfile
+      tags:
+        - auctions-dev:latest
+    container_name: auctions-worker-dev
+    working_dir: /workspace/backend
+    command: uv run python -m app.worker.auction_sync_worker
+    volumes:
+      - .:/workspace
+    env_file:
+      - ./backend/.env.dev
+    depends_on:
+      - db
+      - redis
+    networks:
+      - net
+
+volumes:
+  db_data_dev:
+  redis_data_dev:
+
+networks:
+  net:
