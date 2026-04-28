@@ -17,7 +17,6 @@ import AnalysisSignalTooltip from './components/AnalysisSignalTooltip.vue'
 import AffinoCombobox from './components/AffinoCombobox.vue'
 import LotNameCell from './components/LotNameCell.vue'
 import RatingInfoTooltip from './components/RatingInfoTooltip.vue'
-import { buildAppPath } from './api/base'
 import { useAuthStore } from './stores/auth'
 import { workspaceDataGridTheme } from './theme/dataGridTheme'
 
@@ -1771,7 +1770,7 @@ function buildLotsUrl() {
     persisted: 'true',
   })
 
-  return buildAppPath(`/api/v1/auctions/lots?${params.toString()}`)
+  return `/api/v1/auctions/lots?${params.toString()}`
 }
 
 async function loadLots() {
@@ -2103,7 +2102,7 @@ async function saveGridRow(rowId: string) {
     const params = new URLSearchParams()
     if (row.auctionId) params.set('auction_id', row.auctionId)
     const workspace = await fetchJson<LotWorkspaceResponse>(
-      buildAppPath(`/api/v1/auctions/${row.source}/lots/${encodeURIComponent(row.lotId)}/workspace?${params.toString()}`),
+      `/api/v1/auctions/${row.source}/lots/${encodeURIComponent(row.lotId)}/workspace?${params.toString()}`,
       {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -2200,7 +2199,7 @@ async function loadPresets() {
 
   presetsLoading.value = true
   try {
-    presets.value = sortPresets(await fetchJson<FilterPreset[]>(buildAppPath('/api/v1/filter-presets')))
+    presets.value = sortPresets(await fetchJson<FilterPreset[]>('/api/v1/filter-presets'))
     if (selectedPresetId.value && !presets.value.some((preset) => preset.id === selectedPresetId.value)) {
       selectedPresetId.value = ''
     }
@@ -2323,7 +2322,7 @@ async function loadAnalysisConfig() {
   analysisConfigLoading.value = true
   analysisConfigError.value = ''
   try {
-    analysisConfig.value = await fetchJson<AnalysisConfigResponse>(buildAppPath('/api/v1/auctions/analysis-config'))
+    analysisConfig.value = await fetchJson<AnalysisConfigResponse>('/api/v1/auctions/analysis-config')
     if (analysisConfig.value) {
       applyAnalysisConfigDraft(analysisConfig.value)
     }
@@ -2350,7 +2349,7 @@ async function submitAnalysisConfigDialog() {
   analysisConfigSaving.value = true
   analysisConfigError.value = ''
   try {
-    analysisConfig.value = await fetchJson<AnalysisConfigResponse>(buildAppPath('/api/v1/auctions/analysis-config'), {
+    analysisConfig.value = await fetchJson<AnalysisConfigResponse>('/api/v1/auctions/analysis-config', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(buildAnalysisConfigPayload()),
@@ -2403,7 +2402,7 @@ async function submitPresetDialog() {
 
   if (presetDialogMode.value === 'update' && selectedPreset.value) {
     try {
-      const preset = await fetchJson<FilterPreset>(buildAppPath(`/api/v1/filter-presets/${selectedPreset.value.id}`), {
+      const preset = await fetchJson<FilterPreset>(`/api/v1/filter-presets/${selectedPreset.value.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(buildPresetPayload(nextName)),
@@ -2418,7 +2417,7 @@ async function submitPresetDialog() {
   }
 
   try {
-    const preset = await fetchJson<FilterPreset>(buildAppPath('/api/v1/filter-presets'), {
+    const preset = await fetchJson<FilterPreset>('/api/v1/filter-presets', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(buildPresetPayload(nextName)),
@@ -2435,7 +2434,7 @@ async function confirmDeletePreset() {
   if (!selectedPreset.value) return
 
   try {
-    await fetchJson(buildAppPath(`/api/v1/filter-presets/${selectedPreset.value.id}`), {
+    await fetchJson(`/api/v1/filter-presets/${selectedPreset.value.id}`, {
       method: 'DELETE',
     })
     presets.value = presets.value.filter((preset) => preset.id !== selectedPreset.value?.id)
@@ -2525,7 +2524,7 @@ async function openLotDetails(row: GridLotRow) {
     const params = new URLSearchParams()
     if (row.auctionId) params.set('auction_id', row.auctionId)
     const workspace = await fetchJson<LotWorkspaceResponse>(
-      buildAppPath(`/api/v1/auctions/${row.source}/lots/${encodeURIComponent(row.lotId)}/workspace?${params.toString()}`),
+      `/api/v1/auctions/${row.source}/lots/${encodeURIComponent(row.lotId)}/workspace?${params.toString()}`,
     )
 
     if (requestId !== detailRequestId) return
@@ -2577,7 +2576,7 @@ async function saveWorkItem() {
     const params = new URLSearchParams()
     if (selectedLot.value.auctionId) params.set('auction_id', selectedLot.value.auctionId)
     const workspace = await fetchJson<LotWorkspaceResponse>(
-      buildAppPath(`/api/v1/auctions/${selectedLot.value.source}/lots/${encodeURIComponent(selectedLot.value.lotId)}/workspace?${params.toString()}`),
+      `/api/v1/auctions/${selectedLot.value.source}/lots/${encodeURIComponent(selectedLot.value.lotId)}/workspace?${params.toString()}`,
       {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -2646,7 +2645,7 @@ function resetFilters() {
 }
 
 function subscribeToAuctionEvents() {
-  const events = new EventSource(buildAppPath('/api/v1/auctions/events'))
+  const events = new EventSource('/api/v1/auctions/events')
 
   events.addEventListener('sync.started', (event) => {
     const data = JSON.parse((event as MessageEvent).data)

@@ -1,5 +1,4 @@
 import { getStoredAccessToken } from '@/auth/tokenStorage'
-import { buildAppPath } from '@/api/base'
 
 type ApiRequestInit = RequestInit & {
   auth?: boolean
@@ -20,7 +19,7 @@ export async function apiRequest<T>(path: string, init?: ApiRequestInit): Promis
     nextHeaders.set('Authorization', `Bearer ${token}`)
   }
 
-  const response = await fetch(buildAppPath(`/api/v1${path}`), {
+  const response = await fetch(`/api/v1${path}`, {
     ...requestInit,
     headers: nextHeaders,
   })
