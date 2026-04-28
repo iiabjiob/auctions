@@ -22,12 +22,18 @@ from app.schemas.auctions import (
 
 
 BASE_URL = "https://fabrikant.ru"
-AUCTIONS_LIST_URL = f"{BASE_URL}/procedure/search/sales?section_ids[]=6"
+SEARCH_ROUTE = "/procedure/search/sales"
+AUCTIONS_LIST_URL = f"{BASE_URL}{SEARCH_ROUTE}?section_ids[]=6"
 PROCEDURE_URL_PREFIX = f"{BASE_URL}/v2/trades/procedure/view/"
 LOT_URL_PREFIX = f"{BASE_URL}/v2/trades/procedure/lot/view/"
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+)
+SEARCH_RSC_STATE_TREE = (
+    "%5B%22%22%2C%7B%22children%22%3A%5B%22(root)%22%2C%7B%22children%22%3A%5B"
+    "%22sales%22%2C%7B%22children%22%3A%5B%22__PAGE__%22%2C%7B%7D%2Cnull%2Cnull%5D"
+    "%7D%2Cnull%2Cnull%5D%7D%2Cnull%2Cnull%5D%7D%2Cnull%2Cnull%2Ctrue%5D"
 )
 DEFAULT_REQUEST_TIMEOUT = 45
 REQUEST_RETRY_ATTEMPTS = 3
@@ -43,11 +49,38 @@ def _fetch_html(url: str, timeout: int = DEFAULT_REQUEST_TIMEOUT) -> str:
     return _read_response_text(request, timeout=timeout)
 
 
-def _build_search_url(page_number: int) -> str:
+def _build_search_params(page_number: int) -> list[tuple[str, str]]:
     params: list[tuple[str, str]] = [("section_ids[]", "6")]
     if page_number > 1:
         params.append(("page_number", str(page_number)))
-    return f"{BASE_URL}/procedure/search/sales?{urlencode(params)}"
+    return params
+
+
+def _build_search_url(page_number: int) -> str:
+    return f"{BASE_URL}{SEARCH_ROUTE}?{urlencode(_build_search_params(page_number))}"
+
+
+def _build_search_rsc_url(page_number: int) -> str:
+    params = _build_search_params(page_number)
+    params.append(("_rsc", format(int(time.time() * 1_000_000), "x")))
+    return f"{BASE_URL}{SEARCH_ROUTE}?{urlencode(params)}"
+
+
+def _fetch_search_rsc(page_number: int, timeout: int = DEFAULT_REQUEST_TIMEOUT) -> str:
+    referer_page = page_number - 1 if page_number > 1 else page_number
+    request = Request(
+        _build_search_rsc_url(page_number),
+        headers={
+            "Accept": "*/*",
+            "Accept-Language": "en-US,en;q=0.9,ru;q=0.8",
+            "Referer": _build_search_url(referer_page),
+            "User-Agent": USER_AGENT,
+            "next-router-state-tree": SEARCH_RSC_STATE_TREE,
+            "next-url": "/sales",
+            "rsc": "1",
+        },
+    )
+    return _read_response_text(request, timeout=timeout)
 
 
 def _read_response_text(request: Request, *, timeout: int) -> str:
@@ -177,6 +210,25 @@ def _extract_id(url: str, prefix: str) -> str | None:
     return tail.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0] or None
 
 
+def _compose_lot_external_id(procedure_id: str, lot_id: str) -> str:
+    return f"{procedure_id}:{lot_id}"
+
+
+def _split_lot_external_id(value: str) -> tuple[str, str | None]:
+    if ":" not in value:
+        return value, None
+    procedure_id, lot_id = value.split(":", 1)
+    if not procedure_id or not lot_id:
+        return value, None
+    return procedure_id, lot_id
+
+
+def _normalize_rsc_text(value: str | None) -> str | None:
+    if not value:
+        return None
+    return _normalize_text(unescape(value.replace("\\t", " ").replace("\\n", " ")))
+
+
 def _extract_title_anchor_matches(html: str) -> list[re.Match[str]]:
     matches: list[re.Match[str]] = []
     pattern = re.compile(r"<a(?P<attrs>[^>]+)>(?P<body>.*?)</a>", re.IGNORECASE | re.DOTALL)
@@ -189,6 +241,91 @@ def _extract_title_anchor_matches(html: str) -> list[re.Match[str]]:
         if href and href.startswith(PROCEDURE_URL_PREFIX) and "font-bold" in classes and role != "button" and data_slot != "button":
             matches.append(match)
     return matches
+
+
+def _extract_rsc_card_field(block: str, label: str) -> str | None:
+    match = re.search(
+        rf'"children":"{re.escape(label)}".{{0,260}}?"children":"([^"]+)"',
+        block,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        return None
+    return _normalize_rsc_text(match.group(1))
+
+
+def _extract_rsc_card_price(block: str) -> str | None:
+    label_match = re.search(r'"children":"начальная цена"', block, re.IGNORECASE)
+    if not label_match:
+        return None
+
+    window = block[max(0, label_match.start() - 320) : label_match.start()]
+    for match in reversed(list(re.finditer(r'"children":\[(.*?)\]', window, re.DOTALL))):
+        parts = re.findall(r'"([^"]+)"', match.group(1))
+        if not parts:
+            continue
+        price = _extract_price(" ".join(parts))
+        if price:
+            return price
+
+    return None
+
+
+def _extract_rsc_page_items(body: str) -> list[AuctionListItem]:
+    lot_matches = list(re.finditer(r'"lotId":(\d+)', body))
+    if not lot_matches:
+        return []
+
+    items: list[AuctionListItem] = []
+    title_pattern = re.compile(
+        r'\{"url":"(https://fabrikant\.ru/v2/trades/procedure/view/[^"\\]+)","name":"([^"]+)"'
+    )
+    for index, lot_match in enumerate(lot_matches):
+        start = lot_match.start()
+        end = lot_matches[index + 1].start() if index + 1 < len(lot_matches) else len(body)
+        block = body[start:end]
+        title_match = title_pattern.search(block)
+        if not title_match:
+            continue
+
+        procedure_url = title_match.group(1)
+        procedure_id = _extract_id(procedure_url, PROCEDURE_URL_PREFIX)
+        lot_id = lot_match.group(1)
+        title = _normalize_rsc_text(title_match.group(2))
+        publication_date = _extract_rsc_card_field(block, "Дата публикации")
+        application_deadline = _extract_rsc_card_field(block, "Дата окончания приёма заявок")
+        organizer_name = _extract_rsc_card_field(block, "Организатор")
+        initial_price = _extract_rsc_card_price(block)
+        if not procedure_id or not title:
+            continue
+
+        lot_external_id = _compose_lot_external_id(procedure_id, lot_id)
+        items.append(
+            AuctionListItem(
+                source="fabrikant",
+                auction=AuctionSummary(
+                    source="fabrikant",
+                    external_id=procedure_id,
+                    number=procedure_id,
+                    name=title,
+                    url=procedure_url,
+                    publication_date=publication_date,
+                    application_deadline=application_deadline,
+                ),
+                lot=LotSummary(
+                    source="fabrikant",
+                    external_id=lot_external_id,
+                    number=str(index + 1),
+                    name=title,
+                    url=procedure_url,
+                    initial_price=initial_price,
+                    current_price=initial_price,
+                ),
+                organizer=OrganizerInfo(name=organizer_name),
+            )
+        )
+
+    return items
 
 
 def _extract_card_field(card_html: str, *labels: str) -> str | None:
@@ -258,6 +395,57 @@ def _extract_price(text: str | None) -> str | None:
     if "rub" in lowered or "руб" in lowered or "рубль" in lowered:
         return f"{amount} RUB"
     return amount
+
+
+def _extract_html_page_items(html: str) -> list[AuctionListItem]:
+    items: list[AuctionListItem] = []
+    title_matches = _extract_title_anchor_matches(html)
+    for index, match in enumerate(title_matches):
+        attrs = match.group("attrs")
+        href = _extract_attr(attrs, "href")
+        if not href:
+            continue
+        end = title_matches[index + 1].start() if index + 1 < len(title_matches) else len(html)
+        card_html = html[match.start() : end]
+        procedure_id = _extract_id(href, PROCEDURE_URL_PREFIX)
+        title = _strip_tags(match.group("body"))
+        organizer_name = _extract_card_field(card_html, "Организатор")
+        publication_date = _extract_card_field(card_html, "Дата публикации")
+        application_deadline = _extract_card_field(
+            card_html,
+            "Дата окончания приёма заявок",
+            "Дата окончания приема заявок",
+        )
+        initial_price = _extract_card_price(card_html)
+        if not procedure_id or not title:
+            continue
+
+        items.append(
+            AuctionListItem(
+                source="fabrikant",
+                auction=AuctionSummary(
+                    source="fabrikant",
+                    external_id=procedure_id,
+                    number=procedure_id,
+                    name=title,
+                    url=href,
+                    publication_date=publication_date,
+                    application_deadline=application_deadline,
+                ),
+                lot=LotSummary(
+                    source="fabrikant",
+                    external_id=procedure_id,
+                    number="1",
+                    name=title,
+                    url=href,
+                    initial_price=initial_price,
+                    current_price=initial_price,
+                ),
+                organizer=OrganizerInfo(name=organizer_name),
+            )
+        )
+
+    return items
 
 
 def _resolve_auction_name(fields: list[ScrapedField], fallback: str) -> str:
@@ -355,6 +543,7 @@ def _build_lot_summary(
     fields: list[ScrapedField],
     *,
     fallback_name: str | None = None,
+    external_id: str | None = None,
 ) -> LotSummary:
     raw_location = _first_matching_field(fields, "Местонахождение объекта продажи")
     region, city, address = _extract_location_parts(raw_location)
@@ -363,7 +552,7 @@ def _build_lot_summary(
     location = _join_location_parts(region, address)
     return LotSummary(
         source="fabrikant",
-        external_id=lot_id,
+        external_id=external_id or lot_id,
         number="1",
         name=name,
         url=url,
@@ -380,62 +569,31 @@ def _build_lot_summary(
 def fetch_auction_list(limit: int | None = 20) -> list[AuctionListItem]:
     auctions: list[AuctionListItem] = []
 
-    seen_procedure_ids: set[str] = set()
+    seen_lot_ids: set[str] = set()
     page_number = 1
 
     while limit is None or len(auctions) < limit:
-        html = _fetch_html(_build_search_url(page_number))
-        title_matches = _extract_title_anchor_matches(html)
-        if not title_matches:
+        page_items: list[AuctionListItem] = []
+        try:
+            page_items = _extract_rsc_page_items(_fetch_search_rsc(page_number))
+        except Exception:
+            page_items = []
+
+        if not page_items:
+            html = _fetch_html(_build_search_url(page_number))
+            page_items = _extract_html_page_items(html)
+
+        if not page_items:
             break
 
         page_added = 0
-        for index, match in enumerate(title_matches):
-            attrs = match.group("attrs")
-            href = _extract_attr(attrs, "href")
-            if not href:
-                continue
-            end = title_matches[index + 1].start() if index + 1 < len(title_matches) else len(html)
-            card_html = html[match.start() : end]
-            procedure_id = _extract_id(href, PROCEDURE_URL_PREFIX)
-            title = _strip_tags(match.group("body"))
-            organizer_name = _extract_card_field(card_html, "Организатор")
-            publication_date = _extract_card_field(card_html, "Дата публикации")
-            application_deadline = _extract_card_field(
-                card_html,
-                "Дата окончания приёма заявок",
-                "Дата окончания приема заявок",
-            )
-            initial_price = _extract_card_price(card_html)
-            if not procedure_id or not title or procedure_id in seen_procedure_ids:
+        for item in page_items:
+            if not item.lot.external_id or item.lot.external_id in seen_lot_ids:
                 continue
 
-            seen_procedure_ids.add(procedure_id)
+            seen_lot_ids.add(item.lot.external_id)
             page_added += 1
-            auctions.append(
-                AuctionListItem(
-                    source="fabrikant",
-                    auction=AuctionSummary(
-                        source="fabrikant",
-                        external_id=procedure_id,
-                        number=procedure_id,
-                        name=title,
-                        url=href,
-                        publication_date=publication_date,
-                        application_deadline=application_deadline,
-                    ),
-                    lot=LotSummary(
-                        source="fabrikant",
-                        external_id=procedure_id,
-                        number="1",
-                        name=title,
-                        url=href,
-                        initial_price=initial_price,
-                        current_price=initial_price,
-                    ),
-                    organizer=OrganizerInfo(name=organizer_name),
-                )
-            )
+            auctions.append(item)
             if limit is not None and len(auctions) >= limit:
                 break
 
@@ -449,23 +607,33 @@ def fetch_auction_list(limit: int | None = 20) -> list[AuctionListItem]:
 
 
 def fetch_lot_detail(lot_id: str) -> LotDetailResponse:
-    procedure_url = f"{PROCEDURE_URL_PREFIX}{lot_id}"
+    requested_lot_id = lot_id
+    procedure_id, explicit_lot_id = _split_lot_external_id(lot_id)
+    procedure_url = f"{PROCEDURE_URL_PREFIX}{procedure_id}"
     procedure_html = _fetch_html(procedure_url)
     procedure_fields = _parse_fields(procedure_html)
-    procedure_name = _resolve_auction_name(procedure_fields, _extract_page_title(procedure_html, lot_id))
-    lot_links = _extract_lot_links(lot_id, procedure_html)
+    procedure_name = _resolve_auction_name(procedure_fields, _extract_page_title(procedure_html, procedure_id))
+    lot_links = _extract_lot_links(procedure_id, procedure_html)
 
     detail_url = procedure_url
     detail_fields = procedure_fields
-    detail_lot_id = lot_id
-    if len(lot_links) == 1:
+    detail_lot_id = explicit_lot_id or lot_id
+    if explicit_lot_id:
+        matching_lot = next((entry for entry in lot_links if entry[0] == explicit_lot_id), None)
+        if matching_lot is None and len(lot_links) == 1:
+            matching_lot = lot_links[0]
+        if matching_lot is not None:
+            detail_lot_id, detail_url = matching_lot
+            detail_html = _fetch_html(detail_url)
+            detail_fields = _parse_fields(detail_html)
+    elif len(lot_links) == 1:
         detail_lot_id, detail_url = lot_links[0]
         detail_html = _fetch_html(detail_url)
         detail_fields = _parse_fields(detail_html)
     auction_summary = AuctionSummary(
         source="fabrikant",
-        external_id=lot_id,
-        number=lot_id,
+        external_id=procedure_id,
+        number=procedure_id,
         name=procedure_name,
         url=procedure_url,
         publication_date=_first_matching_field(detail_fields, "Дата публикации")
@@ -483,7 +651,13 @@ def fetch_lot_detail(lot_id: str) -> LotDetailResponse:
             "Дата и время окончания приема заявок",
         ),
     )
-    lot_summary = _build_lot_summary(detail_lot_id, detail_url, detail_fields, fallback_name=procedure_name)
+    lot_summary = _build_lot_summary(
+        detail_lot_id,
+        detail_url,
+        detail_fields,
+        fallback_name=procedure_name,
+        external_id=requested_lot_id,
+    )
 
     return LotDetailResponse(
         source="fabrikant",
@@ -506,7 +680,7 @@ def fetch_auction_detail(auction_id: str) -> AuctionDetailResponse:
     lots = [
         LotSummary(
             source="fabrikant",
-            external_id=lot_id,
+            external_id=_compose_lot_external_id(auction_id, lot_id),
             number=str(index),
             url=lot_url,
         )
