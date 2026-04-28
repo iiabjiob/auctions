@@ -14,7 +14,7 @@ const helperText = computed(() => {
   if (!publicConfig.value?.default_user_enabled) {
     return ''
   }
-  return 'Демо-пользователь уже создан на бэке. Можно войти сразу.'
+  return 'Демо-пользователь может быть создан на бэке. Email подставлен, пароль задается через env и вводится вручную.'
 })
 
 watch(
@@ -22,7 +22,6 @@ watch(
   (config) => {
     if (!config?.default_user_enabled) return
     email.value = config.default_user_email ?? ''
-    password.value = config.default_user_password ?? ''
   },
   { immediate: true },
 )
@@ -51,12 +50,12 @@ async function submit() {
       <form class="auth-form" @submit.prevent="submit">
         <label>
           <span>Email</span>
-          <input v-model="email" type="email" autocomplete="username" placeholder="demo@auctions.local" />
+          <input v-model="email" type="email" autocomplete="username" placeholder="you@example.com" />
         </label>
 
         <label>
           <span>Пароль</span>
-          <input v-model="password" type="password" autocomplete="current-password" placeholder="change-me-demo" />
+          <input v-model="password" type="password" autocomplete="current-password" placeholder="Введите пароль" />
         </label>
 
         <p v-if="helperText" class="auth-form__hint">{{ helperText }}</p>

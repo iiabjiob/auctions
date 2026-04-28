@@ -28,7 +28,10 @@ LOT_GRID_COLUMNS = [
     DatagridColumn(key="publication_date", title="Дата публикации", data_type="datetime", width=160),
     DatagridColumn(key="lot_number", title="Лот", width=80),
     DatagridColumn(key="lot_name", title="Наименование", width=420),
-    DatagridColumn(key="initial_price_value", title="Цена", data_type="money", width=140),
+    DatagridColumn(key="location", title="Локация", width=220),
+    DatagridColumn(key="initial_price_value", title="Начальная цена", data_type="money", width=150),
+    DatagridColumn(key="current_price_value", title="Текущая цена", data_type="money", width=150),
+    DatagridColumn(key="minimum_price_value", title="Мин. цена", data_type="money", width=150),
     DatagridColumn(key="status", title="Статус", width=160),
     DatagridColumn(key="organizer_name", title="Организатор", width=220),
     DatagridColumn(key="application_deadline", title="Прием заявок до", data_type="datetime", width=180),
@@ -203,9 +206,11 @@ def _select_providers(source: str | None):
 
 
 def build_datagrid_row(item: AuctionListItem, source_title: str) -> LotDatagridRow:
-    price_value = parse_price(item.lot.initial_price)
+    initial_price_value = parse_price(item.lot.initial_price)
+    current_price_value = parse_price(item.lot.current_price or item.lot.initial_price)
+    minimum_price_value = parse_price(item.lot.minimum_price)
     freshness = LotFreshness()
-    rating = calculate_lot_rating(item, price_value)
+    rating = calculate_lot_rating(item, current_price_value)
     row_id = f"{item.source}:{item.auction.external_id or item.auction.number}:{item.lot.external_id or item.lot.number}"
 
     return LotDatagridRow(
@@ -222,12 +227,39 @@ def build_datagrid_row(item: AuctionListItem, source_title: str) -> LotDatagridR
         lot_name=item.lot.name,
         lot_url=item.lot.url,
         category=item.lot.category,
+        location=item.lot.location,
+        location_region=item.lot.region,
+        location_city=item.lot.city,
+        location_address=item.lot.address,
+        location_coordinates=item.lot.coordinates,
+        model_category=None,
         status=item.lot.status,
         initial_price=item.lot.initial_price,
-        initial_price_value=price_value,
+        initial_price_value=initial_price_value,
+        current_price=item.lot.current_price or item.lot.initial_price,
+        current_price_value=current_price_value,
+        minimum_price=item.lot.minimum_price,
+        minimum_price_value=minimum_price_value,
         organizer_name=item.organizer.name,
         application_deadline=item.auction.application_deadline,
         auction_date=item.auction.auction_date,
+        market_value=None,
+        platform_fee=None,
+        delivery_cost=None,
+        dismantling_cost=None,
+        repair_cost=None,
+        storage_cost=None,
+        legal_cost=None,
+        other_costs=None,
+        target_profit=None,
+        total_expenses=None,
+        full_entry_cost=None,
+        potential_profit=None,
+        roi=None,
+        market_discount=None,
+        formula_max_purchase_price=None,
+        exclude_from_analysis=False,
+        exclusion_reason=None,
         freshness=freshness,
         rating=rating,
     )

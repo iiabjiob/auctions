@@ -116,6 +116,9 @@ class AuctionLotWorkItem(Base):
     investor: Mapped[str | None] = mapped_column(String(255))
     deposit_status: Mapped[str | None] = mapped_column(String(64))
     application_status: Mapped[str | None] = mapped_column(String(64))
+    exclude_from_analysis: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    exclusion_reason: Mapped[str | None] = mapped_column(Text)
+    category_override: Mapped[str | None] = mapped_column(String(255))
     max_purchase_price: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
     market_value: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
     platform_fee: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
@@ -125,6 +128,7 @@ class AuctionLotWorkItem(Base):
     storage_cost: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
     legal_cost: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
     other_costs: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    target_profit: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
     analogs: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(

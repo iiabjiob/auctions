@@ -18,10 +18,14 @@ class AuthService:
         if not settings.default_user_enabled:
             return None
 
+        resolved_password = self._resolve_default_user_password(settings.default_user_password)
+        if resolved_password is None:
+            return None
+
         normalized_email = settings.default_user_email.strip().lower()
         user = await session.scalar(select(UserModel).where(UserModel.email == normalized_email))
         now = datetime.now(UTC)
-        password_hash = hash_password(settings.default_user_password)
+        password_hash = hash_password(resolved_password)
 
         if user is None:
             user = UserModel(
@@ -42,7 +46,7 @@ class AuthService:
         if user.full_name != settings.default_user_name:
             user.full_name = settings.default_user_name
             updates_required = True
-        if not verify_password(settings.default_user_password, user.password_hash):
+        if not verify_password(resolved_password, user.password_hash):
             user.password_hash = password_hash
             updates_required = True
         if not user.is_active:
@@ -91,6 +95,12 @@ class AuthService:
             detail="Invalid email or password.",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    def _resolve_default_user_password(self, password: str | None) -> str | None:
+        if password is None:
+            return None
+        normalized = password.strip()
+        return normalized or None
 
 
 auth_service = AuthService()

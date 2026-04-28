@@ -23,4 +23,3 @@ class AuthSessionResponse(BaseModel):
 class AuthPublicConfigResponse(BaseModel):
     default_user_enabled: bool
     default_user_email: str | None = None
-    default_user_password: str | None = None

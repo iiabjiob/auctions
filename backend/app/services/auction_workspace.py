@@ -30,6 +30,9 @@ from app.schemas.auctions import (
     LotWorkItemUpdate,
     LotWorkspaceResponse,
 )
+from app.infrastructure.redis.streams import publish_auction_event
+from app.services.auction_analysis import LegalRiskRules, build_lot_analysis
+from app.services.auction_analysis_config import auction_analysis_config_service
 from app.services.auction_catalog import parse_price
 from app.services.auction_sources import get_source_provider
 
@@ -48,7 +51,15 @@ async def get_lot_workspace(
 
     detail_cache = await ensure_lot_detail_cache(session, record, refresh=refresh)
     work_item = await ensure_work_item(session, record)
-    recalculate_record_rating(record, detail_cache, work_item)
+    runtime_config = await auction_analysis_config_service.get_runtime_config(session)
+    recalculate_record_rating(
+        record,
+        detail_cache,
+        work_item,
+        category_keywords=runtime_config.category_keywords,
+        exclusion_keywords=runtime_config.exclusion_keywords,
+        legal_risk_rules=runtime_config.legal_risk_rules,
+    )
     await session.commit()
 
     return await build_workspace_response(session, record, detail_cache, work_item)
@@ -74,9 +85,18 @@ async def update_lot_work_item(
             value = [dict(analog) for analog in value]
         setattr(work_item, field, value)
 
-    recalculate_record_rating(record, detail_cache, work_item)
+    runtime_config = await auction_analysis_config_service.get_runtime_config(session)
+    recalculate_record_rating(
+        record,
+        detail_cache,
+        work_item,
+        category_keywords=runtime_config.category_keywords,
+        exclusion_keywords=runtime_config.exclusion_keywords,
+        legal_risk_rules=runtime_config.legal_risk_rules,
+    )
     await session.commit()
     await session.refresh(work_item)
+    await _publish_row_updated(record)
     return await build_workspace_response(session, record, detail_cache, work_item)
 
 
@@ -106,7 +126,7 @@ async def ensure_lot_detail_cache(
     statement = select(AuctionLotDetailCache).where(AuctionLotDetailCache.lot_record_id == record.id)
     detail_cache = await session.scalar(statement)
     if detail_cache is not None and not refresh:
-        _sync_record_publication_from_detail_cache(record, detail_cache)
+        _sync_record_from_detail_cache(record, detail_cache)
         return detail_cache
 
     provider = get_source_provider(record.source_code)
@@ -142,7 +162,7 @@ async def ensure_lot_detail_cache(
         )
         session.add(detail_cache)
         await session.flush()
-        _sync_record_publication_from_detail_cache(record, detail_cache)
+        _sync_record_from_detail_cache(record, detail_cache)
         _add_detail_observation(session, record, detail_cache)
         return detail_cache
 
@@ -152,28 +172,49 @@ async def ensure_lot_detail_cache(
     detail_cache.lot_detail = lot_payload
     detail_cache.auction_detail = auction_payload
     detail_cache.documents = documents
-    _sync_record_publication_from_detail_cache(record, detail_cache)
+    _sync_record_from_detail_cache(record, detail_cache)
     if content_changed:
         _add_detail_observation(session, record, detail_cache)
     return detail_cache
 
 
-def _sync_record_publication_from_detail_cache(record: AuctionLotRecord, detail_cache: AuctionLotDetailCache) -> None:
+def _sync_record_from_detail_cache(record: AuctionLotRecord, detail_cache: AuctionLotDetailCache) -> None:
     publication_date = _publication_date_from_detail_cache(detail_cache)
-    if not publication_date:
-        return
+    lot_details = _lot_details_from_detail_cache(detail_cache)
 
     row = dict(record.datagrid_row or {})
-    if row.get("publication_date") != publication_date:
+    if publication_date and row.get("publication_date") != publication_date:
         row["publication_date"] = publication_date
-        record.datagrid_row = row
+    for key, value in lot_details.items():
+        if value is not None:
+            row[key] = value
+    if lot_details.get("initial_price"):
+        row["initial_price_value"] = str(parse_price(lot_details["initial_price"])) if parse_price(lot_details["initial_price"]) is not None else None
+    current_price = lot_details.get("current_price") or row.get("current_price") or record.initial_price
+    if current_price:
+        current_price_value = parse_price(current_price)
+        row["current_price"] = current_price
+        row["current_price_value"] = str(current_price_value) if current_price_value is not None else None
+        record.initial_price = current_price
+    minimum_price = lot_details.get("minimum_price") or row.get("minimum_price")
+    if minimum_price:
+        minimum_price_value = parse_price(minimum_price)
+        row["minimum_price"] = minimum_price
+        row["minimum_price_value"] = str(minimum_price_value) if minimum_price_value is not None else None
+    record.datagrid_row = row
 
     normalized_item = dict(record.normalized_item or {})
     auction_payload = dict(normalized_item.get("auction") or {})
-    if auction_payload.get("publication_date") != publication_date:
+    if publication_date and auction_payload.get("publication_date") != publication_date:
         auction_payload["publication_date"] = publication_date
         normalized_item["auction"] = auction_payload
-        record.normalized_item = normalized_item
+    lot_payload = dict(normalized_item.get("lot") or {})
+    for key, value in lot_details.items():
+        if value is not None:
+            lot_payload[key] = value
+    if lot_payload:
+        normalized_item["lot"] = lot_payload
+    record.normalized_item = normalized_item
 
 
 def _publication_date_from_detail_cache(detail_cache: AuctionLotDetailCache | None) -> str | None:
@@ -185,6 +226,30 @@ def _publication_date_from_detail_cache(detail_cache: AuctionLotDetailCache | No
         if isinstance(publication_date, str) and publication_date.strip():
             return publication_date.strip()
     return None
+
+
+def _lot_details_from_detail_cache(detail_cache: AuctionLotDetailCache | None) -> dict[str, str | None]:
+    if detail_cache is None:
+        return {}
+    payload = detail_cache.lot_detail or {}
+    lot = payload.get("lot") or {}
+    return {
+        "location": _clean_text(lot.get("location")),
+        "location_region": _clean_text(lot.get("region")),
+        "location_city": _clean_text(lot.get("city")),
+        "location_address": _clean_text(lot.get("address")),
+        "location_coordinates": _clean_text(lot.get("coordinates")),
+        "initial_price": _clean_text(lot.get("initial_price")),
+        "current_price": _clean_text(lot.get("current_price")),
+        "minimum_price": _clean_text(lot.get("minimum_price")),
+    }
+
+
+def _clean_text(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    return cleaned or None
 
 
 def _add_detail_observation(
@@ -245,9 +310,41 @@ def recalculate_record_rating(
     record: AuctionLotRecord,
     detail_cache: AuctionLotDetailCache | None,
     work_item: AuctionLotWorkItem | None = None,
+    *,
+    category_keywords: dict[str, tuple[str, ...]] | None = None,
+    exclusion_keywords: tuple[str, ...] | None = None,
+    legal_risk_rules: LegalRiskRules | None = None,
 ) -> LotRating:
     row = LotDatagridRow.model_validate(record.datagrid_row)
     economy = _calculate_economy(record, work_item) if work_item else LotEconomyResponse(current_price=parse_price(record.initial_price))
+    row.analysis = build_lot_analysis(
+        record,
+        row,
+        detail_cache,
+        work_item,
+        economy,
+        category_keywords=category_keywords,
+        exclusion_keywords=exclusion_keywords,
+        legal_risk_rules=legal_risk_rules,
+    )
+    row.model_category = row.analysis.category
+    row.market_value = work_item.market_value if work_item else None
+    row.platform_fee = work_item.platform_fee if work_item else None
+    row.delivery_cost = work_item.delivery_cost if work_item else None
+    row.dismantling_cost = work_item.dismantling_cost if work_item else None
+    row.repair_cost = work_item.repair_cost if work_item else None
+    row.storage_cost = work_item.storage_cost if work_item else None
+    row.legal_cost = work_item.legal_cost if work_item else None
+    row.other_costs = work_item.other_costs if work_item else None
+    row.target_profit = work_item.target_profit if work_item else None
+    row.total_expenses = economy.total_expenses
+    row.full_entry_cost = economy.full_entry_cost
+    row.potential_profit = economy.potential_profit
+    row.roi = economy.roi
+    row.market_discount = economy.market_discount
+    row.formula_max_purchase_price = economy.max_purchase_price
+    row.exclude_from_analysis = work_item.exclude_from_analysis if work_item else False
+    row.exclusion_reason = work_item.exclusion_reason if work_item else None
     rating = _calculate_workspace_rating(record, row, detail_cache, work_item, economy)
     row.rating = rating
     row.work_decision_status = work_item.decision_status if work_item else None
@@ -255,6 +352,11 @@ def recalculate_record_rating(
     record.rating_level = rating.level
     record.datagrid_row = row.model_dump(mode="json")
     return rating
+
+
+async def _publish_row_updated(record: AuctionLotRecord) -> None:
+    row = LotDatagridRow.model_validate(record.datagrid_row)
+    await publish_auction_event("lot.row_updated", {"row": row.model_dump(mode="json")})
 
 
 def _work_item_response(work_item: AuctionLotWorkItem) -> LotWorkItemResponse:
@@ -270,6 +372,9 @@ def _work_item_response(work_item: AuctionLotWorkItem) -> LotWorkItemResponse:
         investor=work_item.investor,
         deposit_status=work_item.deposit_status,
         application_status=work_item.application_status,
+        exclude_from_analysis=work_item.exclude_from_analysis,
+        exclusion_reason=work_item.exclusion_reason,
+        category_override=work_item.category_override,
         max_purchase_price=work_item.max_purchase_price,
         market_value=work_item.market_value,
         platform_fee=work_item.platform_fee,
@@ -279,6 +384,7 @@ def _work_item_response(work_item: AuctionLotWorkItem) -> LotWorkItemResponse:
         storage_cost=work_item.storage_cost,
         legal_cost=work_item.legal_cost,
         other_costs=work_item.other_costs,
+        target_profit=work_item.target_profit,
         analogs=work_item.analogs or [],
         created_at=work_item.created_at,
         updated_at=work_item.updated_at,
@@ -309,15 +415,22 @@ def _calculate_economy(record: AuctionLotRecord, work_item: AuctionLotWorkItem) 
         if current_price is not None and work_item.market_value
         else None
     )
+    max_purchase_price = (
+        work_item.market_value - expenses - (work_item.target_profit or Decimal("0"))
+        if work_item.market_value is not None
+        else None
+    )
 
     return LotEconomyResponse(
         current_price=current_price,
         market_value=work_item.market_value,
+        total_expenses=expenses,
         full_entry_cost=full_entry_cost,
         potential_profit=potential_profit,
         roi=roi,
         market_discount=market_discount,
-        max_purchase_price=work_item.max_purchase_price,
+        target_profit=work_item.target_profit,
+        max_purchase_price=max_purchase_price,
     )
 
 

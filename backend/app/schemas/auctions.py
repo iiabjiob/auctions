@@ -57,9 +57,16 @@ class LotSummary(BaseModel):
     name: str | None = None
     url: str | None = None
     category: str | None = None
+    location: str | None = None
+    region: str | None = None
+    city: str | None = None
+    address: str | None = None
+    coordinates: str | None = None
     classifier: str | None = None
     currency: str | None = None
     initial_price: str | None = None
+    current_price: str | None = None
+    minimum_price: str | None = None
     status: str | None = None
     step_percent: str | None = None
     step_amount: str | None = None
@@ -139,6 +146,22 @@ class LotRating(BaseModel):
     reasons: list[str]
 
 
+class LotAnalysis(BaseModel):
+    status: str = "review"
+    color: str = "yellow"
+    label: str = "Считать детальнее"
+    category: str | None = None
+    matched_keyword: str | None = None
+    is_excluded: bool = False
+    exclusion_keyword: str | None = None
+    legal_risk: str = "medium"
+    completeness: str = "partial"
+    has_documents: bool = False
+    has_photos: bool = False
+    hours_to_deadline: int | None = None
+    reasons: list[str] = Field(default_factory=list)
+
+
 class DatagridColumn(BaseModel):
     key: str
     title: str
@@ -162,14 +185,42 @@ class LotDatagridRow(BaseModel):
     lot_name: str | None = None
     lot_url: str | None = None
     category: str | None = None
+    location: str | None = None
+    location_region: str | None = None
+    location_city: str | None = None
+    location_address: str | None = None
+    location_coordinates: str | None = None
+    model_category: str | None = None
     status: str | None = None
     initial_price: str | None = None
     initial_price_value: Decimal | None = None
+    current_price: str | None = None
+    current_price_value: Decimal | None = None
+    minimum_price: str | None = None
+    minimum_price_value: Decimal | None = None
     organizer_name: str | None = None
     application_deadline: str | None = None
     auction_date: str | None = None
+    market_value: Decimal | None = None
+    platform_fee: Decimal | None = None
+    delivery_cost: Decimal | None = None
+    dismantling_cost: Decimal | None = None
+    repair_cost: Decimal | None = None
+    storage_cost: Decimal | None = None
+    legal_cost: Decimal | None = None
+    other_costs: Decimal | None = None
+    target_profit: Decimal | None = None
+    total_expenses: Decimal | None = None
+    full_entry_cost: Decimal | None = None
+    potential_profit: Decimal | None = None
+    roi: Decimal | None = None
+    market_discount: Decimal | None = None
+    formula_max_purchase_price: Decimal | None = None
+    exclude_from_analysis: bool = False
+    exclusion_reason: str | None = None
     freshness: LotFreshness
     rating: LotRating
+    analysis: LotAnalysis = Field(default_factory=LotAnalysis)
     work_decision_status: str | None = None
 
 
@@ -228,6 +279,9 @@ class LotWorkItemBase(BaseModel):
     investor: str | None = None
     deposit_status: str | None = None
     application_status: str | None = None
+    exclude_from_analysis: bool | None = None
+    exclusion_reason: str | None = None
+    category_override: str | None = None
     max_purchase_price: Decimal | None = None
     market_value: Decimal | None = None
     platform_fee: Decimal | None = None
@@ -237,6 +291,7 @@ class LotWorkItemBase(BaseModel):
     storage_cost: Decimal | None = None
     legal_cost: Decimal | None = None
     other_costs: Decimal | None = None
+    target_profit: Decimal | None = None
     analogs: list[LotAnalog] = Field(default_factory=list)
 
 
@@ -254,10 +309,12 @@ class LotWorkItemResponse(LotWorkItemBase):
 class LotEconomyResponse(BaseModel):
     current_price: Decimal | None = None
     market_value: Decimal | None = None
+    total_expenses: Decimal | None = None
     full_entry_cost: Decimal | None = None
     potential_profit: Decimal | None = None
     roi: Decimal | None = None
     market_discount: Decimal | None = None
+    target_profit: Decimal | None = None
     max_purchase_price: Decimal | None = None
 
 

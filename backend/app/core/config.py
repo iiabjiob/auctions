@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     default_user_enabled: bool = APP_ENV not in ("production", "prod")
     default_user_name: str = "Default User"
     default_user_email: str = "demo@auctions.local"
-    default_user_password: str = "change-me-demo"
+    default_user_password: str | None = None
 
     # ---- DB ----
     postgres_user: str
@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     auction_detail_sync_enabled: bool = True
     auction_detail_sync_limit: int = 25
     auction_publication_sync_limit: int = 0
+    auction_analysis_enabled: bool = True
+    auction_analysis_interval_seconds: int = 180
+    auction_analysis_batch_size: int = 500
 
     # ---- Database URL ----
     @property

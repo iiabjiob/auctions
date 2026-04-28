@@ -27,10 +27,10 @@ async def login(
 @router.get("/public-config", response_model=AuthPublicConfigResponse)
 async def public_config() -> AuthPublicConfigResponse:
     settings = get_settings()
+    demo_user_available = settings.default_user_enabled and bool((settings.default_user_password or "").strip())
     return AuthPublicConfigResponse(
-        default_user_enabled=settings.default_user_enabled,
-        default_user_email=settings.default_user_email if settings.default_user_enabled else None,
-        default_user_password=settings.default_user_password if settings.default_user_enabled else None,
+        default_user_enabled=demo_user_available,
+        default_user_email=settings.default_user_email if demo_user_available else None,
     )
 
 

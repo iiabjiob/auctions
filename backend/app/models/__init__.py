@@ -6,6 +6,7 @@ from app.models.auction import (
     AuctionLotWorkItem,
     AuctionSourceState,
 )
+from app.models.auction_analysis_config import AuctionAnalysisConfigModel
 from app.models.filter_preset import FilterPresetModel
 from app.models.user import UserModel
 
@@ -15,6 +16,7 @@ __all__ = [
 	"AuctionLotObservation",
 	"AuctionLotRecord",
 	"AuctionLotWorkItem",
+	"AuctionAnalysisConfigModel",
 	"AuctionSourceState",
 	"FilterPresetModel",
 	"UserModel",

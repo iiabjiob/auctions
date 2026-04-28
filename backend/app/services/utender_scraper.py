@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import re
+import socket
+import time
 from html import unescape
 from html.parser import HTMLParser
 from typing import Any
+from urllib.error import URLError
 from urllib.parse import urlencode, urljoin
 from urllib.request import Request, urlopen
 
@@ -26,20 +29,21 @@ USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
+DEFAULT_REQUEST_TIMEOUT = 45
+REQUEST_RETRY_ATTEMPTS = 3
+REQUEST_RETRY_BACKOFF_SECONDS = 1.5
 
 
 def _normalize_text(value: str) -> str:
     return re.sub(r"\s+", " ", value.replace("\xa0", " ")).strip()
 
 
-def _fetch_html(url: str, timeout: int = 20) -> str:
+def _fetch_html(url: str, timeout: int = DEFAULT_REQUEST_TIMEOUT) -> str:
     request = Request(url, headers={"User-Agent": USER_AGENT})
-    with urlopen(request, timeout=timeout) as response:
-        encoding = response.headers.get_content_charset() or "utf-8"
-        return response.read().decode(encoding, errors="replace")
+    return _read_response_text(request, timeout=timeout)
 
 
-def _post_html(url: str, form_data: dict[str, str], timeout: int = 20) -> str:
+def _post_html(url: str, form_data: dict[str, str], timeout: int = DEFAULT_REQUEST_TIMEOUT) -> str:
     encoded = urlencode(form_data).encode("utf-8")
     request = Request(
         url,
@@ -50,9 +54,37 @@ def _post_html(url: str, form_data: dict[str, str], timeout: int = 20) -> str:
         },
         method="POST",
     )
-    with urlopen(request, timeout=timeout) as response:
-        encoding = response.headers.get_content_charset() or "utf-8"
-        return response.read().decode(encoding, errors="replace")
+    return _read_response_text(request, timeout=timeout)
+
+
+def _read_response_text(request: Request, *, timeout: int) -> str:
+    last_error: Exception | None = None
+    for attempt in range(1, REQUEST_RETRY_ATTEMPTS + 1):
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                encoding = response.headers.get_content_charset() or "utf-8"
+                return response.read().decode(encoding, errors="replace")
+        except URLError as error:
+            if not _is_timeout_error(error):
+                raise
+            last_error = error
+        except TimeoutError as error:
+            last_error = error
+        except socket.timeout as error:
+            last_error = error
+
+        if attempt < REQUEST_RETRY_ATTEMPTS:
+            time.sleep(REQUEST_RETRY_BACKOFF_SECONDS * attempt)
+
+    assert last_error is not None
+    raise URLError(
+        f"uTender request timed out after {REQUEST_RETRY_ATTEMPTS} attempts: {request.full_url}"
+    ) from last_error
+
+
+def _is_timeout_error(error: URLError) -> bool:
+    reason = error.reason
+    return isinstance(reason, TimeoutError | socket.timeout) or "timed out" in str(reason).lower()
 
 
 class UtenderTableParser(HTMLParser):
@@ -288,15 +320,51 @@ def _build_lot_summary(
     url: str | None = None,
 ) -> LotSummary:
     lot_fields = _fields_after(fields, "Номер")
+    region = _first_matching_field(lot_fields, "Регион", "Регион местонахождения")
+    city = _first_matching_field(lot_fields, "Город", "Населенный пункт", "Город местонахождения")
+    address = _first_matching_field(
+        lot_fields,
+        "Адрес",
+        "Адрес местонахождения",
+        "Местонахождение имущества",
+        "Местоположение",
+    )
+    coordinates = _first_matching_field(
+        lot_fields,
+        "Координаты",
+        "Координаты объекта",
+        "GPS-координаты",
+        "Географические координаты",
+    )
+    current_price = _first_matching_field(
+        lot_fields,
+        "Текущая цена, руб.",
+        "Текущая цена",
+        "Цена на текущем интервале, руб.",
+    )
+    minimum_price = _first_matching_field(
+        lot_fields,
+        "Минимальная цена, руб.",
+        "Минимальная цена",
+        "Цена отсечения, руб.",
+        "Минимальная цена продажи, руб.",
+    )
     return LotSummary(
         external_id=external_id,
         number=_first_field(lot_fields, "Номер"),
         name=_first_field(lot_fields, "Наименование"),
         url=url,
         category=_first_field(lot_fields, "Категория лота"),
+        location=_join_location_parts(region, city, address, coordinates),
+        region=region,
+        city=city,
+        address=address,
+        coordinates=coordinates,
         classifier=_first_field(lot_fields, "Классификатор ЕФРСБ"),
         currency=_first_field(lot_fields, "Валюта цены по ОКВ"),
         initial_price=_first_field(lot_fields, "Начальная цена, руб."),
+        current_price=current_price,
+        minimum_price=minimum_price,
         status=_first_field(lot_fields, "Статус"),
         step_percent=_first_field(lot_fields, "Шаг, % от начальной цены"),
         step_amount=_first_field(lot_fields, "Шаг, руб."),
@@ -309,6 +377,13 @@ def _build_lot_summary(
         description=_first_field(lot_fields, "Сведения об имуществе должника, его составе, характеристиках, описание, порядок ознакомления"),
         inspection_order=_first_field(lot_fields, "Порядок ознакомления с имуществом"),
     )
+
+
+def _join_location_parts(*parts: str | None) -> str | None:
+    values = [part.strip() for part in parts if isinstance(part, str) and part.strip()]
+    if not values:
+        return None
+    return ", ".join(values)
 
 
 def _build_organizer(fields: list[ScrapedField]) -> OrganizerInfo:

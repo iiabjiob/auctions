@@ -13,9 +13,11 @@ import {
 } from '@affino/datagrid-vue-app'
 import { createDialogFocusOrchestrator, useDialogController } from '@affino/dialog-vue'
 import AuthLoginScreen from './components/AuthLoginScreen.vue'
+import AnalysisSignalTooltip from './components/AnalysisSignalTooltip.vue'
 import AffinoCombobox from './components/AffinoCombobox.vue'
 import LotNameCell from './components/LotNameCell.vue'
 import RatingInfoTooltip from './components/RatingInfoTooltip.vue'
+import { buildAppPath } from './api/base'
 import { useAuthStore } from './stores/auth'
 import { workspaceDataGridTheme } from './theme/dataGridTheme'
 
@@ -47,12 +49,39 @@ type ApiLotRow = {
   lot_name: string | null
   lot_url: string | null
   category: string | null
+  location: string | null
+  location_region: string | null
+  location_city: string | null
+  location_address: string | null
+  location_coordinates: string | null
+  model_category: string | null
   status: string | null
   initial_price: string | null
   initial_price_value: string | number | null
+  current_price: string | null
+  current_price_value: string | number | null
+  minimum_price: string | null
+  minimum_price_value: string | number | null
   organizer_name: string | null
   application_deadline: string | null
   auction_date: string | null
+  market_value: string | number | null
+  platform_fee: string | number | null
+  delivery_cost: string | number | null
+  dismantling_cost: string | number | null
+  repair_cost: string | number | null
+  storage_cost: string | number | null
+  legal_cost: string | number | null
+  other_costs: string | number | null
+  target_profit: string | number | null
+  total_expenses: string | number | null
+  full_entry_cost: string | number | null
+  potential_profit: string | number | null
+  roi: string | number | null
+  market_discount: string | number | null
+  formula_max_purchase_price: string | number | null
+  exclude_from_analysis: boolean
+  exclusion_reason: string | null
   freshness: {
     is_new: boolean
     first_seen_at: string | null
@@ -62,6 +91,21 @@ type ApiLotRow = {
   rating: {
     score: number
     level: string
+    reasons: string[]
+  }
+  analysis: {
+    status: string
+    color: string
+    label: string
+    category: string | null
+    matched_keyword: string | null
+    is_excluded: boolean
+    exclusion_keyword: string | null
+    legal_risk: string
+    completeness: string
+    has_documents: boolean
+    has_photos: boolean
+    hours_to_deadline: number | null
     reasons: string[]
   }
   work_decision_status: string | null
@@ -126,9 +170,16 @@ type ApiLotSummary = {
   name: string | null
   url: string | null
   category: string | null
+  location: string | null
+  region: string | null
+  city: string | null
+  address: string | null
+  coordinates: string | null
   classifier: string | null
   currency: string | null
   initial_price: string | null
+  current_price: string | null
+  minimum_price: string | null
   status: string | null
   step_percent: string | null
   step_amount: string | null
@@ -164,6 +215,9 @@ type LotWorkItem = {
   investor: string | null
   deposit_status: string | null
   application_status: string | null
+  exclude_from_analysis: boolean | null
+  exclusion_reason: string | null
+  category_override: string | null
   max_purchase_price: string | number | null
   market_value: string | number | null
   platform_fee: string | number | null
@@ -173,6 +227,7 @@ type LotWorkItem = {
   storage_cost: string | number | null
   legal_cost: string | number | null
   other_costs: string | number | null
+  target_profit: string | number | null
   analogs: Array<Record<string, unknown>>
   created_at: string | null
   updated_at: string | null
@@ -181,10 +236,12 @@ type LotWorkItem = {
 type LotEconomy = {
   current_price: string | number | null
   market_value: string | number | null
+  total_expenses: string | number | null
   full_entry_cost: string | number | null
   potential_profit: string | number | null
   roi: string | number | null
   market_discount: string | number | null
+  target_profit: string | number | null
   max_purchase_price: string | number | null
 }
 
@@ -246,7 +303,9 @@ type WorkDraft = {
   investor: string
   deposit_status: string
   application_status: string
-  max_purchase_price: string
+  exclude_from_analysis: boolean
+  exclusion_reason: string
+  category_override: string
   market_value: string
   platform_fee: string
   delivery_cost: string
@@ -255,6 +314,7 @@ type WorkDraft = {
   storage_cost: string
   legal_cost: string
   other_costs: string
+  target_profit: string
 }
 
 type LotsResponse = {
@@ -273,6 +333,12 @@ type LotsResponse = {
 type GridLotRow = {
   id: string
   rowRevision: number
+  analysisStatus: string
+  analysisColor: string
+  analysisLabel: string
+  analysisCategory: string
+  analysisReasons: string[]
+  sourceCategory: string
   source: string
   sourceTitle: string
   auctionId: string
@@ -281,8 +347,32 @@ type GridLotRow = {
   lotId: string
   lotNumber: string
   lotName: string
+  location: string
+  locationRegion: string
+  locationCity: string
+  locationAddress: string
+  locationCoordinates: string
   status: string
+  initialPrice: number | null
   price: number | null
+  minimumPrice: number | null
+  marketValue: number | null
+  platformFee: number | null
+  deliveryCost: number | null
+  dismantlingCost: number | null
+  repairCost: number | null
+  storageCost: number | null
+  legalCost: number | null
+  otherCosts: number | null
+  targetProfit: number | null
+  totalExpenses: number | null
+  fullEntryCost: number | null
+  potentialProfit: number | null
+  roiValue: number | null
+  marketDiscount: number | null
+  formulaMaxPurchasePrice: number | null
+  excludeFromAnalysis: boolean
+  exclusionReason: string
   organizer: string
   applicationDeadline: Date | null
   auctionDate: Date | null
@@ -314,11 +404,46 @@ type FilterPreset = {
   updated_at: string | null
 }
 
+type AnalysisConfigCategoryRule = {
+  category: string
+  keywords: string[]
+}
+
+type AnalysisConfigLegalRiskRules = {
+  high_keywords: string[]
+  medium_keywords: string[]
+  medium_categories: string[]
+}
+
+type AnalysisConfigResponse = {
+  id: string
+  category_rules: AnalysisConfigCategoryRule[]
+  exclusion_keywords: string[]
+  legal_risk_rules: AnalysisConfigLegalRiskRules
+  created_at: string
+  updated_at: string
+}
+
+type AnalysisConfigDraftRule = {
+  id: number
+  category: string
+  keywordsText: string
+}
+
+type AnalysisConfigDraft = {
+  categoryRules: AnalysisConfigDraftRule[]
+  exclusionKeywordsText: string
+  highRiskKeywordsText: string
+  mediumRiskKeywordsText: string
+  mediumRiskCategoriesText: string
+}
+
 type PresetDialogMode = 'create' | 'update' | 'delete'
 
 type ServerQuickFiltersState = {
   period: DatasetPeriod
   source: string
+  analysisColor: string
   query: string
   status: string
   minPrice: string
@@ -331,11 +456,15 @@ type ServerQuickFiltersState = {
 const allRows = ref<GridLotRow[]>([])
 const sources = ref<ApiSource[]>([])
 const presets = ref<FilterPreset[]>([])
+const analysisConfig = ref<AnalysisConfigResponse | null>(null)
 const selectedPresetId = ref('')
 const presetDialogMode = ref<PresetDialogMode>('create')
 const presetNameDraft = ref('')
 const loading = ref(false)
 const presetsLoading = ref(false)
+const analysisConfigLoading = ref(false)
+const analysisConfigSaving = ref(false)
+const analysisConfigError = ref('')
 const errorMessage = ref('')
 const lastLoadedAt = ref<string | null>(null)
 const backgroundStatus = ref('Ожидаем фоновое обновление')
@@ -363,6 +492,7 @@ let detailRequestId = 0
 const DEFAULT_SERVER_FILTERS: ServerQuickFiltersState = {
   period: 'month',
   source: 'all',
+  analysisColor: '',
   query: '',
   status: '',
   minPrice: '',
@@ -385,7 +515,9 @@ const emptyWorkDraft = (): WorkDraft => ({
   investor: '',
   deposit_status: '',
   application_status: '',
-  max_purchase_price: '',
+  exclude_from_analysis: false,
+  exclusion_reason: '',
+  category_override: '',
   market_value: '',
   platform_fee: '',
   delivery_cost: '',
@@ -394,9 +526,74 @@ const emptyWorkDraft = (): WorkDraft => ({
   storage_cost: '',
   legal_cost: '',
   other_costs: '',
+  target_profit: '',
 })
 
+const EDITABLE_GRID_COLUMN_KEYS = new Set([
+  'marketValue',
+  'platformFee',
+  'deliveryCost',
+  'dismantlingCost',
+  'repairCost',
+  'storageCost',
+  'legalCost',
+  'otherCosts',
+  'targetProfit',
+  'excludeFromAnalysis',
+  'exclusionReason',
+])
+
+const EDITABLE_GRID_NUMERIC_KEYS = [
+  'marketValue',
+  'platformFee',
+  'deliveryCost',
+  'dismantlingCost',
+  'repairCost',
+  'storageCost',
+  'legalCost',
+  'otherCosts',
+  'targetProfit',
+] as const
+
+const ZERO_DEFAULT_GRID_NUMERIC_KEYS = [
+  'platformFee',
+  'deliveryCost',
+  'dismantlingCost',
+  'repairCost',
+  'storageCost',
+  'legalCost',
+  'otherCosts',
+  'targetProfit',
+] as const
+
+const ZERO_DEFAULT_GRID_NUMERIC_KEY_SET = new Set<string>(ZERO_DEFAULT_GRID_NUMERIC_KEYS)
+
+type GridWorkSnapshot = {
+  marketValue: number | null
+  platformFee: number | null
+  deliveryCost: number | null
+  dismantlingCost: number | null
+  repairCost: number | null
+  storageCost: number | null
+  legalCost: number | null
+  otherCosts: number | null
+  targetProfit: number | null
+  excludeFromAnalysis: boolean
+  exclusionReason: string
+}
+
+const savedGridWorkSnapshots = new Map<string, string>()
+const pendingGridSaveTimers = new Map<string, ReturnType<typeof window.setTimeout>>()
+
 const workDraft = reactive<WorkDraft>(emptyWorkDraft())
+const emptyAnalysisConfigDraft = (): AnalysisConfigDraft => ({
+  categoryRules: [],
+  exclusionKeywordsText: '',
+  highRiskKeywordsText: '',
+  mediumRiskKeywordsText: '',
+  mediumRiskCategoriesText: '',
+})
+const analysisConfigDraft = reactive<AnalysisConfigDraft>(emptyAnalysisConfigDraft())
 const authStore = useAuthStore()
 const { accessToken, currentUser, isAuthenticated, isRestoring } = storeToRefs(authStore)
 const presetDialogTriggerRef = ref<HTMLElement | null>(null)
@@ -410,6 +607,18 @@ const presetDialogFocus = createDialogFocusOrchestrator({
 const presetDialog = useDialogController({
   focusOrchestrator: presetDialogFocus,
 })
+const analysisConfigDialogTriggerRef = ref<HTMLElement | null>(null)
+const analysisConfigDialogRef = ref<HTMLDivElement | null>(null)
+const analysisConfigDialogInitialRef = ref<HTMLElement | null>(null)
+const analysisConfigDialogFocus = createDialogFocusOrchestrator({
+  dialog: () => analysisConfigDialogRef.value,
+  initialFocus: () => analysisConfigDialogInitialRef.value,
+  returnFocus: () => analysisConfigDialogTriggerRef.value,
+})
+const analysisConfigDialog = useDialogController({
+  focusOrchestrator: analysisConfigDialogFocus,
+})
+let analysisConfigRuleSeed = 0
 
 const QuickFiltersToolbar = defineComponent({
   name: 'QuickFiltersToolbar',
@@ -419,6 +628,10 @@ const QuickFiltersToolbar = defineComponent({
       required: true,
     },
     sourceValue: {
+      type: String,
+      required: true,
+    },
+    analysisValue: {
       type: String,
       required: true,
     },
@@ -458,6 +671,10 @@ const QuickFiltersToolbar = defineComponent({
       type: Array as PropType<FilterOption[]>,
       required: true,
     },
+    analysisOptions: {
+      type: Array as PropType<FilterOption[]>,
+      required: true,
+    },
     statusOptions: {
       type: Array as PropType<FilterOption[]>,
       required: true,
@@ -471,6 +688,10 @@ const QuickFiltersToolbar = defineComponent({
       required: true,
     },
     onSourceChange: {
+      type: Function as PropType<(value: string) => void>,
+      required: true,
+    },
+    onAnalysisChange: {
       type: Function as PropType<(value: string) => void>,
       required: true,
     },
@@ -502,18 +723,12 @@ const QuickFiltersToolbar = defineComponent({
       type: Function as PropType<(value: boolean) => void>,
       required: true,
     },
-    onApply: {
-      type: Function as PropType<() => void>,
-      required: true,
-    },
     onReset: {
       type: Function as PropType<() => void>,
       required: true,
     },
   },
   setup(props) {
-    const applyFilters = () => props.onApply()
-
     return () =>
       h('section', { class: 'quick-filters-bar', 'aria-label': 'Быстрые фильтры каталога' }, [
         h('input', {
@@ -523,9 +738,6 @@ const QuickFiltersToolbar = defineComponent({
           placeholder: 'Поиск: название, организатор, номер',
           title: 'Поиск по каталогу',
           onInput: (event: Event) => props.onQueryChange((event.target as HTMLInputElement).value),
-          onKeydown: (event: KeyboardEvent) => {
-            if (event.key === 'Enter') applyFilters()
-          },
         }),
         h(AffinoCombobox, {
           id: 'toolbar-period-filter',
@@ -546,6 +758,15 @@ const QuickFiltersToolbar = defineComponent({
           'onUpdate:modelValue': props.onSourceChange,
         }),
         h(AffinoCombobox, {
+          id: 'toolbar-analysis-filter',
+          modelValue: props.analysisValue,
+          options: props.analysisOptions,
+          placeholder: 'Сигнал',
+          title: 'Аналитический сигнал',
+          class: 'quick-filters-bar__select quick-filters-bar__select--status',
+          'onUpdate:modelValue': props.onAnalysisChange,
+        }),
+        h(AffinoCombobox, {
           id: 'toolbar-status-filter',
           modelValue: props.statusValue,
           options: props.statusOptions,
@@ -563,9 +784,6 @@ const QuickFiltersToolbar = defineComponent({
           placeholder: 'Цена от',
           title: 'Минимальная цена',
           onInput: (event: Event) => props.onMinPriceChange((event.target as HTMLInputElement).value),
-          onKeydown: (event: KeyboardEvent) => {
-            if (event.key === 'Enter') applyFilters()
-          },
         }),
         h('input', {
           class: 'quick-filters-bar__input quick-filters-bar__input--narrow',
@@ -576,9 +794,6 @@ const QuickFiltersToolbar = defineComponent({
           placeholder: 'Цена до',
           title: 'Максимальная цена',
           onInput: (event: Event) => props.onMaxPriceChange((event.target as HTMLInputElement).value),
-          onKeydown: (event: KeyboardEvent) => {
-            if (event.key === 'Enter') applyFilters()
-          },
         }),
         h('input', {
           class: 'quick-filters-bar__input quick-filters-bar__input--rating',
@@ -590,9 +805,6 @@ const QuickFiltersToolbar = defineComponent({
           placeholder: 'Рейтинг',
           title: 'Минимальный рейтинг',
           onInput: (event: Event) => props.onMinRatingChange(Number((event.target as HTMLInputElement).value) || 0),
-          onKeydown: (event: KeyboardEvent) => {
-            if (event.key === 'Enter') applyFilters()
-          },
         }),
         h('label', { class: 'quick-filters-bar__toggle' }, [
           h('input', {
@@ -611,28 +823,17 @@ const QuickFiltersToolbar = defineComponent({
           h('span', 'Шорт-лист'),
         ]),
         h('div', { class: 'quick-filters-bar__actions' }, [
-          h(
-            'button',
-            {
-              type: 'button',
-              class: 'secondary-button quick-filters-bar__icon-action',
-              'aria-label': 'Сбросить быстрый отбор',
-              title: 'Сбросить быстрый отбор',
-              onClick: () => props.onReset(),
-            },
-            '↺',
-          ),
-          h(
-            'button',
-            {
-              type: 'button',
-              class: 'primary-button quick-filters-bar__icon-action',
-              'aria-label': 'Применить быстрый отбор',
-              title: 'Применить быстрый отбор',
-              onClick: applyFilters,
-            },
-            '✓',
-          ),
+          props.activeFilterCount > 0
+            ? h(
+                'button',
+                {
+                  type: 'button',
+                  class: 'secondary-button',
+                  onClick: () => props.onReset(),
+                },
+                'Сбросить',
+              )
+            : null,
         ]),
       ])
   },
@@ -640,13 +841,18 @@ const QuickFiltersToolbar = defineComponent({
 
 const loadingSkeletonColumns = [
   { key: 'ratingScore', label: 'Рейтинг', width: 96, placeholderWidth: '54%' },
+  { key: 'analysisLabel', label: 'Сигнал', width: 176, placeholderWidth: '76%' },
+  { key: 'analysisCategory', label: 'Категория', width: 168, placeholderWidth: '72%' },
   { key: 'isNew', label: 'Новый', width: 88, placeholderWidth: '42%' },
   { key: 'sourceTitle', label: 'Площадка', width: 120, placeholderWidth: '62%' },
   { key: 'auctionNumber', label: 'Аукцион', width: 120, placeholderWidth: '58%' },
   { key: 'publicationDate', label: 'Дата публикации', width: 160, placeholderWidth: '60%' },
   { key: 'lotNumber', label: 'Лот', width: 76, placeholderWidth: '46%' },
   { key: 'lotName', label: 'Наименование', width: 430, placeholderWidth: '88%' },
-  { key: 'price', label: 'Цена', width: 150, placeholderWidth: '70%' },
+  { key: 'location', label: 'Локация', width: 220, placeholderWidth: '82%' },
+  { key: 'initialPrice', label: 'Начальная цена', width: 150, placeholderWidth: '70%' },
+  { key: 'price', label: 'Текущая цена', width: 150, placeholderWidth: '70%' },
+  { key: 'minimumPrice', label: 'Мин. цена', width: 150, placeholderWidth: '64%' },
   { key: 'status', label: 'Статус', width: 170, placeholderWidth: '78%' },
   { key: 'organizer', label: 'Организатор', width: 240, placeholderWidth: '82%' },
   { key: 'applicationDeadline', label: 'Прием заявок до', width: 180, placeholderWidth: '68%' },
@@ -665,6 +871,40 @@ const typedColumns: DataGridAppColumnInput<GridLotRow>[] = [
     presentation: { align: 'right', headerAlign: 'right' },
     capabilities: { sortable: true, filterable: true, aggregatable: true },
   },
+  {
+    key: 'analysisLabel',
+    label: 'Сигнал',
+    initialState: { width: 176 },
+    capabilities: { sortable: true, filterable: true },
+    cellRenderer: ({ row }) =>
+      row
+        ? row.analysisReasons.length
+          ? h(
+              AnalysisSignalTooltip,
+              {
+                reasons: row.analysisReasons,
+              },
+              {
+                default: () =>
+                  h(
+                    'span',
+                    {
+                      class: ['analysis-pill', `analysis-pill--${row.analysisColor || 'yellow'}`],
+                    },
+                    row.analysisLabel,
+                  ),
+              },
+            )
+          : h(
+              'span',
+              {
+                class: ['analysis-pill', `analysis-pill--${row.analysisColor || 'yellow'}`],
+              },
+              row.analysisLabel,
+            )
+        : '',
+  },
+  { key: 'analysisCategory', label: 'Категория', initialState: { width: 168 } },
   {
     key: 'isNew',
     label: 'Новый',
@@ -717,8 +957,34 @@ const typedColumns: DataGridAppColumnInput<GridLotRow>[] = [
         : String(displayValue || 'Без названия'),
   },
   {
+    key: 'location',
+    label: 'Локация',
+    initialState: { width: 220 },
+    capabilities: { sortable: true, filterable: true },
+  },
+  {
+    key: 'initialPrice',
+    label: 'Начальная цена',
+    dataType: 'currency',
+    initialState: { width: 150 },
+    presentation: {
+      align: 'right',
+      headerAlign: 'right',
+      format: {
+        number: {
+          locale: 'ru-RU',
+          style: 'currency',
+          currency: 'RUB',
+          maximumFractionDigits: 2,
+        },
+      },
+    },
+    capabilities: { sortable: true, filterable: true, aggregatable: true },
+    cellRenderer: ({ row }) => formatCurrency(row?.initialPrice ?? null),
+  },
+  {
     key: 'price',
-    label: 'Цена',
+    label: 'Текущая цена',
     dataType: 'currency',
     initialState: { width: 150 },
     presentation: {
@@ -735,6 +1001,232 @@ const typedColumns: DataGridAppColumnInput<GridLotRow>[] = [
     },
     capabilities: { sortable: true, filterable: true, aggregatable: true },
     cellRenderer: ({ row }) => formatCurrency(row?.price ?? null),
+  },
+  {
+    key: 'minimumPrice',
+    label: 'Мин. цена',
+    dataType: 'currency',
+    initialState: { width: 150 },
+    presentation: {
+      align: 'right',
+      headerAlign: 'right',
+      format: {
+        number: {
+          locale: 'ru-RU',
+          style: 'currency',
+          currency: 'RUB',
+          maximumFractionDigits: 2,
+        },
+      },
+    },
+    capabilities: { sortable: true, filterable: true, aggregatable: true },
+    cellRenderer: ({ row }) => formatCurrency(row?.minimumPrice ?? null),
+  },
+  {
+    key: 'marketValue',
+    label: 'Рынок',
+    dataType: 'currency',
+    initialState: { width: 150 },
+    presentation: {
+      align: 'right',
+      headerAlign: 'right',
+      format: { number: { locale: 'ru-RU', style: 'currency', currency: 'RUB', maximumFractionDigits: 2 } },
+    },
+    capabilities: { sortable: true, filterable: true, editable: true },
+    cellRenderer: ({ row }) => formatCurrency(row?.marketValue ?? null),
+  },
+  {
+    key: 'platformFee',
+    label: 'Комиссия ЭТП',
+    dataType: 'currency',
+    initialState: { width: 150 },
+    presentation: {
+      align: 'right',
+      headerAlign: 'right',
+      format: { number: { locale: 'ru-RU', style: 'currency', currency: 'RUB', maximumFractionDigits: 2 } },
+    },
+    capabilities: { sortable: true, filterable: true, editable: true },
+    cellRenderer: ({ row }) => formatCurrency(row?.platformFee ?? null),
+  },
+  {
+    key: 'deliveryCost',
+    label: 'Доставка',
+    dataType: 'currency',
+    initialState: { width: 132 },
+    presentation: {
+      align: 'right',
+      headerAlign: 'right',
+      format: { number: { locale: 'ru-RU', style: 'currency', currency: 'RUB', maximumFractionDigits: 2 } },
+    },
+    capabilities: { sortable: true, filterable: true, editable: true },
+    cellRenderer: ({ row }) => formatCurrency(row?.deliveryCost ?? null),
+  },
+  {
+    key: 'dismantlingCost',
+    label: 'Демонтаж',
+    dataType: 'currency',
+    initialState: { width: 138 },
+    presentation: {
+      align: 'right',
+      headerAlign: 'right',
+      format: { number: { locale: 'ru-RU', style: 'currency', currency: 'RUB', maximumFractionDigits: 2 } },
+    },
+    capabilities: { sortable: true, filterable: true, editable: true },
+    cellRenderer: ({ row }) => formatCurrency(row?.dismantlingCost ?? null),
+  },
+  {
+    key: 'repairCost',
+    label: 'Ремонт',
+    dataType: 'currency',
+    initialState: { width: 132 },
+    presentation: {
+      align: 'right',
+      headerAlign: 'right',
+      format: { number: { locale: 'ru-RU', style: 'currency', currency: 'RUB', maximumFractionDigits: 2 } },
+    },
+    capabilities: { sortable: true, filterable: true, editable: true },
+    cellRenderer: ({ row }) => formatCurrency(row?.repairCost ?? null),
+  },
+  {
+    key: 'storageCost',
+    label: 'Хранение',
+    dataType: 'currency',
+    initialState: { width: 138 },
+    presentation: {
+      align: 'right',
+      headerAlign: 'right',
+      format: { number: { locale: 'ru-RU', style: 'currency', currency: 'RUB', maximumFractionDigits: 2 } },
+    },
+    capabilities: { sortable: true, filterable: true, editable: true },
+    cellRenderer: ({ row }) => formatCurrency(row?.storageCost ?? null),
+  },
+  {
+    key: 'legalCost',
+    label: 'Юрист',
+    dataType: 'currency',
+    initialState: { width: 124 },
+    presentation: {
+      align: 'right',
+      headerAlign: 'right',
+      format: { number: { locale: 'ru-RU', style: 'currency', currency: 'RUB', maximumFractionDigits: 2 } },
+    },
+    capabilities: { sortable: true, filterable: true, editable: true },
+    cellRenderer: ({ row }) => formatCurrency(row?.legalCost ?? null),
+  },
+  {
+    key: 'otherCosts',
+    label: 'Прочие',
+    dataType: 'currency',
+    initialState: { width: 124 },
+    presentation: {
+      align: 'right',
+      headerAlign: 'right',
+      format: { number: { locale: 'ru-RU', style: 'currency', currency: 'RUB', maximumFractionDigits: 2 } },
+    },
+    capabilities: { sortable: true, filterable: true, editable: true },
+    cellRenderer: ({ row }) => formatCurrency(row?.otherCosts ?? null),
+  },
+  {
+    key: 'targetProfit',
+    label: 'Целевая прибыль',
+    dataType: 'currency',
+    initialState: { width: 168 },
+    presentation: {
+      align: 'right',
+      headerAlign: 'right',
+      format: { number: { locale: 'ru-RU', style: 'currency', currency: 'RUB', maximumFractionDigits: 2 } },
+    },
+    capabilities: { sortable: true, filterable: true, editable: true },
+    cellRenderer: ({ row }) => formatCurrency(row?.targetProfit ?? null),
+  },
+  {
+    key: 'totalExpenses',
+    label: 'Все расходы',
+    dataType: 'currency',
+    formula: 'platformFee + deliveryCost + dismantlingCost + repairCost + storageCost + legalCost + otherCosts',
+    initialState: { width: 152 },
+    presentation: {
+      align: 'right',
+      headerAlign: 'right',
+      format: { number: { locale: 'ru-RU', style: 'currency', currency: 'RUB', maximumFractionDigits: 2 } },
+    },
+    capabilities: { sortable: true, filterable: true },
+    cellRenderer: ({ row }) => formatCurrency(row?.totalExpenses ?? null),
+  },
+  {
+    key: 'fullEntryCost',
+    label: 'Полная стоимость входа',
+    dataType: 'currency',
+    formula: 'price + totalExpenses',
+    initialState: { width: 198 },
+    presentation: {
+      align: 'right',
+      headerAlign: 'right',
+      format: { number: { locale: 'ru-RU', style: 'currency', currency: 'RUB', maximumFractionDigits: 2 } },
+    },
+    capabilities: { sortable: true, filterable: true },
+    cellRenderer: ({ row }) => formatCurrency(row?.fullEntryCost ?? null),
+  },
+  {
+    key: 'potentialProfit',
+    label: 'Потенциальная прибыль',
+    dataType: 'currency',
+    formula: 'marketValue - fullEntryCost',
+    initialState: { width: 188 },
+    presentation: {
+      align: 'right',
+      headerAlign: 'right',
+      format: { number: { locale: 'ru-RU', style: 'currency', currency: 'RUB', maximumFractionDigits: 2 } },
+    },
+    capabilities: { sortable: true, filterable: true },
+    cellRenderer: ({ row }) => formatCurrency(row?.potentialProfit ?? null),
+  },
+  {
+    key: 'roiValue',
+    label: 'ROI',
+    dataType: 'number',
+    formula: 'potentialProfit / fullEntryCost',
+    initialState: { width: 100 },
+    presentation: { align: 'right', headerAlign: 'right', format: { number: { locale: 'ru-RU', style: 'percent', maximumFractionDigits: 1 } } },
+    capabilities: { sortable: true, filterable: true },
+    cellRenderer: ({ row }) => formatApiPercent(row?.roiValue),
+  },
+  {
+    key: 'marketDiscount',
+    label: 'Дисконт к рынку',
+    dataType: 'number',
+    formula: '1 - price / marketValue',
+    initialState: { width: 146 },
+    presentation: { align: 'right', headerAlign: 'right', format: { number: { locale: 'ru-RU', style: 'percent', maximumFractionDigits: 1 } } },
+    capabilities: { sortable: true, filterable: true },
+    cellRenderer: ({ row }) => formatApiPercent(row?.marketDiscount),
+  },
+  {
+    key: 'formulaMaxPurchasePrice',
+    label: 'Макс. цена покупки',
+    dataType: 'currency',
+    formula: 'marketValue - totalExpenses - targetProfit',
+    initialState: { width: 176 },
+    presentation: {
+      align: 'right',
+      headerAlign: 'right',
+      format: { number: { locale: 'ru-RU', style: 'currency', currency: 'RUB', maximumFractionDigits: 2 } },
+    },
+    capabilities: { sortable: true, filterable: true },
+    cellRenderer: ({ row }) => formatCurrency(row?.formulaMaxPurchasePrice ?? null),
+  },
+  {
+    key: 'excludeFromAnalysis',
+    label: 'Исключить',
+    dataType: 'boolean',
+    initialState: { width: 112 },
+    capabilities: { sortable: true, filterable: true, editable: true },
+  },
+  {
+    key: 'exclusionReason',
+    label: 'Причина исключения',
+    initialState: { width: 188 },
+    capabilities: { sortable: true, filterable: true, editable: true },
   },
   { key: 'status', label: 'Статус', initialState: { width: 170 } },
   { key: 'organizer', label: 'Организатор', initialState: { width: 240 } },
@@ -804,7 +1296,7 @@ const clientRowModelOptions = {
 } satisfies DataGridAppClientRowModelOptions<GridLotRow>
 
 const publicClientRowModelOptions = clientRowModelOptions as DataGridAppClientRowModelOptions<unknown>
-const isGridCellEditable = () => false
+const isGridCellEditable = ({ column }: { column: { key: string } }) => EDITABLE_GRID_COLUMN_KEYS.has(column.key)
 const columnLayoutOptions = { buttonLabel: 'Колонки' }
 const advancedFilterOptions = { buttonLabel: 'Расширенный фильтр' }
 
@@ -815,6 +1307,7 @@ const toolbarModules = computed<readonly DataGridAppToolbarModule[]>(() => [
     props: {
       periodValue: filters.period,
       sourceValue: filters.source,
+      analysisValue: filters.analysisColor,
       statusValue: filters.status,
       queryValue: filters.query,
       minPriceValue: filters.minPrice,
@@ -824,6 +1317,7 @@ const toolbarModules = computed<readonly DataGridAppToolbarModule[]>(() => [
       shortlist: filters.shortlist,
       activeFilterCount: activeFilterCount.value,
       sourceOptions: sourceOptions.value,
+      analysisOptions: analysisOptions,
       statusOptions: statusOptions.value,
       periodOptions: periodOptions,
       onPeriodChange: (value: string) => {
@@ -834,6 +1328,9 @@ const toolbarModules = computed<readonly DataGridAppToolbarModule[]>(() => [
       },
       onSourceChange: (value: string) => {
         filters.source = value
+      },
+      onAnalysisChange: (value: string) => {
+        filters.analysisColor = value
       },
       onStatusChange: (value: string) => {
         filters.status = value
@@ -856,7 +1353,6 @@ const toolbarModules = computed<readonly DataGridAppToolbarModule[]>(() => [
       onShortlistChange: (value: boolean) => {
         filters.shortlist = value
       },
-      onApply: applyQuickFilters,
       onReset: resetFilters,
     },
   },
@@ -872,6 +1368,15 @@ const sourceOptions = computed(() => [
   { label: 'Все площадки', value: 'all' },
   ...sources.value.map((source) => ({ label: source.title, value: source.code })),
 ])
+
+const analysisOptions: FilterOption[] = [
+  { label: 'Любой сигнал', value: '' },
+  { label: 'Зеленый: интересный лот', value: 'green' },
+  { label: 'Желтый: считать детальнее', value: 'yellow' },
+  { label: 'Оранжевый: срочно', value: 'orange' },
+  { label: 'Красный: слабый интерес / юрист', value: 'red' },
+  { label: 'Серый: неполные данные / исключение', value: 'gray' },
+]
 
 const presetOptions = computed(() => [
   { label: 'Подборки', value: '' },
@@ -900,6 +1405,7 @@ const presetDialogSubmitLabel = computed(() => {
   if (presetDialogMode.value === 'update') return 'Обновить'
   return 'Сохранить'
 })
+const analysisConfigUpdatedAt = computed(() => formatDateTime(analysisConfig.value?.updated_at ?? null))
 
 const statusOptions = computed(() => {
   return [
@@ -922,6 +1428,7 @@ const highRatingCount = computed(() => rows.value.filter((row) => row.ratingScor
 const activeFilterCount = computed(() => {
   return [
     filters.source !== DEFAULT_SERVER_FILTERS.source,
+    filters.analysisColor,
     filters.query,
     filters.status,
     filters.minPrice,
@@ -943,12 +1450,23 @@ const detailAuctionUrl = computed(() => liveAuction.value?.url || selectedAuctio
 const detailFields = computed<DetailField[]>(() => {
   if (!selectedLot.value) return []
   return makeFields([
+    ['Аналитический сигнал', selectedLot.value.analysisLabel],
+    ['Категория модели', selectedLot.value.analysisCategory],
+    ['Локация', selectedLot.value.location],
+    ['Регион', selectedLot.value.locationRegion],
+    ['Город', selectedLot.value.locationCity],
+    ['Адрес', selectedLot.value.locationAddress],
+    ['Координаты', selectedLot.value.locationCoordinates],
+    ['Ручное исключение', selectedLot.value.excludeFromAnalysis ? 'Да' : 'Нет'],
+    ['Причина исключения', selectedLot.value.exclusionReason],
     ['Площадка', selectedLot.value.sourceTitle],
     ['Аукцион', liveAuction.value?.number || selectedLot.value.auctionNumber],
     ['Публикация', liveAuction.value?.publication_date || formatDateTime(selectedLot.value.publicationDate)],
     ['Лот', liveLot.value?.number || selectedLot.value.lotNumber],
     ['Статус', liveLot.value?.status || selectedLot.value.status],
-    ['Цена', liveLot.value?.initial_price || formatCurrency(selectedLot.value.price)],
+    ['Начальная цена', liveLot.value?.initial_price || formatCurrency(selectedLot.value.initialPrice)],
+    ['Текущая цена', liveLot.value?.current_price || formatCurrency(selectedLot.value.price)],
+    ['Минимальная цена', liveLot.value?.minimum_price || formatCurrency(selectedLot.value.minimumPrice)],
     ['Организатор', liveOrganizer.value?.name || selectedLot.value.organizer],
     ['Заявки до', liveAuction.value?.application_deadline || formatDateTime(selectedLot.value.applicationDeadline)],
     ['Торги', liveAuction.value?.auction_date || formatDateTime(selectedLot.value.auctionDate)],
@@ -959,10 +1477,17 @@ const detailFields = computed<DetailField[]>(() => {
 
 const lotInfoFields = computed(() =>
   makeFields([
+    ['Локация', liveLot.value?.location],
+    ['Регион', liveLot.value?.region],
+    ['Город', liveLot.value?.city],
+    ['Адрес', liveLot.value?.address],
+    ['Координаты', liveLot.value?.coordinates],
     ['Категория', liveLot.value?.category],
     ['Классификатор ЕФРСБ', liveLot.value?.classifier],
     ['Валюта цены по ОКВ', liveLot.value?.currency],
     ['Начальная цена', liveLot.value?.initial_price],
+    ['Текущая цена', liveLot.value?.current_price],
+    ['Минимальная цена', liveLot.value?.minimum_price],
     ['Шаг, % от начальной цены', liveLot.value?.step_percent],
     ['Шаг, руб.', liveLot.value?.step_amount],
     ['Размер задатка, руб.', liveLot.value?.deposit_amount],
@@ -1026,15 +1551,18 @@ const rawAuctionFields = computed(() => normalizeRawFields(selectedAuctionDetail
 const auctionLots = computed(() => selectedAuctionDetails.value?.lots ?? [])
 const economyFields = computed(() =>
   makeFields([
-    ['Текущая цена', formatApiMoney(selectedWorkspace.value?.economy.current_price)],
-    ['Рыночная стоимость', formatApiMoney(selectedWorkspace.value?.economy.market_value)],
-    ['Полная стоимость входа', formatApiMoney(selectedWorkspace.value?.economy.full_entry_cost)],
-    ['Потенциальная прибыль', formatApiMoney(selectedWorkspace.value?.economy.potential_profit)],
-    ['ROI', formatApiPercent(selectedWorkspace.value?.economy.roi)],
-    ['Дисконт к рынку', formatApiPercent(selectedWorkspace.value?.economy.market_discount)],
-    ['Макс. цена покупки', formatApiMoney(selectedWorkspace.value?.economy.max_purchase_price)],
+    ['Текущая цена', formatApiMoney(selectedLot.value?.price ?? selectedWorkspace.value?.economy.current_price)],
+    ['Рыночная стоимость', formatApiMoney(selectedLot.value?.marketValue ?? selectedWorkspace.value?.economy.market_value)],
+    ['Все расходы', formatApiMoney(selectedLot.value?.totalExpenses ?? selectedWorkspace.value?.economy.total_expenses)],
+    ['Целевая прибыль', formatApiMoney(selectedLot.value?.targetProfit ?? selectedWorkspace.value?.economy.target_profit)],
+    ['Полная стоимость входа', formatApiMoney(selectedLot.value?.fullEntryCost ?? selectedWorkspace.value?.economy.full_entry_cost)],
+    ['Потенциальная прибыль', formatApiMoney(selectedLot.value?.potentialProfit ?? selectedWorkspace.value?.economy.potential_profit)],
+    ['ROI', formatApiPercent(selectedLot.value?.roiValue ?? selectedWorkspace.value?.economy.roi)],
+    ['Дисконт к рынку', formatApiPercent(selectedLot.value?.marketDiscount ?? selectedWorkspace.value?.economy.market_discount)],
+    ['Макс. цена покупки', formatApiMoney(selectedLot.value?.formulaMaxPurchasePrice ?? selectedWorkspace.value?.economy.max_purchase_price)],
   ]),
 )
+const analysisReasonItems = computed(() => selectedLot.value?.analysisReasons ?? [])
 const detailCachedAt = computed(() => formatDateTime(selectedWorkspace.value?.detail_cached_at ?? null))
 const ratingReasonItems = computed(() => selectedLot.value?.ratingReasons ?? [])
 const changeFields = computed(() => selectedWorkspace.value?.changes.fields ?? [])
@@ -1140,6 +1668,7 @@ function sanitizeServerFilters(value: Partial<ServerQuickFiltersState> | null | 
     hasPeriod && typeof value?.source === 'string' && value.source.trim()
       ? value.source
       : DEFAULT_SERVER_FILTERS.source
+  const analysisColor = typeof value?.analysisColor === 'string' ? value.analysisColor : DEFAULT_SERVER_FILTERS.analysisColor
   const query = typeof value?.query === 'string' ? value.query : DEFAULT_SERVER_FILTERS.query
   const status = typeof value?.status === 'string' ? value.status : DEFAULT_SERVER_FILTERS.status
   const minPrice = typeof value?.minPrice === 'string' ? value.minPrice : DEFAULT_SERVER_FILTERS.minPrice
@@ -1153,6 +1682,7 @@ function sanitizeServerFilters(value: Partial<ServerQuickFiltersState> | null | 
   return {
     period,
     source,
+    analysisColor,
     query,
     status,
     minPrice,
@@ -1241,7 +1771,7 @@ function buildLotsUrl() {
     persisted: 'true',
   })
 
-  return `/api/v1/auctions/lots?${params.toString()}`
+  return buildAppPath(`/api/v1/auctions/lots?${params.toString()}`)
 }
 
 async function loadLots() {
@@ -1267,6 +1797,8 @@ async function loadLots() {
     sources.value = data.available_sources
     gridRowRevision.value = nextRevision
     allRows.value = mappedRows
+    savedGridWorkSnapshots.clear()
+    mappedRows.forEach(rememberGridWorkSnapshot)
     lastLoadedAt.value = new Date().toLocaleString('ru-RU')
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : 'Не удалось загрузить лоты'
@@ -1278,6 +1810,7 @@ async function loadLots() {
 
 function matchesQuickFilters(row: GridLotRow) {
   if (filters.source !== 'all' && row.source !== filters.source) return false
+  if (filters.analysisColor && row.analysisColor !== filters.analysisColor) return false
   if (filters.status && row.status !== filters.status) return false
   if (filters.onlyNew && !row.isNew) return false
   if (filters.shortlist && row.ratingScore < 85 && !SHORTLIST_DECISIONS.has(row.workDecisionStatus)) return false
@@ -1291,7 +1824,23 @@ function matchesQuickFilters(row: GridLotRow) {
 
   const query = filters.query.trim().toLowerCase()
   if (query) {
-    const haystack = [row.lotName, row.auctionNumber, row.lotNumber, row.organizer, row.status, row.sourceTitle]
+    const haystack = [
+      row.lotName,
+      row.location,
+      row.locationRegion,
+      row.locationCity,
+      row.locationAddress,
+      row.locationCoordinates,
+      row.auctionNumber,
+      row.lotNumber,
+      row.organizer,
+      row.status,
+      row.sourceTitle,
+      row.analysisLabel,
+      row.analysisCategory,
+      row.sourceCategory,
+      row.exclusionReason,
+    ]
       .join(' ')
       .toLowerCase()
     if (!haystack.includes(query)) return false
@@ -1308,9 +1857,15 @@ function parseFilterNumber(value: string) {
 }
 
 function mapApiRow(row: ApiLotRow, rowRevision = gridRowRevision.value): GridLotRow {
-  return {
+  return recomputeGridEconomyFields({
     id: row.row_id,
     rowRevision,
+    analysisStatus: row.analysis.status,
+    analysisColor: row.analysis.color,
+    analysisLabel: row.analysis.label,
+    analysisCategory: row.analysis.category ?? '',
+    analysisReasons: row.analysis.reasons,
+    sourceCategory: row.category ?? '',
     source: row.source,
     sourceTitle: row.source_title,
     auctionId: row.auction_id ?? '',
@@ -1319,8 +1874,32 @@ function mapApiRow(row: ApiLotRow, rowRevision = gridRowRevision.value): GridLot
     lotId: row.lot_id ?? '',
     lotNumber: row.lot_number ?? '',
     lotName: row.lot_name ?? '',
+    location: row.location ?? '',
+    locationRegion: row.location_region ?? '',
+    locationCity: row.location_city ?? '',
+    locationAddress: row.location_address ?? '',
+    locationCoordinates: row.location_coordinates ?? '',
     status: row.status ?? '',
-    price: parseNumber(row.initial_price_value),
+    initialPrice: parseNumber(row.initial_price_value),
+    price: parseNumber(row.current_price_value ?? row.initial_price_value),
+    minimumPrice: parseNumber(row.minimum_price_value),
+    marketValue: parseNumber(row.market_value),
+    platformFee: parseNumber(row.platform_fee) ?? 0,
+    deliveryCost: parseNumber(row.delivery_cost) ?? 0,
+    dismantlingCost: parseNumber(row.dismantling_cost) ?? 0,
+    repairCost: parseNumber(row.repair_cost) ?? 0,
+    storageCost: parseNumber(row.storage_cost) ?? 0,
+    legalCost: parseNumber(row.legal_cost) ?? 0,
+    otherCosts: parseNumber(row.other_costs) ?? 0,
+    targetProfit: parseNumber(row.target_profit) ?? 0,
+    totalExpenses: parseNumber(row.total_expenses),
+    fullEntryCost: parseNumber(row.full_entry_cost),
+    potentialProfit: parseNumber(row.potential_profit),
+    roiValue: parseNumber(row.roi),
+    marketDiscount: parseNumber(row.market_discount),
+    formulaMaxPurchasePrice: parseNumber(row.formula_max_purchase_price),
+    excludeFromAnalysis: row.exclude_from_analysis,
+    exclusionReason: row.exclusion_reason ?? '',
     organizer: row.organizer_name ?? '',
     applicationDeadline: parseDateTime(row.application_deadline),
     auctionDate: parseDateTime(row.auction_date),
@@ -1333,7 +1912,7 @@ function mapApiRow(row: ApiLotRow, rowRevision = gridRowRevision.value): GridLot
     workDecisionStatus: row.work_decision_status ?? '',
     lotUrl: row.lot_url ?? '',
     auctionUrl: row.auction_url ?? '',
-  }
+  })
 }
 
 function applyWorkspaceRow(row: ApiLotRow) {
@@ -1342,9 +1921,203 @@ function applyWorkspaceRow(row: ApiLotRow) {
   const nextRevision = existingRow ? existingRow.rowRevision + 1 : gridRowRevision.value + 1
   gridRowRevision.value = Math.max(gridRowRevision.value, nextRevision)
   const mapped = mapApiRow(row, nextRevision)
-  selectedLot.value = mapped
+  if (selectedLot.value?.id === mapped.id) {
+    selectedLot.value = mapped
+  }
+  if (selectedWorkspace.value?.row.row_id === row.row_id) {
+    selectedWorkspace.value = {
+      ...selectedWorkspace.value,
+      row,
+    }
+  }
   if (index >= 0) {
     allRows.value = allRows.value.map((existing) => (existing.id === mapped.id ? mapped : existing))
+  }
+  rememberGridWorkSnapshot(mapped)
+}
+
+function recomputeGridEconomyFields(row: GridLotRow) {
+  const totalExpenses: number = [
+    row.platformFee,
+    row.deliveryCost,
+    row.dismantlingCost,
+    row.repairCost,
+    row.storageCost,
+    row.legalCost,
+    row.otherCosts,
+  ].reduce<number>((sum, value) => sum + (value ?? 0), 0)
+  row.totalExpenses = totalExpenses
+  row.fullEntryCost = row.price === null ? null : row.price + totalExpenses
+  row.potentialProfit = row.marketValue === null || row.fullEntryCost === null ? null : row.marketValue - row.fullEntryCost
+  row.roiValue = row.potentialProfit === null || !row.fullEntryCost ? null : row.potentialProfit / row.fullEntryCost
+  row.marketDiscount = row.marketValue && row.price !== null ? 1 - row.price / row.marketValue : null
+  row.formulaMaxPurchasePrice = row.marketValue === null ? null : row.marketValue - totalExpenses - (row.targetProfit ?? 0)
+  return row
+}
+
+function snapshotGridWorkState(row: GridLotRow): GridWorkSnapshot {
+  return {
+    marketValue: row.marketValue,
+    platformFee: row.platformFee,
+    deliveryCost: row.deliveryCost,
+    dismantlingCost: row.dismantlingCost,
+    repairCost: row.repairCost,
+    storageCost: row.storageCost,
+    legalCost: row.legalCost,
+    otherCosts: row.otherCosts,
+    targetProfit: row.targetProfit,
+    excludeFromAnalysis: row.excludeFromAnalysis,
+    exclusionReason: row.exclusionReason.trim(),
+  }
+}
+
+function serializeGridWorkState(row: GridLotRow) {
+  return JSON.stringify(snapshotGridWorkState(row))
+}
+
+function rememberGridWorkSnapshot(row: GridLotRow) {
+  savedGridWorkSnapshots.set(row.id, serializeGridWorkState(row))
+}
+
+function buildGridWorkPayload(row: GridLotRow) {
+  return {
+    market_value: row.marketValue,
+    platform_fee: row.platformFee,
+    delivery_cost: row.deliveryCost,
+    dismantling_cost: row.dismantlingCost,
+    repair_cost: row.repairCost,
+    storage_cost: row.storageCost,
+    legal_cost: row.legalCost,
+    other_costs: row.otherCosts,
+    target_profit: row.targetProfit,
+    exclude_from_analysis: row.excludeFromAnalysis,
+    exclusion_reason: row.exclusionReason.trim() || null,
+  }
+}
+
+function normalizeGridRowPatch(row: Partial<GridLotRow>) {
+  const normalized: Partial<GridLotRow> = { ...row }
+  for (const key of EDITABLE_GRID_NUMERIC_KEYS) {
+    if (key in normalized) {
+      const parsed = parseNumber((normalized[key] as string | number | null | undefined) ?? null)
+      normalized[key] = (ZERO_DEFAULT_GRID_NUMERIC_KEY_SET.has(key)
+        ? parsed ?? 0
+        : parsed) as GridLotRow[typeof key]
+    }
+  }
+  if ('excludeFromAnalysis' in normalized) {
+    normalized.excludeFromAnalysis = Boolean(normalized.excludeFromAnalysis)
+  }
+  if ('exclusionReason' in normalized) {
+    normalized.exclusionReason = typeof normalized.exclusionReason === 'string' ? normalized.exclusionReason : ''
+  }
+  return normalized
+}
+
+function extractChangedGridRows(payload: unknown) {
+  if (!payload || typeof payload !== 'object') {
+    return [] as Partial<GridLotRow>[]
+  }
+
+  const snapshot = (payload as { snapshot?: { rows?: unknown[] } }).snapshot
+  const rows = Array.isArray(snapshot?.rows) ? snapshot.rows : []
+
+  return rows.flatMap((entry) => {
+    if (!entry || typeof entry !== 'object') {
+      return []
+    }
+
+    const record = entry as Record<string, unknown>
+    const candidate =
+      record.data && typeof record.data === 'object'
+        ? (record.data as Partial<GridLotRow>)
+        : record.row && typeof record.row === 'object'
+          ? (record.row as Partial<GridLotRow>)
+          : (record as Partial<GridLotRow>)
+
+    return typeof candidate.id === 'string' ? [normalizeGridRowPatch(candidate)] : []
+  })
+}
+
+function handleGridCellChange(payload: unknown) {
+  const changedRows = extractChangedGridRows(payload)
+  if (!changedRows.length) {
+    return
+  }
+
+  const changedById = new Map(changedRows.map((row) => [row.id, row]))
+  let didChange = false
+
+  const nextRows = allRows.value.map((existingRow) => {
+    const rowPatch = changedById.get(existingRow.id)
+    if (!rowPatch) {
+      return existingRow
+    }
+
+    const previousSnapshot = savedGridWorkSnapshots.get(existingRow.id)
+    const nextRow = recomputeGridEconomyFields({
+      ...existingRow,
+      ...rowPatch,
+    })
+    const snapshot = serializeGridWorkState(nextRow)
+
+    didChange = true
+    const revisedRow = {
+      ...nextRow,
+      rowRevision: existingRow.rowRevision + 1,
+    }
+
+    if (selectedLot.value?.id === revisedRow.id) {
+      selectedLot.value = revisedRow
+    }
+
+    if (previousSnapshot !== snapshot) {
+      queueGridRowSave(revisedRow.id)
+    }
+
+    return revisedRow
+  })
+
+  if (didChange) {
+    allRows.value = nextRows
+  }
+}
+
+function queueGridRowSave(rowId: string) {
+  const existingTimer = pendingGridSaveTimers.get(rowId)
+  if (existingTimer) {
+    clearTimeout(existingTimer)
+  }
+  const timer = window.setTimeout(() => {
+    pendingGridSaveTimers.delete(rowId)
+    void saveGridRow(rowId)
+  }, 450)
+  pendingGridSaveTimers.set(rowId, timer)
+}
+
+async function saveGridRow(rowId: string) {
+  const row = allRows.value.find((item) => item.id === rowId)
+  if (!row?.lotId) return
+  try {
+    backgroundStatus.value = `Сохраняю экономику лота ${row.lotNumber || row.id}`
+    const params = new URLSearchParams()
+    if (row.auctionId) params.set('auction_id', row.auctionId)
+    const workspace = await fetchJson<LotWorkspaceResponse>(
+      buildAppPath(`/api/v1/auctions/${row.source}/lots/${encodeURIComponent(row.lotId)}/workspace?${params.toString()}`),
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(buildGridWorkPayload(row)),
+      },
+    )
+    if (selectedLot.value?.id === rowId) {
+      selectedWorkspace.value = workspace
+      hydrateWorkDraft(workspace.work_item)
+    }
+    applyWorkspaceRow(workspace.row)
+    backgroundStatus.value = `Экономика обновлена: ${row.lotNumber || row.id}`
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : 'Не удалось сохранить изменения из таблицы'
   }
 }
 
@@ -1427,7 +2200,7 @@ async function loadPresets() {
 
   presetsLoading.value = true
   try {
-    presets.value = sortPresets(await fetchJson<FilterPreset[]>('/api/v1/filter-presets'))
+    presets.value = sortPresets(await fetchJson<FilterPreset[]>(buildAppPath('/api/v1/filter-presets')))
     if (selectedPresetId.value && !presets.value.some((preset) => preset.id === selectedPresetId.value)) {
       selectedPresetId.value = ''
     }
@@ -1452,8 +2225,12 @@ async function applyPresetById(presetId: string) {
   const preset = presets.value.find((item) => item.id === presetId)
   if (!preset) return
 
-  Object.assign(filters, sanitizeServerFilters(preset.filters))
-  await loadLots()
+  const nextFilters = sanitizeServerFilters(preset.filters)
+  const shouldReload = filters.period !== nextFilters.period
+  Object.assign(filters, nextFilters)
+  if (shouldReload) {
+    await loadLots()
+  }
   await nextTick()
   writeGridSavedView(preset.grid_view)
 }
@@ -1469,6 +2246,124 @@ function sortPresets(items: FilterPreset[]) {
 
 function setPresetDialogInitialRef(element: Element | ComponentPublicInstance | null) {
   presetDialogInitialRef.value = element as HTMLElement | null
+}
+
+function setAnalysisConfigDialogInitialRef(element: Element | ComponentPublicInstance | null) {
+  analysisConfigDialogInitialRef.value = element as HTMLElement | null
+}
+
+function createAnalysisConfigDraftRule(category = '', keywords: string[] = []): AnalysisConfigDraftRule {
+  analysisConfigRuleSeed += 1
+  return {
+    id: analysisConfigRuleSeed,
+    category,
+    keywordsText: keywords.join('\n'),
+  }
+}
+
+function resetAnalysisConfigDraft() {
+  analysisConfigDraft.categoryRules = []
+  analysisConfigDraft.exclusionKeywordsText = ''
+  analysisConfigDraft.highRiskKeywordsText = ''
+  analysisConfigDraft.mediumRiskKeywordsText = ''
+  analysisConfigDraft.mediumRiskCategoriesText = ''
+}
+
+function applyAnalysisConfigDraft(config: AnalysisConfigResponse) {
+  analysisConfigDraft.categoryRules = config.category_rules.map((rule) =>
+    createAnalysisConfigDraftRule(rule.category, rule.keywords),
+  )
+  analysisConfigDraft.exclusionKeywordsText = config.exclusion_keywords.join('\n')
+  analysisConfigDraft.highRiskKeywordsText = config.legal_risk_rules.high_keywords.join('\n')
+  analysisConfigDraft.mediumRiskKeywordsText = config.legal_risk_rules.medium_keywords.join('\n')
+  analysisConfigDraft.mediumRiskCategoriesText = config.legal_risk_rules.medium_categories.join('\n')
+}
+
+function addAnalysisConfigCategoryRule() {
+  analysisConfigDraft.categoryRules = [...analysisConfigDraft.categoryRules, createAnalysisConfigDraftRule()]
+}
+
+function removeAnalysisConfigCategoryRule(ruleId: number) {
+  analysisConfigDraft.categoryRules = analysisConfigDraft.categoryRules.filter((rule) => rule.id !== ruleId)
+}
+
+function splitAnalysisConfigLines(value: string) {
+  const seen = new Set<string>()
+  return value
+    .split(/[\n,;]+/)
+    .map((item) => item.trim())
+    .filter((item) => {
+      const normalized = item.toLowerCase()
+      if (!normalized || seen.has(normalized)) return false
+      seen.add(normalized)
+      return true
+    })
+}
+
+function buildAnalysisConfigPayload() {
+  return {
+    category_rules: analysisConfigDraft.categoryRules
+      .map((rule) => ({
+        category: rule.category.trim(),
+        keywords: splitAnalysisConfigLines(rule.keywordsText),
+      }))
+      .filter((rule) => rule.category),
+    exclusion_keywords: splitAnalysisConfigLines(analysisConfigDraft.exclusionKeywordsText),
+    legal_risk_rules: {
+      high_keywords: splitAnalysisConfigLines(analysisConfigDraft.highRiskKeywordsText),
+      medium_keywords: splitAnalysisConfigLines(analysisConfigDraft.mediumRiskKeywordsText),
+      medium_categories: splitAnalysisConfigLines(analysisConfigDraft.mediumRiskCategoriesText),
+    },
+  }
+}
+
+async function loadAnalysisConfig() {
+  if (!isAuthenticated.value) return
+
+  analysisConfigLoading.value = true
+  analysisConfigError.value = ''
+  try {
+    analysisConfig.value = await fetchJson<AnalysisConfigResponse>(buildAppPath('/api/v1/auctions/analysis-config'))
+    if (analysisConfig.value) {
+      applyAnalysisConfigDraft(analysisConfig.value)
+    }
+  } catch (error) {
+    analysisConfigError.value = error instanceof Error ? error.message : 'Не удалось загрузить конфиг анализа'
+  } finally {
+    analysisConfigLoading.value = false
+  }
+}
+
+function openAnalysisConfigDialog(event?: Event) {
+  analysisConfigDialogTriggerRef.value = event?.currentTarget as HTMLElement | null
+  analysisConfigError.value = ''
+  if (analysisConfig.value) {
+    applyAnalysisConfigDraft(analysisConfig.value)
+  } else {
+    resetAnalysisConfigDraft()
+  }
+  analysisConfigDialog.open('trigger')
+  void loadAnalysisConfig()
+}
+
+async function submitAnalysisConfigDialog() {
+  analysisConfigSaving.value = true
+  analysisConfigError.value = ''
+  try {
+    analysisConfig.value = await fetchJson<AnalysisConfigResponse>(buildAppPath('/api/v1/auctions/analysis-config'), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(buildAnalysisConfigPayload()),
+    })
+    if (analysisConfig.value) {
+      applyAnalysisConfigDraft(analysisConfig.value)
+    }
+    await analysisConfigDialog.close('programmatic')
+  } catch (error) {
+    analysisConfigError.value = error instanceof Error ? error.message : 'Не удалось сохранить конфиг анализа'
+  } finally {
+    analysisConfigSaving.value = false
+  }
 }
 
 function openCreatePresetDialog(event?: Event) {
@@ -1508,7 +2403,7 @@ async function submitPresetDialog() {
 
   if (presetDialogMode.value === 'update' && selectedPreset.value) {
     try {
-      const preset = await fetchJson<FilterPreset>(`/api/v1/filter-presets/${selectedPreset.value.id}`, {
+      const preset = await fetchJson<FilterPreset>(buildAppPath(`/api/v1/filter-presets/${selectedPreset.value.id}`), {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(buildPresetPayload(nextName)),
@@ -1523,7 +2418,7 @@ async function submitPresetDialog() {
   }
 
   try {
-    const preset = await fetchJson<FilterPreset>('/api/v1/filter-presets', {
+    const preset = await fetchJson<FilterPreset>(buildAppPath('/api/v1/filter-presets'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(buildPresetPayload(nextName)),
@@ -1540,7 +2435,7 @@ async function confirmDeletePreset() {
   if (!selectedPreset.value) return
 
   try {
-    await fetchJson(`/api/v1/filter-presets/${selectedPreset.value.id}`, {
+    await fetchJson(buildAppPath(`/api/v1/filter-presets/${selectedPreset.value.id}`), {
       method: 'DELETE',
     })
     presets.value = presets.value.filter((preset) => preset.id !== selectedPreset.value?.id)
@@ -1559,16 +2454,59 @@ function hydrateWorkDraft(workItem: LotWorkItem | null) {
   resetWorkDraft()
   if (!workItem) return
 
-  for (const key of Object.keys(workDraft) as Array<keyof WorkDraft>) {
-    const value = workItem[key as keyof LotWorkItem]
-    workDraft[key] = value === null || value === undefined ? '' : String(value)
-  }
+  workDraft.decision_status = workItem.decision_status ?? ''
+  workDraft.assignee = workItem.assignee ?? ''
+  workDraft.comment = workItem.comment ?? ''
+  workDraft.inspection_at = workItem.inspection_at ?? ''
+  workDraft.inspection_result = workItem.inspection_result ?? ''
+  workDraft.final_decision = workItem.final_decision ?? ''
+  workDraft.investor = workItem.investor ?? ''
+  workDraft.deposit_status = workItem.deposit_status ?? ''
+  workDraft.application_status = workItem.application_status ?? ''
+  workDraft.exclude_from_analysis = workItem.exclude_from_analysis === true
+  workDraft.exclusion_reason = workItem.exclusion_reason ?? ''
+  workDraft.category_override = workItem.category_override ?? ''
+  workDraft.market_value = normalizeDraftNumber(workItem.market_value)
+  workDraft.platform_fee = normalizeDraftNumber(workItem.platform_fee)
+  workDraft.delivery_cost = normalizeDraftNumber(workItem.delivery_cost)
+  workDraft.dismantling_cost = normalizeDraftNumber(workItem.dismantling_cost)
+  workDraft.repair_cost = normalizeDraftNumber(workItem.repair_cost)
+  workDraft.storage_cost = normalizeDraftNumber(workItem.storage_cost)
+  workDraft.legal_cost = normalizeDraftNumber(workItem.legal_cost)
+  workDraft.other_costs = normalizeDraftNumber(workItem.other_costs)
+  workDraft.target_profit = normalizeDraftNumber(workItem.target_profit)
 }
 
 function buildWorkPayload() {
-  return Object.fromEntries(
-    Object.entries(workDraft).map(([key, value]) => [key, value.trim() ? value.trim() : null]),
-  )
+  return {
+    decision_status: workDraft.decision_status.trim() || null,
+    assignee: workDraft.assignee.trim() || null,
+    comment: workDraft.comment.trim() || null,
+    inspection_at: workDraft.inspection_at.trim() || null,
+    inspection_result: workDraft.inspection_result.trim() || null,
+    final_decision: workDraft.final_decision.trim() || null,
+    investor: workDraft.investor.trim() || null,
+    deposit_status: workDraft.deposit_status.trim() || null,
+    application_status: workDraft.application_status.trim() || null,
+    exclude_from_analysis: workDraft.exclude_from_analysis,
+    exclusion_reason: workDraft.exclusion_reason.trim() || null,
+    category_override: workDraft.category_override.trim() || null,
+    market_value: parseFilterNumber(workDraft.market_value),
+    platform_fee: parseFilterNumber(workDraft.platform_fee),
+    delivery_cost: parseFilterNumber(workDraft.delivery_cost),
+    dismantling_cost: parseFilterNumber(workDraft.dismantling_cost),
+    repair_cost: parseFilterNumber(workDraft.repair_cost),
+    storage_cost: parseFilterNumber(workDraft.storage_cost),
+    legal_cost: parseFilterNumber(workDraft.legal_cost),
+    other_costs: parseFilterNumber(workDraft.other_costs),
+    target_profit: parseFilterNumber(workDraft.target_profit),
+  }
+}
+
+function normalizeDraftNumber(value: string | number | null | undefined) {
+  if (value === null || value === undefined || value === '') return ''
+  const parsed = parseNumber(value)
+  return parsed === null ? '' : String(parsed)
 }
 
 async function openLotDetails(row: GridLotRow) {
@@ -1587,7 +2525,7 @@ async function openLotDetails(row: GridLotRow) {
     const params = new URLSearchParams()
     if (row.auctionId) params.set('auction_id', row.auctionId)
     const workspace = await fetchJson<LotWorkspaceResponse>(
-      `/api/v1/auctions/${row.source}/lots/${encodeURIComponent(row.lotId)}/workspace?${params.toString()}`,
+      buildAppPath(`/api/v1/auctions/${row.source}/lots/${encodeURIComponent(row.lotId)}/workspace?${params.toString()}`),
     )
 
     if (requestId !== detailRequestId) return
@@ -1639,7 +2577,7 @@ async function saveWorkItem() {
     const params = new URLSearchParams()
     if (selectedLot.value.auctionId) params.set('auction_id', selectedLot.value.auctionId)
     const workspace = await fetchJson<LotWorkspaceResponse>(
-      `/api/v1/auctions/${selectedLot.value.source}/lots/${encodeURIComponent(selectedLot.value.lotId)}/workspace?${params.toString()}`,
+      buildAppPath(`/api/v1/auctions/${selectedLot.value.source}/lots/${encodeURIComponent(selectedLot.value.lotId)}/workspace?${params.toString()}`),
       {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -1677,6 +2615,14 @@ function stopDetailResize() {
 }
 
 function handleGlobalKeydown(event: KeyboardEvent) {
+  if (analysisConfigDialog.snapshot.value.isOpen) {
+    if (['Escape', 'Esc'].includes(event.key)) {
+      event.preventDefault()
+      event.stopPropagation()
+      void analysisConfigDialog.close('escape-key')
+    }
+    return
+  }
   if (presetDialog.snapshot.value.isOpen) {
     if (['Escape', 'Esc'].includes(event.key)) {
       event.preventDefault()
@@ -1699,12 +2645,8 @@ function resetFilters() {
   }
 }
 
-function applyQuickFilters() {
-  persistServerFilters()
-}
-
 function subscribeToAuctionEvents() {
-  const events = new EventSource('/api/v1/auctions/events')
+  const events = new EventSource(buildAppPath('/api/v1/auctions/events'))
 
   events.addEventListener('sync.started', (event) => {
     const data = JSON.parse((event as MessageEvent).data)
@@ -1716,6 +2658,28 @@ function subscribeToAuctionEvents() {
     const payload = data.payload
     backgroundStatus.value = `Фоново обновлено: ${payload.source}, новых ${payload.created}, изменено ${payload.updated}`
     void loadLots()
+  })
+
+  events.addEventListener('analysis.started', () => {
+    backgroundStatus.value = 'Фоновая аналитика пересчитывает сигналы и рейтинг'
+  })
+
+  events.addEventListener('analysis.completed', (event) => {
+    const data = JSON.parse((event as MessageEvent).data)
+    const payload = data.payload
+    backgroundStatus.value = `Аналитика обновлена: обработано ${payload.processed}, изменено ${payload.updated}`
+  })
+
+  events.addEventListener('analysis.failed', () => {
+    backgroundStatus.value = 'Ошибка фоновой аналитики'
+  })
+
+  events.addEventListener('lot.row_updated', (event) => {
+    const data = JSON.parse((event as MessageEvent).data)
+    const row = data.payload?.row as ApiLotRow | undefined
+    if (row) {
+      applyWorkspaceRow(row)
+    }
   })
 
   events.addEventListener('sync.failed', (event) => {
@@ -1770,6 +2734,8 @@ onUnmounted(() => {
   stopDetailResize()
   document.removeEventListener('keydown', handleGlobalKeydown, true)
   stopAuctionEvents()
+  pendingGridSaveTimers.forEach((timer) => clearTimeout(timer))
+  pendingGridSaveTimers.clear()
 })
 </script>
 
@@ -1783,6 +2749,7 @@ onUnmounted(() => {
       </div>
       <div class="toolbar-actions">
         <div class="preset-toolbar">
+          <button class="secondary-button" type="button" @click="openAnalysisConfigDialog">Настроить анализ</button>
           <AffinoCombobox
             id="preset-selector"
             class="preset-toolbar__select"
@@ -1832,7 +2799,7 @@ onUnmounted(() => {
     <p v-if="errorMessage" class="error-banner">{{ errorMessage }}</p>
 
     <section class="grid-surface" :aria-busy="loading">
-      <div v-if="loading" class="loading-state" role="status" aria-live="polite">
+      <div v-if="loading && allRows.length === 0" class="loading-state" role="status" aria-live="polite">
         <div class="table-skeleton" :style="{ '--skeleton-columns': loadingSkeletonTemplate }">
           <div class="table-skeleton__toolbar">
             <span class="table-skeleton__status">Загружаю лоты</span>
@@ -1860,11 +2827,15 @@ onUnmounted(() => {
           </div>
         </div>
       </div>
+      <div v-else-if="loading" class="loading-state loading-state--overlay" role="status" aria-live="polite">
+        <span class="loading-state__chip">Обновляю данные каталога</span>
+      </div>
       <DataGrid
-        v-else
+        v-if="!loading || allRows.length > 0"
         ref="gridRef"
         :rows="rows"
         :columns="columns"
+        :base-row-height="26"
         :client-row-model-options="publicClientRowModelOptions"
         :toolbar-modules="toolbarModules"
         :theme="workspaceDataGridTheme"
@@ -1873,8 +2844,10 @@ onUnmounted(() => {
         :advanced-filter="advancedFilterOptions"
         :column-layout="columnLayoutOptions"
         layout-mode="fill"
+        :row-selection="false"
         :chrome="{ toolbarPlacement: 'integrated', density: 'compact', toolbarGap: 0, workspaceGap: 8 }"
         :history="{ controls: false }"
+        @cell-change="handleGridCellChange"
         @update:state="persistGridSavedView"
       />
     </section>
@@ -1904,8 +2877,18 @@ onUnmounted(() => {
           <strong>{{ selectedLot.ratingScore }}</strong>
           <span>{{ selectedLot.ratingLevel }}</span>
           <RatingInfoTooltip :reasons="ratingReasonItems" />
+          <span :class="['analysis-pill', `analysis-pill--${selectedLot.analysisColor || 'yellow'}`]">
+            {{ selectedLot.analysisLabel }}
+          </span>
           <mark v-if="selectedLot.isNew">Новый</mark>
         </div>
+
+        <section v-if="analysisReasonItems.length" class="detail-section">
+          <span class="eyebrow">Анализ модели</span>
+          <ul class="detail-bullet-list">
+            <li v-for="reason in analysisReasonItems" :key="reason">{{ reason }}</li>
+          </ul>
+        </section>
 
         <div v-if="detailLoading" class="detail-live-status" role="status" aria-live="polite">
           <span class="detail-live-status__spinner" aria-hidden="true"></span>
@@ -1940,16 +2923,48 @@ onUnmounted(() => {
               <input v-model="workDraft.market_value" type="number" min="0" step="1000" />
             </label>
             <label>
-              <span>Макс. покупка</span>
-              <input v-model="workDraft.max_purchase_price" type="number" min="0" step="1000" />
+              <span>Комиссия ЭТП</span>
+              <input v-model="workDraft.platform_fee" type="number" min="0" step="1000" />
             </label>
             <label>
               <span>Доставка</span>
               <input v-model="workDraft.delivery_cost" type="number" min="0" step="1000" />
             </label>
             <label>
+              <span>Демонтаж</span>
+              <input v-model="workDraft.dismantling_cost" type="number" min="0" step="1000" />
+            </label>
+            <label>
               <span>Ремонт</span>
               <input v-model="workDraft.repair_cost" type="number" min="0" step="1000" />
+            </label>
+            <label>
+              <span>Хранение</span>
+              <input v-model="workDraft.storage_cost" type="number" min="0" step="1000" />
+            </label>
+            <label>
+              <span>Юрист</span>
+              <input v-model="workDraft.legal_cost" type="number" min="0" step="1000" />
+            </label>
+            <label>
+              <span>Прочие расходы</span>
+              <input v-model="workDraft.other_costs" type="number" min="0" step="1000" />
+            </label>
+            <label>
+              <span>Целевая прибыль</span>
+              <input v-model="workDraft.target_profit" type="number" min="0" step="1000" />
+            </label>
+            <label>
+              <span>Категория override</span>
+              <input v-model="workDraft.category_override" type="text" />
+            </label>
+            <label class="work-grid__wide work-grid__toggle-field">
+              <span>Ручное исключение</span>
+              <input v-model="workDraft.exclude_from_analysis" type="checkbox" />
+            </label>
+            <label class="work-grid__wide">
+              <span>Причина исключения</span>
+              <input v-model="workDraft.exclusion_reason" type="text" />
             </label>
             <label class="work-grid__wide">
               <span>Комментарий</span>
@@ -2206,6 +3221,143 @@ onUnmounted(() => {
                 @click="void submitPresetDialog()"
               >
                 {{ presetDialogSubmitLabel }}
+              </button>
+            </footer>
+          </div>
+        </div>
+      </transition>
+    </Teleport>
+
+    <Teleport to="#affino-dialog-host">
+      <transition name="dialog-layer">
+        <div
+          v-if="analysisConfigDialog.snapshot.value.isOpen"
+          class="app-dialog-layer"
+          @click.self="void analysisConfigDialog.close('backdrop')"
+        >
+          <div
+            ref="analysisConfigDialogRef"
+            class="app-dialog app-dialog--wide"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="analysis-config-dialog-title"
+            tabindex="-1"
+          >
+            <header class="app-dialog__header">
+              <div>
+                <span class="eyebrow">Анализ</span>
+                <h2 id="analysis-config-dialog-title">Правила категорий и риска</h2>
+              </div>
+              <button
+                :ref="analysisConfigLoading ? setAnalysisConfigDialogInitialRef : undefined"
+                class="icon-button"
+                type="button"
+                aria-label="Закрыть окно"
+                @click="void analysisConfigDialog.close('programmatic')"
+              >
+                ×
+              </button>
+            </header>
+
+            <div class="app-dialog__body app-dialog__body--scroll">
+              <p class="app-dialog__text">
+                Здесь редактируются категории, исключения и правила юридического риска без изменения backend-кода.
+              </p>
+              <p v-if="analysisConfigUpdatedAt" class="app-dialog__meta">Последнее обновление: {{ analysisConfigUpdatedAt }}</p>
+              <p v-if="analysisConfigError" class="error-banner error-banner--inline">{{ analysisConfigError }}</p>
+
+              <div v-if="analysisConfigLoading" class="detail-muted">Загружаю актуальный конфиг анализа</div>
+              <template v-else>
+                <section class="analysis-config-section">
+                  <div class="analysis-config-section__header">
+                    <div>
+                      <span class="eyebrow">Категории</span>
+                      <p class="analysis-config-section__hint">Порядок важен: категория назначается по первому совпавшему правилу.</p>
+                    </div>
+                    <button class="secondary-button" type="button" @click="addAnalysisConfigCategoryRule">Добавить категорию</button>
+                  </div>
+
+                  <div v-if="analysisConfigDraft.categoryRules.length" class="analysis-config-editor">
+                    <article
+                      v-for="(rule, index) in analysisConfigDraft.categoryRules"
+                      :key="rule.id"
+                      class="analysis-config-rule"
+                    >
+                      <div class="analysis-config-rule__row">
+                        <label class="app-dialog__field">
+                          <span>Категория</span>
+                          <input
+                            :ref="index === 0 ? setAnalysisConfigDialogInitialRef : undefined"
+                            v-model="rule.category"
+                            type="text"
+                            maxlength="160"
+                            placeholder="Например, Спецтехника"
+                          />
+                        </label>
+                        <button
+                          class="icon-button analysis-config-rule__remove"
+                          type="button"
+                          aria-label="Удалить категорию"
+                          @click="removeAnalysisConfigCategoryRule(rule.id)"
+                        >
+                          ×
+                        </button>
+                      </div>
+                      <label class="app-dialog__field">
+                        <span>Ключевые слова</span>
+                        <textarea
+                          v-model="rule.keywordsText"
+                          rows="5"
+                          placeholder="Одно ключевое слово или фраза на строку"
+                        ></textarea>
+                      </label>
+                    </article>
+                  </div>
+                  <div v-else class="detail-muted">Категории пока не заданы. Добавь хотя бы одно правило.</div>
+                </section>
+
+                <section class="analysis-config-section analysis-config-section--grid">
+                  <label class="app-dialog__field">
+                    <span>Исключения</span>
+                    <textarea
+                      :ref="analysisConfigDraft.categoryRules.length === 0 ? setAnalysisConfigDialogInitialRef : undefined"
+                      v-model="analysisConfigDraft.exclusionKeywordsText"
+                      rows="7"
+                      placeholder="Слова или фразы, по которым лот исключается из анализа"
+                    ></textarea>
+                  </label>
+                  <label class="app-dialog__field">
+                    <span>Высокий юридический риск</span>
+                    <textarea
+                      v-model="analysisConfigDraft.highRiskKeywordsText"
+                      rows="7"
+                      placeholder="Маркер высокого риска, одно значение на строку"
+                    ></textarea>
+                  </label>
+                  <label class="app-dialog__field">
+                    <span>Средний юридический риск</span>
+                    <textarea
+                      v-model="analysisConfigDraft.mediumRiskKeywordsText"
+                      rows="7"
+                      placeholder="Маркер среднего риска, одно значение на строку"
+                    ></textarea>
+                  </label>
+                  <label class="app-dialog__field">
+                    <span>Категории среднего риска</span>
+                    <textarea
+                      v-model="analysisConfigDraft.mediumRiskCategoriesText"
+                      rows="7"
+                      placeholder="Например, Земля и базы"
+                    ></textarea>
+                  </label>
+                </section>
+              </template>
+            </div>
+
+            <footer class="app-dialog__footer">
+              <button class="secondary-button" type="button" @click="void analysisConfigDialog.close('programmatic')">Отмена</button>
+              <button class="primary-button" type="button" :disabled="analysisConfigLoading || analysisConfigSaving" @click="void submitAnalysisConfigDialog()">
+                {{ analysisConfigSaving ? 'Сохраняю' : 'Сохранить конфиг' }}
               </button>
             </footer>
           </div>

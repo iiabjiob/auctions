@@ -13,7 +13,6 @@ export type AuthSession = {
 export type AuthPublicConfig = {
   default_user_enabled: boolean
   default_user_email: string | null
-  default_user_password: string | null
 }
 
 export type LoginInput = {

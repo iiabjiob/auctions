@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_current_user
 from app.infrastructure.db.database import get_db
 from app.models import UserModel
+from app.schemas.analysis_config import AuctionAnalysisConfigResponse, AuctionAnalysisConfigUpdate
 from app.schemas.auctions import (
     AuctionDetailResponse,
     AuctionListResponse,
@@ -21,6 +22,7 @@ from app.schemas.auctions import (
     LotWorkspaceResponse,
 )
 from app.services.auction_catalog import list_lots_for_datagrid, list_persisted_lots_for_datagrid
+from app.services.auction_analysis_config import auction_analysis_config_service
 from app.services.auction_sources import get_source_provider, list_source_infos
 from app.services.auction_workspace import get_lot_workspace, update_lot_work_item
 from app.infrastructure.redis.streams import read_auction_events
@@ -46,6 +48,23 @@ def _format_sse(event: dict) -> str:
 @router.get("/sources", response_model=list[AuctionSourceInfo])
 async def get_auction_sources() -> list[AuctionSourceInfo]:
     return list_source_infos()
+
+
+@router.get("/analysis-config", response_model=AuctionAnalysisConfigResponse)
+async def get_auction_analysis_config(
+    session: AsyncSession = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
+) -> AuctionAnalysisConfigResponse:
+    return await auction_analysis_config_service.get(session)
+
+
+@router.patch("/analysis-config", response_model=AuctionAnalysisConfigResponse)
+async def patch_auction_analysis_config(
+    payload: AuctionAnalysisConfigUpdate,
+    session: AsyncSession = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
+) -> AuctionAnalysisConfigResponse:
+    return await auction_analysis_config_service.update(session, payload)
 
 
 @router.get("/lots", response_model=LotDatagridResponse)

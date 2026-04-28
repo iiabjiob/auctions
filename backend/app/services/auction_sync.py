@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.models.auction import AuctionLotDetailCache, AuctionLotObservation, AuctionLotRecord, AuctionSourceState
 from app.schemas.auctions import AuctionListItem, SourceSyncResult
+from app.services.auction_analysis_config import auction_analysis_config_service
 from app.services.auction_catalog import build_datagrid_row
 from app.services.auction_sources import get_source_provider
 from app.services.auction_workspace import ensure_lot_detail_cache, ensure_work_item, recalculate_record_rating
@@ -35,6 +36,7 @@ async def sync_source_lots(session: AsyncSession, *, source: str, limit: int = 1
     source_info = provider.info()
     fetched_items = await asyncio.to_thread(provider.list_lots, limit)
     now = datetime.now(UTC)
+    runtime_config = await auction_analysis_config_service.get_runtime_config(session)
 
     source_state = await session.get(AuctionSourceState, source_info.code)
     if source_state is None:
@@ -109,6 +111,7 @@ async def sync_source_lots(session: AsyncSession, *, source: str, limit: int = 1
                 detail_sync_count=detail_sync_count,
                 refresh=True,
                 observed_at=now,
+                runtime_config=runtime_config,
             )
             continue
 
@@ -150,6 +153,7 @@ async def sync_source_lots(session: AsyncSession, *, source: str, limit: int = 1
                 detail_sync_count=detail_sync_count,
                 refresh=True,
                 observed_at=now,
+                runtime_config=runtime_config,
             )
         else:
             result.unchanged += 1
@@ -159,6 +163,7 @@ async def sync_source_lots(session: AsyncSession, *, source: str, limit: int = 1
                 detail_sync_count=detail_sync_count,
                 refresh=False,
                 observed_at=now,
+                runtime_config=runtime_config,
             )
 
     await session.commit()
@@ -174,6 +179,7 @@ async def _sync_detail_if_needed(
     detail_sync_count: int,
     refresh: bool,
     observed_at: datetime,
+    runtime_config: object,
 ) -> int:
     if not settings.auction_detail_sync_enabled:
         return detail_sync_count
@@ -183,7 +189,14 @@ async def _sync_detail_if_needed(
     detail_cache = await ensure_lot_detail_cache(session, record, refresh=refresh)
     _apply_record_freshness(record, observed_at=observed_at, published_at=_publication_datetime_from_detail_cache(detail_cache))
     work_item = await ensure_work_item(session, record)
-    recalculate_record_rating(record, detail_cache, work_item)
+    recalculate_record_rating(
+        record,
+        detail_cache,
+        work_item,
+        category_keywords=runtime_config.category_keywords,
+        exclusion_keywords=runtime_config.exclusion_keywords,
+        legal_risk_rules=runtime_config.legal_risk_rules,
+    )
     return detail_sync_count + 1
 
 
