@@ -3,6 +3,12 @@ from __future__ import annotations
 from typing import Protocol
 
 from app.schemas.auctions import AuctionDetailResponse, AuctionListItem, AuctionSourceInfo, LotDetailResponse
+from app.services.fabrikant_scraper import (
+    fetch_auction_detail as fetch_fabrikant_auction_detail,
+    fetch_auction_list as fetch_fabrikant_auction_list,
+    fetch_auction_publication_date as fetch_fabrikant_auction_publication_date,
+    fetch_lot_detail as fetch_fabrikant_lot_detail,
+)
 from app.services.utender_scraper import (
     fetch_auction_detail,
     fetch_auction_list,
@@ -53,7 +59,29 @@ class UtenderSourceProvider:
         return fetch_auction_publication_date(auction_id)
 
 
+class FabrikantSourceProvider:
+    code = "fabrikant"
+    title = "Fabrikant"
+    website = "https://www.fabrikant.ru"
+
+    def info(self) -> AuctionSourceInfo:
+        return AuctionSourceInfo(code=self.code, title=self.title, website=self.website)
+
+    def list_lots(self, limit: int | None = None) -> list[AuctionListItem]:
+        return fetch_fabrikant_auction_list(limit=limit)
+
+    def get_lot(self, lot_id: str) -> LotDetailResponse:
+        return fetch_fabrikant_lot_detail(lot_id)
+
+    def get_auction(self, auction_id: str) -> AuctionDetailResponse:
+        return fetch_fabrikant_auction_detail(auction_id)
+
+    def get_auction_publication_date(self, auction_id: str) -> str | None:
+        return fetch_fabrikant_auction_publication_date(auction_id)
+
+
 SOURCE_PROVIDERS: dict[str, AuctionSourceProvider] = {
+    FabrikantSourceProvider.code: FabrikantSourceProvider(),
     UtenderSourceProvider.code: UtenderSourceProvider(),
 }
 
