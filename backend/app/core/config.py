@@ -48,6 +48,8 @@ class Settings(BaseSettings):
     auction_events_stream: str = "auction:events"
     auction_sync_interval_seconds: int = 300
     auction_sync_limit: int = 0
+    auction_sync_commit_chunk_size: int = 25
+    auction_sync_progress_log_every: int = 25
     auction_detail_sync_enabled: bool = True
     auction_detail_sync_limit: int = 25
     auction_publication_sync_limit: int = 0

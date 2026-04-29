@@ -39,6 +39,8 @@ async def sync_source_lots(session: AsyncSession, *, source: str, limit: int = 1
     fetched_items = await asyncio.to_thread(provider.list_lots, limit)
     now = datetime.now(UTC)
     runtime_config = await auction_analysis_config_service.get_runtime_config(session)
+    commit_chunk_size = max(1, settings.auction_sync_commit_chunk_size)
+    progress_log_every = max(1, settings.auction_sync_progress_log_every)
 
     source_state = await session.get(AuctionSourceState, source_info.code)
     if source_state is None:
@@ -64,10 +66,13 @@ async def sync_source_lots(session: AsyncSession, *, source: str, limit: int = 1
         status_changed=0,
     )
     detail_sync_count = 0
+    processed_items = 0
 
     for source_position, item in enumerate(fetched_items, start=1):
         if not item.auction.external_id or not item.lot.external_id:
             continue
+
+        processed_items += 1
 
         snapshot = _prepare_snapshot(item, source_info.title)
         snapshot.datagrid_row["source_position"] = source_position
@@ -170,9 +175,40 @@ async def sync_source_lots(session: AsyncSession, *, source: str, limit: int = 1
                 runtime_config=runtime_config,
             )
 
+        if processed_items % progress_log_every == 0:
+            logger.info(
+                "Sync progress for %s: %s/%s processed, created=%s, updated=%s, unchanged=%s, details=%s",
+                source_info.code,
+                processed_items,
+                result.fetched,
+                result.created,
+                result.updated,
+                result.unchanged,
+                detail_sync_count,
+            )
+
+        if processed_items % commit_chunk_size == 0:
+            await session.commit()
+            logger.info(
+                "Sync chunk committed for %s: %s/%s processed",
+                source_info.code,
+                processed_items,
+                result.fetched,
+            )
+
     await session.commit()
     await _backfill_publication_dates(session, source_code=source_info.code, observed_at=now)
     await session.commit()
+    logger.info(
+        "Sync finished for %s: fetched=%s, created=%s, updated=%s, unchanged=%s, status_changed=%s, details=%s",
+        source_info.code,
+        result.fetched,
+        result.created,
+        result.updated,
+        result.unchanged,
+        result.status_changed,
+        detail_sync_count,
+    )
     return result
 
 
