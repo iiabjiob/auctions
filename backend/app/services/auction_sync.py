@@ -36,7 +36,6 @@ class PreparedLotSnapshot:
 async def sync_source_lots(session: AsyncSession, *, source: str, limit: int = 100) -> SourceSyncResult:
     provider = get_source_provider(source)
     source_info = provider.info()
-    fetched_items = await asyncio.to_thread(provider.list_lots, limit)
     now = datetime.now(UTC)
     runtime_config = await auction_analysis_config_service.get_runtime_config(session)
     commit_chunk_size = max(1, settings.auction_sync_commit_chunk_size)
@@ -59,7 +58,7 @@ async def sync_source_lots(session: AsyncSession, *, source: str, limit: int = 1
 
     result = SourceSyncResult(
         source=source_info.code,
-        fetched=len(fetched_items),
+        fetched=0,
         created=0,
         updated=0,
         unchanged=0,
@@ -68,10 +67,16 @@ async def sync_source_lots(session: AsyncSession, *, source: str, limit: int = 1
     detail_sync_count = 0
     processed_items = 0
 
-    for source_position, item in enumerate(fetched_items, start=1):
+    if hasattr(provider, "iter_lots"):
+        items_iterable = provider.iter_lots(limit)
+    else:
+        items_iterable = await asyncio.to_thread(provider.list_lots, limit)
+
+    for source_position, item in enumerate(items_iterable, start=1):
         if not item.auction.external_id or not item.lot.external_id:
             continue
 
+        result.fetched += 1
         processed_items += 1
 
         snapshot = _prepare_snapshot(item, source_info.title)
@@ -84,6 +89,7 @@ async def sync_source_lots(session: AsyncSession, *, source: str, limit: int = 1
             auction_external_id=item.auction.external_id,
             lot_external_id=item.lot.external_id,
         )
+
         if record is None:
             is_new = _is_new_record(published_at=publication_at, observed_at=now)
             record = AuctionLotRecord(
@@ -122,58 +128,57 @@ async def sync_source_lots(session: AsyncSession, *, source: str, limit: int = 1
                 observed_at=now,
                 runtime_config=runtime_config,
             )
-            continue
-
-        publication_at = publication_at or _publication_datetime_from_row(record.datagrid_row)
-
-        status_changed = record.status != item.lot.status
-        content_changed = record.content_hash != snapshot.content_hash
-        status_changed_at = now if status_changed else record.status_changed_at
-        record.is_new = _is_new_record(published_at=publication_at, observed_at=now)
-
-        record.last_seen_at = now
-        record.auction_number = item.auction.number
-        record.lot_number = item.lot.number
-        record.lot_name = item.lot.name
-        record.status = item.lot.status
-        record.initial_price = item.lot.initial_price
-        record.rating_score = snapshot.datagrid_row["rating"]["score"]
-        record.rating_level = snapshot.datagrid_row["rating"]["level"]
-        record.datagrid_row = _with_freshness(
-            snapshot.datagrid_row,
-            first_seen_at=record.first_seen_at,
-            last_seen_at=now,
-            status_changed_at=status_changed_at,
-            is_new=record.is_new,
-            published_at=publication_at,
-        )
-        record.normalized_item = snapshot.normalized_item
-
-        if status_changed:
-            record.status_changed_at = now
-            result.status_changed += 1
-        if content_changed:
-            record.content_hash = snapshot.content_hash
-            result.updated += 1
-            await _add_observation(session, record, snapshot)
-            detail_sync_count = await _sync_detail_if_needed(
-                session,
-                record,
-                detail_sync_count=detail_sync_count,
-                refresh=True,
-                observed_at=now,
-                runtime_config=runtime_config,
-            )
         else:
-            result.unchanged += 1
-            detail_sync_count = await _sync_detail_if_needed(
-                session,
-                record,
-                detail_sync_count=detail_sync_count,
-                refresh=False,
-                observed_at=now,
-                runtime_config=runtime_config,
+            publication_at = publication_at or _publication_datetime_from_row(record.datagrid_row)
+
+            status_changed = record.status != item.lot.status
+            content_changed = record.content_hash != snapshot.content_hash
+            status_changed_at = now if status_changed else record.status_changed_at
+            record.is_new = _is_new_record(published_at=publication_at, observed_at=now)
+
+            record.last_seen_at = now
+            record.auction_number = item.auction.number
+            record.lot_number = item.lot.number
+            record.lot_name = item.lot.name
+            record.status = item.lot.status
+            record.initial_price = item.lot.initial_price
+            record.rating_score = snapshot.datagrid_row["rating"]["score"]
+            record.rating_level = snapshot.datagrid_row["rating"]["level"]
+            record.datagrid_row = _with_freshness(
+                snapshot.datagrid_row,
+                first_seen_at=record.first_seen_at,
+                last_seen_at=now,
+                status_changed_at=status_changed_at,
+                is_new=record.is_new,
+                published_at=publication_at,
             )
+            record.normalized_item = snapshot.normalized_item
+
+            if status_changed:
+                record.status_changed_at = now
+                result.status_changed += 1
+            if content_changed:
+                record.content_hash = snapshot.content_hash
+                result.updated += 1
+                await _add_observation(session, record, snapshot)
+                detail_sync_count = await _sync_detail_if_needed(
+                    session,
+                    record,
+                    detail_sync_count=detail_sync_count,
+                    refresh=True,
+                    observed_at=now,
+                    runtime_config=runtime_config,
+                )
+            else:
+                result.unchanged += 1
+                detail_sync_count = await _sync_detail_if_needed(
+                    session,
+                    record,
+                    detail_sync_count=detail_sync_count,
+                    refresh=False,
+                    observed_at=now,
+                    runtime_config=runtime_config,
+                )
 
         if processed_items % progress_log_every == 0:
             logger.info(

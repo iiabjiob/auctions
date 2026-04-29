@@ -609,12 +609,35 @@ def fetch_auction_list(
     auth_email: str | None = None,
     auth_password: str | None = None,
 ) -> list[AuctionListItem]:
+    return list(
+        iter_auction_list(
+            limit=limit,
+            include_price_schedule=include_price_schedule,
+            page=page,
+            pages=pages,
+            authenticate=authenticate,
+            auth_email=auth_email,
+            auth_password=auth_password,
+        )
+    )
+
+
+def iter_auction_list(
+    limit: int | None = 20,
+    *,
+    include_price_schedule: bool = True,
+    page: int = 1,
+    pages: int | None = 1,
+    authenticate: bool = False,
+    auth_email: str | None = None,
+    auth_password: str | None = None,
+):
     if authenticate:
         ensure_authenticated(email=auth_email, password=auth_password)
     if pages is not None and pages <= 0:
         pages = None
 
-    items: list[AuctionListItem] = []
+    yielded = 0
     page_number = page
     last_page: int | None = None
     while True:
@@ -634,15 +657,15 @@ def fetch_auction_list(
             )
             if item is None:
                 continue
-            items.append(item)
-            if limit is not None and len(items) >= limit:
-                return items
+            yield item
+            yielded += 1
+            if limit is not None and yielded >= limit:
+                return
         if pages is not None and page_number >= page + pages - 1:
             break
         if pages is None and last_page is not None and page_number >= last_page:
             break
         page_number += 1
-    return items
 
 
 def fetch_lot_detail(
