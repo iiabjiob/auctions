@@ -249,8 +249,16 @@ def _lot_details_from_detail_cache(detail_cache: AuctionLotDetailCache | None) -
         return {}
     payload = detail_cache.lot_detail or {}
     lot = payload.get("lot") or {}
+    raw_fields = payload.get("raw_fields") or []
+    cadastral_market_value = _raw_field_value(
+        raw_fields,
+        "Кадастровая стоимость",
+        "Кадастровая стоимость объекта",
+        "Кадастровая стоимость имущества",
+        "Кадастровая стоимость на дату оценки",
+    )
     return {
-        "category": _clean_text(lot.get("category")) or _raw_field_value(payload.get("raw_fields") or [], "Категория площадки", "Категория"),
+        "category": _clean_text(lot.get("category")) or _raw_field_value(raw_fields, "Категория площадки", "Категория"),
         "location": _clean_text(lot.get("location")),
         "location_region": _clean_text(lot.get("region")),
         "location_city": _clean_text(lot.get("city")),
@@ -259,6 +267,7 @@ def _lot_details_from_detail_cache(detail_cache: AuctionLotDetailCache | None) -
         "initial_price": _clean_text(lot.get("initial_price")),
         "current_price": _clean_text(lot.get("current_price")),
         "minimum_price": _clean_text(lot.get("minimum_price")),
+        "market_value": _clean_text(lot.get("market_value")) or _clean_text(cadastral_market_value),
     }
 
 

@@ -19,8 +19,17 @@ async def sync_all_sources() -> None:
         await publish_auction_event("sync.started", {"source": source_code})
         try:
             sync_limit = settings.auction_sync_limit if settings.auction_sync_limit > 0 else None
+
+            async def publish_sync_progress(payload: dict) -> None:
+                await publish_auction_event("sync.progress", payload)
+
             async with AsyncSessionLocal() as session:
-                result = await sync_source_lots(session, source=source_code, limit=sync_limit)
+                result = await sync_source_lots(
+                    session,
+                    source=source_code,
+                    limit=sync_limit,
+                    on_progress=publish_sync_progress,
+                )
             await publish_auction_event("sync.completed", result.model_dump(mode="json"))
             logger.info("Synced source %s: %s", source_code, result.model_dump(mode="json"))
         except Exception as error:

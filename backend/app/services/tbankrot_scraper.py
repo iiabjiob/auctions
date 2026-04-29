@@ -200,6 +200,19 @@ def _extract_market_value(card_html: str) -> str | None:
     return _first_text(card_html, r'<span[^>]*>\s*Рын\.цена:\s*</span>\s*<span[^>]*>(.*?)</span>')
 
 
+def _normalize_money_text(value: str | None) -> str | None:
+    if not value:
+        return None
+    normalized = _normalize_text(value)
+    if not normalized:
+        return None
+    if "₽" in normalized or "руб" in normalized.lower():
+        return normalized
+    if re.search(r"\d", normalized):
+        return f"{normalized} ₽"
+    return None
+
+
 def _extract_initial_price(card_html: str, current_price: str | None) -> str | None:
     prices = [_strip_tags(match.group(1)) for match in re.finditer(r'<(?:span|p)[^>]*>([\d\s\xa0]+,[\d]{2}\s*₽)</(?:span|p)>', card_html)]
     prices = [price for price in prices if price]
@@ -460,6 +473,21 @@ def _raw_field_values(fields: list[ScrapedField], *names: str) -> list[str]:
     return values
 
 
+def _extract_cadastral_market_value(fields: list[ScrapedField], category: str | None, title: str | None) -> str | None:
+    real_estate_text = " ".join(filter(None, [category, title, _raw_field_value(fields, "Категория площадки", "Категория")])).lower()
+    if real_estate_text and not re.search(r"квартир|помещен|здани|дом|земель|участ|недвиж|комнат|гараж|машино-мест", real_estate_text):
+        return None
+
+    cadastral_value = _raw_field_value(
+        fields,
+        "Кадастровая стоимость",
+        "Кадастровая стоимость объекта",
+        "Кадастровая стоимость имущества",
+        "Кадастровая стоимость на дату оценки",
+    )
+    return _normalize_money_text(cadastral_value)
+
+
 def _extract_application_dates(html: str, label: str) -> tuple[str | None, str | None]:
     pattern = rf'<span\s+class="gray">\s*{re.escape(label)}:\s*</span>\s*с\s*<span\s+class="date">(.*?)</span>\s*<span\s+class="time">(.*?)</span>\s*до\s*<span\s+class="date">(.*?)</span>\s*<span\s+class="time">(.*?)</span>'
     match = re.search(pattern, html, re.IGNORECASE | re.DOTALL)
@@ -694,6 +722,7 @@ def fetch_lot_detail(
     arbitration_manager = _extract_detail_arbitration_manager(html)
     inspection_order = _raw_field_value(raw_fields, "Порядок ознакомления")
     platform_category = _raw_field_value(raw_fields, "Категория площадки", "Категория") or _extract_category(html)
+    market_value = _extract_cadastral_market_value(raw_fields, platform_category, title)
     inn_values = _raw_field_values(raw_fields, "ИНН")
     debtor_inn = _extract_input_value(html, "debtor_inn") or (inn_values[0] if inn_values else None)
     organizer_inn = inn_values[1] if len(inn_values) > 1 else None
@@ -726,6 +755,7 @@ def fetch_lot_detail(
             initial_price=_first_text(html, r'<div\s+class="start_price"[^>]*>.*?<span\s+class="sum ajax"[^>]*>(.*?)</span>'),
             current_price=_first_text(html, r'<p\s+class="green semibold"[^>]*>(.*?)</p>'),
             minimum_price=_first_text(html, r'<p\s+class="red semibold"[^>]*>(.*?)</p>'),
+            market_value=market_value,
             description=lot_text,
             inspection_order=inspection_order,
             images=images,

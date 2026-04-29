@@ -263,7 +263,19 @@ def _hydrate_row_from_detail_cache(row: LotDatagridRow, detail_cache: AuctionLot
         return
     lot_detail = detail_cache.lot_detail or {}
     lot = lot_detail.get("lot") or {}
-    row.category = row.category or lot.get("category") or _raw_field_value(lot_detail.get("raw_fields") or [], "Категория площадки", "Категория")
+    raw_fields = lot_detail.get("raw_fields") or []
+    row.category = row.category or lot.get("category") or _raw_field_value(raw_fields, "Категория площадки", "Категория")
+    if row.market_value is None:
+        row.market_value = parse_price(
+            lot.get("market_value")
+            or _raw_field_value(
+                raw_fields,
+                "Кадастровая стоимость",
+                "Кадастровая стоимость объекта",
+                "Кадастровая стоимость имущества",
+                "Кадастровая стоимость на дату оценки",
+            )
+        )
     for payload in (detail_cache.auction_detail or {}, lot_detail):
         auction = payload.get("auction") or {}
         row.application_deadline = row.application_deadline or auction.get("application_deadline")

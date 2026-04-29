@@ -3052,6 +3052,13 @@ function subscribeToAuctionEvents() {
     scheduleLotsReload()
   })
 
+  events.addEventListener('sync.progress', (event) => {
+    const data = JSON.parse((event as MessageEvent).data)
+    const payload = data.payload
+    backgroundStatus.value = `Фоновое обновление: ${payload.source} · ${payload.processed}/${payload.fetched} · новых ${payload.created}`
+    scheduleLotsReload()
+  })
+
   events.addEventListener('analysis.started', () => {
     backgroundStatus.value = 'Фоновая аналитика пересчитывает сигналы и рейтинг'
   })

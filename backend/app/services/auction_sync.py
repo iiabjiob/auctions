@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -31,9 +32,13 @@ class PreparedLotSnapshot:
     datagrid_row: dict
     normalized_item: dict
     content_hash: str
-
-
-async def sync_source_lots(session: AsyncSession, *, source: str, limit: int = 100) -> SourceSyncResult:
+async def sync_source_lots(
+    session: AsyncSession,
+    *,
+    source: str,
+    limit: int = 100,
+    on_progress: Callable[[dict], Awaitable[None]] | None = None,
+) -> SourceSyncResult:
     provider = get_source_provider(source)
     source_info = provider.info()
     now = datetime.now(UTC)
@@ -200,6 +205,14 @@ async def sync_source_lots(session: AsyncSession, *, source: str, limit: int = 1
                 processed_items,
                 result.fetched,
             )
+            if on_progress is not None:
+                await on_progress(
+                    {
+                        **result.model_dump(mode="json"),
+                        "processed": processed_items,
+                        "details_synced": detail_sync_count,
+                    }
+                )
 
     await session.commit()
     await _backfill_publication_dates(session, source_code=source_info.code, observed_at=now)
