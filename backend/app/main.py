@@ -1,7 +1,6 @@
 import asyncio
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.health.router import router as health_router
 from app.api.v1.auth.router import router as auth_router
@@ -15,7 +14,6 @@ from sqlalchemy import text
 
 from app.core.config import get_settings
 from app.core.logger import get_logger
-from app.services.auth import auth_service
 
 
 settings = get_settings()
@@ -43,19 +41,12 @@ async def check_database_connection(max_attempts: int = 10, base_delay: float = 
             await asyncio.sleep(base_delay * attempt)
 
 
-async def ensure_default_user() -> None:
-    async with AsyncSessionLocal() as session:
-        assert isinstance(session, AsyncSession)
-        await auth_service.ensure_default_user(session)
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("🚀 Starting FastAPI application...")
 
     # Healthchecks
     # await check_database_connection()
-    await ensure_default_user()
 
     try:
         yield

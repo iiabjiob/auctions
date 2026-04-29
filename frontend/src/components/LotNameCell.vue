@@ -7,7 +7,7 @@ type LotNameCellRow = {
   isNew: boolean
 }
 
-const props = defineProps<{
+defineProps<{
   row: LotNameCellRow
   label: string
 }>()

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -19,8 +20,9 @@ from app.services.auction_workspace import ensure_lot_detail_cache, ensure_work_
 
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 NEWNESS_WINDOW_DAYS = 3
-SCRAPED_DATETIME_FORMATS = ("%d.%m.%Y %H:%M", "%d.%m.%Y")
+SCRAPED_DATETIME_FORMATS = ("%d.%m.%Y %H:%M", "%d.%m.%Y", "%d/%m/%Y %H:%M", "%d/%m/%Y")
 
 
 @dataclass(slots=True)
@@ -63,11 +65,13 @@ async def sync_source_lots(session: AsyncSession, *, source: str, limit: int = 1
     )
     detail_sync_count = 0
 
-    for item in fetched_items:
+    for source_position, item in enumerate(fetched_items, start=1):
         if not item.auction.external_id or not item.lot.external_id:
             continue
 
         snapshot = _prepare_snapshot(item, source_info.title)
+        snapshot.datagrid_row["source_position"] = source_position
+        snapshot.normalized_item["source_position"] = source_position
         publication_at = _publication_datetime_from_item(item)
         record = await _find_lot_record(
             session,
@@ -186,7 +190,11 @@ async def _sync_detail_if_needed(
     if detail_sync_count >= settings.auction_detail_sync_limit:
         return detail_sync_count
 
-    detail_cache = await ensure_lot_detail_cache(session, record, refresh=refresh)
+    try:
+        detail_cache = await ensure_lot_detail_cache(session, record, refresh=refresh)
+    except NotImplementedError:
+        logger.info("Detail sync is not implemented for source %s", record.source_code)
+        return detail_sync_count
     _apply_record_freshness(record, observed_at=observed_at, published_at=_publication_datetime_from_detail_cache(detail_cache))
     work_item = await ensure_work_item(session, record)
     recalculate_record_rating(

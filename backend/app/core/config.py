@@ -54,6 +54,16 @@ class Settings(BaseSettings):
     auction_analysis_enabled: bool = True
     auction_analysis_interval_seconds: int = 180
     auction_analysis_batch_size: int = 500
+    auction_analysis_commit_chunk_size: int = 25
+    auction_analysis_event_chunk_size: int = 25
+    auction_analysis_event_pause_seconds: float = 0.05
+
+    # ---- TBankrot ----
+    tbankrot_auth_enabled: bool = False
+    tbankrot_login: str | None = None
+    tbankrot_password: str | None = None
+    tbankrot_pages: int = 3
+    tbankrot_include_price_schedule: bool = True
 
     # ---- Database URL ----
     @property

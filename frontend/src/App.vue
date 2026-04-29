@@ -8,6 +8,7 @@ import {
   type DataGridAppClientRowModelOptions,
   type DataGridAppColumnInput,
   type DataGridExposed,
+  type DataGridSavedViewSnapshot,
   readDataGridSavedViewFromStorage,
   writeDataGridSavedViewToStorage,
 } from '@affino/datagrid-vue-app'
@@ -34,6 +35,24 @@ type ApiSource = {
   enabled: boolean
 }
 
+type ApiLotImage = {
+  url: string
+  thumbnail_url: string | null
+  alt: string | null
+  source: string | null
+}
+
+type DetailImage = {
+  url: string
+  thumbnailUrl: string
+  name: string | null
+}
+
+type ApiPriceScheduleStep = {
+  starts_at: string
+  price: string
+}
+
 type ApiLotRow = {
   row_id: string
   source: string
@@ -46,6 +65,7 @@ type ApiLotRow = {
   lot_id: string | null
   lot_number: string | null
   lot_name: string | null
+  lot_description: string | null
   lot_url: string | null
   category: string | null
   location: string | null
@@ -53,6 +73,7 @@ type ApiLotRow = {
   location_city: string | null
   location_address: string | null
   location_coordinates: string | null
+  debtor_name: string | null
   model_category: string | null
   status: string | null
   initial_price: string | null
@@ -61,6 +82,10 @@ type ApiLotRow = {
   current_price_value: string | number | null
   minimum_price: string | null
   minimum_price_value: string | number | null
+  price_schedule: ApiPriceScheduleStep[]
+  images: ApiLotImage[]
+  primary_image_url: string | null
+  image_count: number
   organizer_name: string | null
   application_deadline: string | null
   auction_date: string | null
@@ -179,6 +204,7 @@ type ApiLotSummary = {
   initial_price: string | null
   current_price: string | null
   minimum_price: string | null
+  market_value: string | null
   status: string | null
   step_percent: string | null
   step_amount: string | null
@@ -190,6 +216,8 @@ type ApiLotSummary = {
   applications_count: string | null
   description: string | null
   inspection_order: string | null
+  images: ApiLotImage[]
+  primary_image_url: string | null
 }
 
 type LotDetailResponse = {
@@ -197,6 +225,8 @@ type LotDetailResponse = {
   url: string
   auction: ApiAuctionSummary
   lot: ApiLotSummary
+  organizer: ApiOrganizer | null
+  debtor: ApiDebtor | null
   documents: ApiDocument[]
   raw_fields: ApiField[]
   raw_tables: string[][]
@@ -337,25 +367,28 @@ type GridLotRow = {
   analysisLabel: string
   analysisCategory: string
   analysisReasons: string[]
-  sourceCategory: string
   source: string
   sourceTitle: string
   auctionId: string
   auctionNumber: string
+  auctionName: string
   publicationDate: Date | null
   lotId: string
   lotNumber: string
   lotName: string
+  lotDescription: string
   location: string
   locationRegion: string
   locationCity: string
   locationAddress: string
   locationCoordinates: string
+  debtorName: string
   status: string
   initialPrice: number | null
   price: number | null
   minimumPrice: number | null
   marketValue: number | null
+  priceSchedule: ApiPriceScheduleStep[]
   platformFee: number | null
   deliveryCost: number | null
   dismantlingCost: number | null
@@ -384,6 +417,22 @@ type GridLotRow = {
   workDecisionStatus: string
   lotUrl: string
   auctionUrl: string
+  images: ApiLotImage[]
+  primaryImageUrl: string
+  imageCount: number
+}
+type GridApi = NonNullable<ReturnType<DataGridExposed<GridLotRow>['getApi']>>
+type GridSelectionSnapshot = ReturnType<GridApi['selection']['getSnapshot']>
+type GridSelectionPoint = NonNullable<NonNullable<GridSelectionSnapshot>['activeCell']>
+
+type GridFocusAnchor = {
+  selectionSnapshot: GridSelectionSnapshot
+  activeCell: GridSelectionPoint | null
+  logicalRowId: string | null
+  rowId: string | number | null
+  columnIndex: number | null
+  columnKey: string | null
+  element: HTMLElement | null
 }
 
 type FilterOption = {
@@ -472,7 +521,8 @@ const selectedLotDetails = ref<LotDetailResponse | null>(null)
 const selectedAuctionDetails = ref<AuctionDetailResponse | null>(null)
 const selectedWorkspace = ref<LotWorkspaceResponse | null>(null)
 const detailLoading = ref(false)
-const workSaving = ref(false)
+const projectedRowsForSummary = ref<GridLotRow[]>([])
+const gridSummaryReady = ref(false)
 const DETAIL_PANE_WIDTH_STORAGE_KEY = 'auction-detail-pane-width'
 const GRID_SAVED_VIEW_STORAGE_KEY = 'auction-grid-saved-view-v2'
 const SERVER_FILTERS_STORAGE_KEY = 'auction-server-filters'
@@ -482,15 +532,21 @@ const DETAIL_PANE_MIN_WIDTH = 420
 const DETAIL_PANE_MAX_WIDTH = 980
 const detailPaneWidth = ref(readStoredDetailPaneWidth())
 const gridRef = ref<DataGridExposed<GridLotRow> | null>(null)
+const gridSurfaceRef = ref<HTMLElement | null>(null)
 const gridSavedViewRestored = ref(false)
 const gridRowRevision = ref(0)
 let resizeStartX = 0
 let resizeStartWidth = 0
 let detailRequestId = 0
+let detailGridFocusAnchor: GridFocusAnchor | null = null
+const queuedRowUpdates = new Map<string, ApiLotRow>()
+let rowUpdateFrame: number | null = null
+let deferredLotsReloadTimer: ReturnType<typeof window.setTimeout> | null = null
+let gridSummaryFrame: number | null = null
 
 const DEFAULT_SERVER_FILTERS: ServerQuickFiltersState = {
   period: 'month',
-  source: 'all',
+  source: 'tbankrot',
   analysisColor: '',
   query: '',
   status: '',
@@ -583,6 +639,7 @@ type GridWorkSnapshot = {
 
 const savedGridWorkSnapshots = new Map<string, string>()
 const pendingGridSaveTimers = new Map<string, ReturnType<typeof window.setTimeout>>()
+const optimisticGridRows = new Map<string, GridLotRow>()
 
 const workDraft = reactive<WorkDraft>(emptyWorkDraft())
 const emptyAnalysisConfigDraft = (): AnalysisConfigDraft => ({
@@ -1290,8 +1347,12 @@ const typedColumns: DataGridAppColumnInput<GridLotRow>[] = [
 
 const columns = typedColumns as unknown as DataGridAppColumnInput[]
 
+function resolveClientGridRowId(row: Pick<GridLotRow, 'id'>) {
+  return row.id
+}
+
 const clientRowModelOptions = {
-  resolveRowId: (row) => `${row.id}:${row.rowRevision}`,
+  resolveRowId: resolveClientGridRowId,
 } satisfies DataGridAppClientRowModelOptions<GridLotRow>
 
 const publicClientRowModelOptions = clientRowModelOptions as DataGridAppClientRowModelOptions<unknown>
@@ -1363,10 +1424,7 @@ const periodOptions: FilterOption[] = [
   { label: 'Год', value: 'year' },
 ]
 
-const sourceOptions = computed(() => [
-  { label: 'Все площадки', value: 'all' },
-  ...sources.value.map((source) => ({ label: source.title, value: source.code })),
-])
+const sourceOptions = computed(() => sources.value.map((source) => ({ label: source.title, value: source.code })))
 
 const analysisOptions: FilterOption[] = [
   { label: 'Любой сигнал', value: '' },
@@ -1416,14 +1474,15 @@ const statusOptions = computed(() => {
 })
 
 const rows = computed(() => allRows.value.filter(matchesQuickFilters))
-const totalRows = computed(() => rows.value.length)
+const summaryRows = computed(() => (gridSummaryReady.value ? projectedRowsForSummary.value : rows.value))
+const totalRows = computed(() => summaryRows.value.length)
 const loadedRowsCount = computed(() => allRows.value.length)
-const activeCount = computed(() =>
-  rows.value.filter((row) => row.status.toLowerCase().includes('прием') || row.status.toLowerCase().includes('приём'))
+const openApplicationsCount = computed(() =>
+  summaryRows.value.filter((row) => row.status.toLowerCase().includes('прием') || row.status.toLowerCase().includes('приём'))
     .length,
 )
-const newCount = computed(() => rows.value.filter((row) => row.isNew).length)
-const highRatingCount = computed(() => rows.value.filter((row) => row.ratingScore >= 75).length)
+const newCount = computed(() => summaryRows.value.filter((row) => row.isNew).length)
+const highRatingCount = computed(() => summaryRows.value.filter((row) => row.ratingScore >= 75).length)
 const activeFilterCount = computed(() => {
   return [
     filters.source !== DEFAULT_SERVER_FILTERS.source,
@@ -1441,8 +1500,8 @@ const activeFilterCount = computed(() => {
 const detailTitle = computed(() => selectedLotDetails.value?.lot.name || selectedLot.value?.lotName || 'Без названия')
 const liveAuction = computed(() => selectedAuctionDetails.value?.auction ?? selectedLotDetails.value?.auction ?? null)
 const liveLot = computed(() => selectedLotDetails.value?.lot ?? null)
-const liveOrganizer = computed(() => selectedAuctionDetails.value?.organizer ?? null)
-const liveDebtor = computed(() => selectedAuctionDetails.value?.debtor ?? null)
+const liveOrganizer = computed(() => selectedLotDetails.value?.organizer ?? selectedAuctionDetails.value?.organizer ?? null)
+const liveDebtor = computed(() => selectedLotDetails.value?.debtor ?? selectedAuctionDetails.value?.debtor ?? null)
 const detailLotUrl = computed(() => selectedLotDetails.value?.lot.url || selectedLotDetails.value?.url || selectedLot.value?.lotUrl || '')
 const detailAuctionUrl = computed(() => liveAuction.value?.url || selectedAuctionDetails.value?.url || selectedLot.value?.auctionUrl || '')
 
@@ -1450,7 +1509,9 @@ const detailFields = computed<DetailField[]>(() => {
   if (!selectedLot.value) return []
   return makeFields([
     ['Аналитический сигнал', selectedLot.value.analysisLabel],
-    ['Категория модели', selectedLot.value.analysisCategory],
+    ['Категория', liveLot.value?.category || selectedLot.value.analysisCategory],
+    ['Наименование', selectedLot.value.lotName],
+    ['Должник', selectedLot.value.debtorName],
     ['Локация', selectedLot.value.location],
     ['Регион', selectedLot.value.locationRegion],
     ['Город', selectedLot.value.locationCity],
@@ -1460,8 +1521,10 @@ const detailFields = computed<DetailField[]>(() => {
     ['Причина исключения', selectedLot.value.exclusionReason],
     ['Площадка', selectedLot.value.sourceTitle],
     ['Аукцион', liveAuction.value?.number || selectedLot.value.auctionNumber],
+    ['Название аукциона', liveAuction.value?.name || selectedLot.value.auctionName],
     ['Публикация', liveAuction.value?.publication_date || formatDateTime(selectedLot.value.publicationDate)],
     ['Лот', liveLot.value?.number || selectedLot.value.lotNumber],
+    ['ID лота', selectedLot.value.lotId],
     ['Статус', liveLot.value?.status || selectedLot.value.status],
     ['Начальная цена', liveLot.value?.initial_price || formatCurrency(selectedLot.value.initialPrice)],
     ['Текущая цена', liveLot.value?.current_price || formatCurrency(selectedLot.value.price)],
@@ -1499,10 +1562,17 @@ const lotInfoFields = computed(() =>
 
 const lotTextFields = computed(() =>
   makeFields([
-    ['Описание имущества', liveLot.value?.description],
+    ['Описание имущества', liveLot.value?.description || selectedLot.value?.lotDescription],
     ['Порядок ознакомления', liveLot.value?.inspection_order],
     ['Порядок внесения и возврата задатка', liveLot.value?.deposit_order],
   ]),
+)
+
+const priceScheduleFields = computed(() =>
+  (selectedLot.value?.priceSchedule ?? []).map((step, index) => ({
+    label: `${index + 1}. ${step.starts_at}`,
+    value: step.price,
+  })),
 )
 
 const organizerFields = computed(() =>
@@ -1548,6 +1618,7 @@ const debtorFields = computed(() =>
 const rawLotFields = computed(() => normalizeRawFields(selectedLotDetails.value?.raw_fields ?? []))
 const rawAuctionFields = computed(() => normalizeRawFields(selectedAuctionDetails.value?.raw_fields ?? []))
 const auctionLots = computed(() => selectedAuctionDetails.value?.lots ?? [])
+const activeDetailImageIndex = ref(0)
 const economyFields = computed(() =>
   makeFields([
     ['Текущая цена', formatApiMoney(selectedLot.value?.price ?? selectedWorkspace.value?.economy.current_price)],
@@ -1561,7 +1632,9 @@ const economyFields = computed(() =>
     ['Макс. цена покупки', formatApiMoney(selectedLot.value?.formulaMaxPurchasePrice ?? selectedWorkspace.value?.economy.max_purchase_price)],
   ]),
 )
-const analysisReasonItems = computed(() => selectedLot.value?.analysisReasons ?? [])
+const analysisReasonItems = computed(() =>
+  (selectedLot.value?.analysisReasons ?? []).filter((reason) => !(detailImages.value.length && isNoPhotoReason(reason))),
+)
 const detailCachedAt = computed(() => formatDateTime(selectedWorkspace.value?.detail_cached_at ?? null))
 const ratingReasonItems = computed(() => selectedLot.value?.ratingReasons ?? [])
 const changeFields = computed(() => selectedWorkspace.value?.changes.fields ?? [])
@@ -1579,29 +1652,63 @@ const changeSummaryFields = computed(() =>
 const detailDocuments = computed(() =>
   uniqueDocuments([...(selectedLotDetails.value?.documents ?? []), ...(selectedAuctionDetails.value?.documents ?? [])]),
 )
-const detailImages = computed(() =>
-  detailDocuments.value.filter(
-    (document) => belongsToSelectedLotMedia(document) && document.url && /\.(png|jpe?g|gif|webp)(\?|$)/i.test(document.url),
-  ),
-)
+const detailImages = computed<DetailImage[]>(() => {
+  const primaryImage = selectedLot.value?.primaryImageUrl
+    ? [
+        {
+          url: selectedLot.value.primaryImageUrl,
+          thumbnail_url: selectedLot.value.primaryImageUrl,
+          alt: selectedLot.value.lotName,
+          source: selectedLot.value.source,
+        },
+      ]
+    : []
+  const selectedRowImages = [...(selectedLot.value?.images ?? []), ...primaryImage]
+  const liveDetailImages = liveLot.value?.images ?? []
+  const documentImages = detailDocuments.value
+    .filter((document) => belongsToSelectedLotMedia(document) && isImageDocument(document) && document.url)
+    .map((document) => ({ url: document.url || '', thumbnailUrl: document.url || '', name: document.name }))
+  const fallbackImages = selectedLot.value?.source === 'tbankrot' ? selectedRowImages : [...selectedRowImages, ...liveDetailImages]
+  const images = documentImages.length ? documentImages : fallbackImages
+  return uniqueDetailImages(images).filter((image) => isRelevantDetailImage(image.url) && !isLockedTbankrotImageUrl(image.url))
+})
+const lockedTbankrotImageCount = computed(() => {
+  const images = uniqueDetailImages([...(selectedLot.value?.images ?? []), ...(liveLot.value?.images ?? [])])
+  return images.filter((image) => isLockedTbankrotImageUrl(image.url)).length
+})
 const mediaDocuments = computed(() =>
   detailDocuments.value.filter((document) => {
     const text = [document.name, document.document_type, document.comment].filter(Boolean).join(' ')
     return (
       belongsToSelectedLotMedia(document) &&
+      !isImageDocument(document) &&
       (/фото|photo|изображ/i.test(text) || /\.(rar|zip|7z)(\?|$)/i.test(document.url || document.name || ''))
     )
   }),
 )
+const fileDocuments = computed(() => detailDocuments.value.filter((document) => !isImageDocument(document)))
+const activeDetailImage = computed(() => detailImages.value[activeDetailImageIndex.value] ?? detailImages.value[0] ?? null)
 
-function makeFields(entries: Array<[string, string | null | undefined]>): DetailField[] {
+watch(detailImages, (images) => {
+  if (activeDetailImageIndex.value >= images.length) {
+    activeDetailImageIndex.value = 0
+  }
+})
+
+watch(() => selectedLot.value?.id, () => {
+  activeDetailImageIndex.value = 0
+})
+
+function makeFields(entries: Array<[string, unknown]>): DetailField[] {
   return entries
     .map(([label, value]) => ({ label, value: normalizeTextValue(value) }))
     .filter((field) => field.value && field.value !== 'Не задано')
 }
 
-function normalizeTextValue(value: string | null | undefined) {
-  return typeof value === 'string' ? value.trim() : ''
+function normalizeTextValue(value: unknown) {
+  if (value === null || value === undefined) return ''
+  if (value instanceof Date) return formatDateTime(value)
+  return String(value).trim()
 }
 
 function normalizeRawFields(fields: ApiField[]): DetailField[] {
@@ -1631,6 +1738,55 @@ function uniqueDocuments(documents: ApiDocument[]) {
     seen.add(key)
     return true
   })
+}
+
+function uniqueDetailImages(images: Array<ApiLotImage | DetailImage>): DetailImage[] {
+  const seen = new Set<string>()
+  return images
+    .map((image) => {
+      const url = image.url
+      const thumbnailUrl = 'thumbnailUrl' in image ? image.thumbnailUrl : image.thumbnail_url || image.url
+      const name = 'name' in image ? image.name : image.alt
+      return { url, thumbnailUrl, name }
+    })
+    .filter((image) => {
+      if (!image.url || seen.has(image.url)) return false
+      seen.add(image.url)
+      return true
+    })
+}
+
+function isNoPhotoReason(reason: string) {
+  return reason.trim().toLowerCase() === 'нет фото'
+}
+
+function isLockedTbankrotImageUrl(url: string) {
+  return /\/img\/blur\/|\/blur_/i.test(url)
+}
+
+function isImageDocument(document: ApiDocument) {
+  const documentType = (document.document_type || '').trim().toLowerCase()
+  const text = [document.url, document.name, document.comment].filter(Boolean).join(' ')
+  return documentType === 'photo' || /фото|photo|изображ/i.test(text) || /\.(png|jpe?g|gif|webp)(\?|$)/i.test(text)
+}
+
+function isRelevantDetailImage(url: string) {
+  if (selectedLot.value?.source !== 'tbankrot') return true
+  return /files\.tbankrot\.ru\//i.test(url) || /webapi\.torgi\.cdtrf\.ru\/doc\/public\/file/i.test(url)
+}
+
+function selectDetailImage(index: number) {
+  activeDetailImageIndex.value = index
+}
+
+function showPreviousDetailImage() {
+  if (detailImages.value.length < 2) return
+  activeDetailImageIndex.value = (activeDetailImageIndex.value - 1 + detailImages.value.length) % detailImages.value.length
+}
+
+function showNextDetailImage() {
+  if (detailImages.value.length < 2) return
+  activeDetailImageIndex.value = (activeDetailImageIndex.value + 1) % detailImages.value.length
 }
 
 function belongsToSelectedLotMedia(document: ApiDocument) {
@@ -1663,10 +1819,7 @@ function isDatasetPeriod(value: unknown): value is DatasetPeriod {
 function sanitizeServerFilters(value: Partial<ServerQuickFiltersState> | null | undefined): ServerQuickFiltersState {
   const hasPeriod = isDatasetPeriod(value?.period)
   const period: DatasetPeriod = hasPeriod ? (value.period as DatasetPeriod) : DEFAULT_SERVER_FILTERS.period
-  const source =
-    hasPeriod && typeof value?.source === 'string' && value.source.trim()
-      ? value.source
-      : DEFAULT_SERVER_FILTERS.source
+  const source = hasPeriod && typeof value?.source === 'string' && value.source.trim() === 'tbankrot' ? 'tbankrot' : DEFAULT_SERVER_FILTERS.source
   const analysisColor = typeof value?.analysisColor === 'string' ? value.analysisColor : DEFAULT_SERVER_FILTERS.analysisColor
   const query = typeof value?.query === 'string' ? value.query : DEFAULT_SERVER_FILTERS.query
   const status = typeof value?.status === 'string' ? value.status : DEFAULT_SERVER_FILTERS.status
@@ -1707,12 +1860,43 @@ function persistServerFilters() {
   window.localStorage.setItem(SERVER_FILTERS_STORAGE_KEY, JSON.stringify(sanitizeServerFilters(filters)))
 }
 
+function withoutGridSort<TRow extends Record<string, unknown>>(
+  savedView: DataGridSavedViewSnapshot<TRow>,
+): DataGridSavedViewSnapshot<TRow> {
+  const rowSnapshot = savedView.state.rows.snapshot
+  if (!rowSnapshot.sortModel.length) return savedView
+
+  return {
+    ...savedView,
+    state: {
+      ...savedView.state,
+      rows: {
+        ...savedView.state.rows,
+        snapshot: {
+          ...rowSnapshot,
+          sortModel: [],
+        },
+      },
+    },
+  }
+}
+
+function clearGridSortModel() {
+  const api = gridRef.value?.getApi()
+  if (!api) return
+  const sortModel = api.rows.getSnapshot().sortModel
+  if (sortModel.length) {
+    api.rows.setSortModel([])
+  }
+}
+
 function readStoredGridSavedView() {
   if (!gridRef.value) return null
 
-  return readDataGridSavedViewFromStorage(window.localStorage, GRID_SAVED_VIEW_STORAGE_KEY, (state, options) =>
+  const savedView = readDataGridSavedViewFromStorage(window.localStorage, GRID_SAVED_VIEW_STORAGE_KEY, (state, options) =>
     gridRef.value?.migrateState(state, options) ?? null,
   )
+  return savedView ? withoutGridSort(savedView) : null
 }
 
 function restoreGridSavedView() {
@@ -1723,26 +1907,34 @@ function restoreGridSavedView() {
   if (savedView) {
     try {
       gridRef.value.applySavedView(savedView)
+      clearGridSortModel()
+      writeDataGridSavedViewToStorage(window.localStorage, GRID_SAVED_VIEW_STORAGE_KEY, savedView)
     } catch {
       window.localStorage.removeItem(GRID_SAVED_VIEW_STORAGE_KEY)
     }
   }
+  scheduleGridSummaryRefresh()
 }
 
 function persistGridSavedView() {
   if (!gridSavedViewRestored.value) return
 
+  clearGridSortModel()
   const savedView = gridRef.value?.getSavedView()
   if (!savedView) return
 
-  writeDataGridSavedViewToStorage(window.localStorage, GRID_SAVED_VIEW_STORAGE_KEY, savedView)
+  writeDataGridSavedViewToStorage(window.localStorage, GRID_SAVED_VIEW_STORAGE_KEY, withoutGridSort(savedView))
+  scheduleGridSummaryRefresh()
 }
 
 function writeGridSavedView(view: unknown | null) {
   if (!gridRef.value || !view) return
   const migratedView = view as NonNullable<ReturnType<NonNullable<typeof gridRef.value>['getSavedView']>>
-  gridRef.value.applySavedView(migratedView)
-  writeDataGridSavedViewToStorage(window.localStorage, GRID_SAVED_VIEW_STORAGE_KEY, migratedView)
+  const stableView = withoutGridSort(migratedView)
+  gridRef.value.applySavedView(stableView)
+  clearGridSortModel()
+  writeDataGridSavedViewToStorage(window.localStorage, GRID_SAVED_VIEW_STORAGE_KEY, stableView)
+  scheduleGridSummaryRefresh()
 }
 
 async function ensureGridSavedViewRestored() {
@@ -1765,6 +1957,7 @@ function authHeaders() {
 function buildLotsUrl() {
   const params = new URLSearchParams({
     period: filters.period,
+    source: filters.source,
     page: '1',
     page_size: String(LOTS_DATASET_SIZE),
     persisted: 'true',
@@ -1804,6 +1997,7 @@ async function loadLots() {
   } finally {
     loading.value = false
     await ensureGridSavedViewRestored()
+    scheduleGridSummaryRefresh()
   }
 }
 
@@ -1830,14 +2024,16 @@ function matchesQuickFilters(row: GridLotRow) {
       row.locationCity,
       row.locationAddress,
       row.locationCoordinates,
+      row.debtorName,
       row.auctionNumber,
+      row.auctionName,
       row.lotNumber,
+      row.lotDescription,
       row.organizer,
       row.status,
       row.sourceTitle,
       row.analysisLabel,
       row.analysisCategory,
-      row.sourceCategory,
       row.exclusionReason,
     ]
       .join(' ')
@@ -1862,27 +2058,30 @@ function mapApiRow(row: ApiLotRow, rowRevision = gridRowRevision.value): GridLot
     analysisStatus: row.analysis.status,
     analysisColor: row.analysis.color,
     analysisLabel: row.analysis.label,
-    analysisCategory: row.analysis.category ?? '',
+    analysisCategory: row.category ?? row.model_category ?? row.analysis.category ?? '',
     analysisReasons: row.analysis.reasons,
-    sourceCategory: row.category ?? '',
     source: row.source,
     sourceTitle: row.source_title,
     auctionId: row.auction_id ?? '',
     auctionNumber: row.auction_number ?? '',
+    auctionName: row.auction_name ?? '',
     publicationDate: parseDateTime(row.publication_date),
     lotId: row.lot_id ?? '',
     lotNumber: row.lot_number ?? '',
     lotName: row.lot_name ?? '',
+    lotDescription: row.lot_description ?? '',
     location: row.location ?? '',
     locationRegion: row.location_region ?? '',
     locationCity: row.location_city ?? '',
     locationAddress: row.location_address ?? '',
     locationCoordinates: row.location_coordinates ?? '',
+    debtorName: row.debtor_name ?? '',
     status: row.status ?? '',
     initialPrice: parseNumber(row.initial_price_value),
     price: parseNumber(row.current_price_value ?? row.initial_price_value),
     minimumPrice: parseNumber(row.minimum_price_value),
     marketValue: parseNumber(row.market_value),
+    priceSchedule: row.price_schedule ?? [],
     platformFee: parseNumber(row.platform_fee) ?? 0,
     deliveryCost: parseNumber(row.delivery_cost) ?? 0,
     dismantlingCost: parseNumber(row.dismantling_cost) ?? 0,
@@ -1911,28 +2110,134 @@ function mapApiRow(row: ApiLotRow, rowRevision = gridRowRevision.value): GridLot
     workDecisionStatus: row.work_decision_status ?? '',
     lotUrl: row.lot_url ?? '',
     auctionUrl: row.auction_url ?? '',
+    images: row.images ?? [],
+    primaryImageUrl: row.primary_image_url ?? '',
+    imageCount: row.image_count ?? row.images?.length ?? 0,
   })
 }
 
 function applyWorkspaceRow(row: ApiLotRow) {
-  const index = allRows.value.findIndex((existing) => existing.id === row.row_id)
-  const existingRow = index >= 0 ? allRows.value[index] : null
-  const nextRevision = existingRow ? existingRow.rowRevision + 1 : gridRowRevision.value + 1
-  gridRowRevision.value = Math.max(gridRowRevision.value, nextRevision)
-  const mapped = mapApiRow(row, nextRevision)
-  if (selectedLot.value?.id === mapped.id) {
-    selectedLot.value = mapped
-  }
-  if (selectedWorkspace.value?.row.row_id === row.row_id) {
-    selectedWorkspace.value = {
-      ...selectedWorkspace.value,
-      row,
+  applyWorkspaceRows([row])
+}
+
+function applyWorkspaceRows(rows: ApiLotRow[], options: { clearOptimistic?: boolean } = {}) {
+  if (!rows.length) return
+  const mappedUpdates: GridLotRow[] = []
+
+  for (const update of rows) {
+    if (!options.clearOptimistic && optimisticGridRows.has(update.row_id)) continue
+
+    const existing = allRows.value.find((row) => row.id === update.row_id)
+    const nextRevision = existing?.rowRevision ?? gridRowRevision.value + 1
+    if (!existing) {
+      gridRowRevision.value = Math.max(gridRowRevision.value, nextRevision)
+    }
+
+    const mapped = mapApiRow(update, nextRevision)
+    if (!existing && !matchesQuickFilters(mapped)) continue
+
+    if (existing) {
+      Object.assign(existing, mapped, { rowRevision: existing.rowRevision })
+      mappedUpdates.push(existing)
+    } else {
+      allRows.value.push(mapped)
+      mappedUpdates.push(mapped)
     }
   }
-  if (index >= 0) {
-    allRows.value = allRows.value.map((existing) => (existing.id === mapped.id ? mapped : existing))
+
+  if (!mappedUpdates.length) return
+  patchGridRowsInDataGrid(mappedUpdates)
+  scheduleGridSummaryRefresh()
+
+  for (const mapped of mappedUpdates) {
+    if (options.clearOptimistic) {
+      optimisticGridRows.delete(mapped.id)
+    }
+    if (selectedLot.value?.id === mapped.id) {
+      selectedLot.value = mapped
+    }
+    rememberGridWorkSnapshot(mapped)
   }
-  rememberGridWorkSnapshot(mapped)
+
+  if (selectedWorkspace.value) {
+    const workspaceRow = rows.find((row) => row.row_id === selectedWorkspace.value?.row.row_id)
+    if (workspaceRow) {
+      selectedWorkspace.value = {
+        ...selectedWorkspace.value,
+        row: workspaceRow,
+      }
+    }
+  }
+}
+
+function getLatestGridRow(rowId: string) {
+  return optimisticGridRows.get(rowId) ?? allRows.value.find((row) => row.id === rowId) ?? null
+}
+
+function patchGridRowsInDataGrid(rows: readonly GridLotRow[]) {
+  const api = gridRef.value?.getApi()
+  if (!api?.rows.hasPatchSupport() || !rows.length) return
+
+  api.rows.applyEdits(
+    rows.map((row) => ({
+      rowId: resolveClientGridRowId(row),
+      data: row,
+    })),
+    { emit: false, reapply: false },
+  )
+}
+
+function readProjectedRowsFromGrid() {
+  const api = gridRef.value?.getApi()
+  if (!api) return rows.value
+
+  const count = api.rows.getCount()
+  if (count <= 0) return []
+
+  return api.rows.getRange({ start: 0, end: count }).flatMap((node) => {
+    const row = node.data as GridLotRow | undefined
+    return row && typeof row.id === 'string' ? [row] : []
+  })
+}
+
+function refreshGridSummaryRows() {
+  projectedRowsForSummary.value = readProjectedRowsFromGrid()
+  gridSummaryReady.value = true
+}
+
+function scheduleGridSummaryRefresh() {
+  if (gridSummaryFrame !== null) {
+    window.cancelAnimationFrame(gridSummaryFrame)
+  }
+  gridSummaryFrame = window.requestAnimationFrame(() => {
+    gridSummaryFrame = null
+    refreshGridSummaryRows()
+  })
+}
+
+function queueWorkspaceRows(rows: ApiLotRow[]) {
+  for (const row of rows) {
+    queuedRowUpdates.set(row.row_id, row)
+  }
+  if (rowUpdateFrame !== null) return
+  rowUpdateFrame = window.requestAnimationFrame(flushQueuedWorkspaceRows)
+}
+
+function flushQueuedWorkspaceRows() {
+  rowUpdateFrame = null
+  const rows = Array.from(queuedRowUpdates.values())
+  queuedRowUpdates.clear()
+  applyWorkspaceRows(rows)
+}
+
+function scheduleLotsReload() {
+  if (deferredLotsReloadTimer !== null) {
+    window.clearTimeout(deferredLotsReloadTimer)
+  }
+  deferredLotsReloadTimer = window.setTimeout(() => {
+    deferredLotsReloadTimer = null
+    void loadLots()
+  }, 1200)
 }
 
 function recomputeGridEconomyFields(row: GridLotRow) {
@@ -2013,72 +2318,42 @@ function normalizeGridRowPatch(row: Partial<GridLotRow>) {
   return normalized
 }
 
-function extractChangedGridRows(payload: unknown) {
-  if (!payload || typeof payload !== 'object') {
-    return [] as Partial<GridLotRow>[]
-  }
+function extractActiveGridRowPatch(focusAnchor: GridFocusAnchor | null) {
+  const api = gridRef.value?.getApi()
+  const activeCell = focusAnchor?.activeCell ?? getActiveGridCellFromSnapshot(api?.selection.getSnapshot() ?? null)
+  if (!api || !activeCell) return null
 
-  const snapshot = (payload as { snapshot?: { rows?: unknown[] } }).snapshot
-  const rows = Array.isArray(snapshot?.rows) ? snapshot.rows : []
-
-  return rows.flatMap((entry) => {
-    if (!entry || typeof entry !== 'object') {
-      return []
-    }
-
-    const record = entry as Record<string, unknown>
-    const candidate =
-      record.data && typeof record.data === 'object'
-        ? (record.data as Partial<GridLotRow>)
-        : record.row && typeof record.row === 'object'
-          ? (record.row as Partial<GridLotRow>)
-          : (record as Partial<GridLotRow>)
-
-    return typeof candidate.id === 'string' ? [normalizeGridRowPatch(candidate)] : []
-  })
+  const node = api.rows.get(activeCell.rowIndex)
+  const row = normalizeGridRowPatch(node?.data as Partial<GridLotRow>)
+  return typeof row.id === 'string' ? row : null
 }
 
-function handleGridCellChange(payload: unknown) {
-  const changedRows = extractChangedGridRows(payload)
-  if (!changedRows.length) {
-    return
+function handleGridCellChange() {
+  const focusAnchor = captureGridFocusAnchor(null, true)
+  const rowPatch = extractActiveGridRowPatch(focusAnchor)
+  if (!rowPatch?.id) return
+
+  const existingRow = getLatestGridRow(rowPatch.id)
+  if (!existingRow) return
+
+  const previousSnapshot = savedGridWorkSnapshots.get(existingRow.id)
+  const nextRow = recomputeGridEconomyFields({
+    ...existingRow,
+    ...rowPatch,
+    rowRevision: existingRow.rowRevision,
+  })
+  const snapshot = serializeGridWorkState(nextRow)
+
+  optimisticGridRows.set(nextRow.id, nextRow)
+  patchGridRowsInDataGrid([nextRow])
+
+  if (selectedLot.value?.id === nextRow.id) {
+    selectedLot.value = nextRow
   }
 
-  const changedById = new Map(changedRows.map((row) => [row.id, row]))
-  let didChange = false
-
-  const nextRows = allRows.value.map((existingRow) => {
-    const rowPatch = changedById.get(existingRow.id)
-    if (!rowPatch) {
-      return existingRow
-    }
-
-    const previousSnapshot = savedGridWorkSnapshots.get(existingRow.id)
-    const nextRow = recomputeGridEconomyFields({
-      ...existingRow,
-      ...rowPatch,
-    })
-    const snapshot = serializeGridWorkState(nextRow)
-
-    didChange = true
-    const revisedRow = {
-      ...nextRow,
-      rowRevision: existingRow.rowRevision + 1,
-    }
-
-    if (selectedLot.value?.id === revisedRow.id) {
-      selectedLot.value = revisedRow
-    }
-
-    if (previousSnapshot !== snapshot) {
-      queueGridRowSave(revisedRow.id)
-    }
-
-    return revisedRow
-  })
-
-  if (didChange) {
-    allRows.value = nextRows
+  if (previousSnapshot !== snapshot) {
+    queueGridRowSave(nextRow.id)
+    void restoreGridFocus(focusAnchor)
   }
 }
 
@@ -2095,8 +2370,10 @@ function queueGridRowSave(rowId: string) {
 }
 
 async function saveGridRow(rowId: string) {
-  const row = allRows.value.find((item) => item.id === rowId)
+  const row = getLatestGridRow(rowId)
   if (!row?.lotId) return
+  const requestSnapshot = serializeGridWorkState(row)
+  const saveStartFocusAnchor = captureGridFocusAnchor(row.id, document.activeElement === document.body)
   try {
     backgroundStatus.value = `Сохраняю экономику лота ${row.lotNumber || row.id}`
     const params = new URLSearchParams()
@@ -2113,7 +2390,15 @@ async function saveGridRow(rowId: string) {
       selectedWorkspace.value = workspace
       hydrateWorkDraft(workspace.work_item)
     }
-    applyWorkspaceRow(workspace.row)
+    const focusAnchor = captureGridFocusAnchor(null, document.activeElement === document.body) ?? saveStartFocusAnchor
+    const currentOptimisticRow = optimisticGridRows.get(rowId)
+    const hasNewerOptimisticEdit = Boolean(
+      currentOptimisticRow && serializeGridWorkState(currentOptimisticRow) !== requestSnapshot,
+    )
+    if (!hasNewerOptimisticEdit) {
+      applyWorkspaceRows([workspace.row], { clearOptimistic: true })
+      void restoreGridFocus(focusAnchor)
+    }
     backgroundStatus.value = `Экономика обновлена: ${row.lotNumber || row.id}`
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : 'Не удалось сохранить изменения из таблицы'
@@ -2129,9 +2414,7 @@ function parseNumber(value: string | number | null) {
 function parseDateTime(value: string | null) {
   if (!value) return null
   const normalized = value.trim()
-  const russianDateTime = normalized.match(
-    /^(\d{2})\.(\d{2})\.(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/,
-  )
+  const russianDateTime = normalized.match(/^(\d{1,2})[./](\d{1,2})[./](\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/)
   if (russianDateTime) {
     const [, day, month, year, hour = '0', minute = '0', second = '0'] = russianDateTime
     return new Date(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second))
@@ -2145,8 +2428,8 @@ function formatDateTime(value: Date | string | null) {
   if (!value) return ''
   if (value instanceof Date) return value.toLocaleString('ru-RU')
 
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('ru-RU')
+  const date = parseDateTime(value)
+  return date ? date.toLocaleString('ru-RU') : value
 }
 
 function formatCurrency(value: number | null) {
@@ -2476,39 +2759,172 @@ function hydrateWorkDraft(workItem: LotWorkItem | null) {
   workDraft.target_profit = normalizeDraftNumber(workItem.target_profit)
 }
 
-function buildWorkPayload() {
-  return {
-    decision_status: workDraft.decision_status.trim() || null,
-    assignee: workDraft.assignee.trim() || null,
-    comment: workDraft.comment.trim() || null,
-    inspection_at: workDraft.inspection_at.trim() || null,
-    inspection_result: workDraft.inspection_result.trim() || null,
-    final_decision: workDraft.final_decision.trim() || null,
-    investor: workDraft.investor.trim() || null,
-    deposit_status: workDraft.deposit_status.trim() || null,
-    application_status: workDraft.application_status.trim() || null,
-    exclude_from_analysis: workDraft.exclude_from_analysis,
-    exclusion_reason: workDraft.exclusion_reason.trim() || null,
-    category_override: workDraft.category_override.trim() || null,
-    market_value: parseFilterNumber(workDraft.market_value),
-    platform_fee: parseFilterNumber(workDraft.platform_fee),
-    delivery_cost: parseFilterNumber(workDraft.delivery_cost),
-    dismantling_cost: parseFilterNumber(workDraft.dismantling_cost),
-    repair_cost: parseFilterNumber(workDraft.repair_cost),
-    storage_cost: parseFilterNumber(workDraft.storage_cost),
-    legal_cost: parseFilterNumber(workDraft.legal_cost),
-    other_costs: parseFilterNumber(workDraft.other_costs),
-    target_profit: parseFilterNumber(workDraft.target_profit),
-  }
-}
-
 function normalizeDraftNumber(value: string | number | null | undefined) {
   if (value === null || value === undefined || value === '') return ''
   const parsed = parseNumber(value)
   return parsed === null ? '' : String(parsed)
 }
 
+function getGridRootElement() {
+  return gridSurfaceRef.value?.querySelector<HTMLElement>('.affino-datagrid-app-root') ?? null
+}
+
+function escapeGridSelectorValue(value: string) {
+  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+    return CSS.escape(value)
+  }
+  return value.replace(/["\\]/g, '\\$&')
+}
+
+function getActiveGridCellFromSnapshot(selectionSnapshot: GridSelectionSnapshot) {
+  const activeRange = selectionSnapshot?.ranges[selectionSnapshot.activeRangeIndex] ?? selectionSnapshot?.ranges[0]
+  return selectionSnapshot?.activeCell ?? activeRange?.focus ?? activeRange?.anchor ?? null
+}
+
+function resolveLogicalGridRowId(runtimeRowId: string | number | null) {
+  if (runtimeRowId === null) return null
+  const runtimeKey = String(runtimeRowId)
+  return allRows.value.find((row) => resolveClientGridRowId(row) === runtimeKey)?.id ?? null
+}
+
+function resolveCurrentRuntimeGridRowId(logicalRowId: string | null) {
+  if (!logicalRowId) return null
+  const row = allRows.value.find((item) => item.id === logicalRowId)
+  return row ? resolveClientGridRowId(row) : null
+}
+
+function captureGridFocusAnchor(fallbackLogicalRowId: string | null = null, allowSelectionFallback = false) {
+  const api = gridRef.value?.getApi()
+  const selectionSnapshot = api?.selection.hasSupport() ? api.selection.getSnapshot() : null
+  const activeCell = getActiveGridCellFromSnapshot(selectionSnapshot)
+  const gridRoot = getGridRootElement()
+  const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : null
+  const gridElement = activeElement && gridRoot?.contains(activeElement) ? activeElement : null
+  const cellElement = gridElement?.closest<HTMLElement>('.grid-cell[data-row-id]') ?? null
+  const shouldUseSelectionFallback = allowSelectionFallback || activeElement === document.body
+
+  if (!gridElement && !cellElement && !shouldUseSelectionFallback) return null
+
+  const runtimeRowId = normalizeGridRowId(activeCell?.rowId ?? cellElement?.dataset.rowId ?? null)
+  const logicalRowId = fallbackLogicalRowId ?? resolveLogicalGridRowId(runtimeRowId)
+
+  return {
+    selectionSnapshot,
+    activeCell,
+    logicalRowId,
+    rowId: runtimeRowId ?? resolveCurrentRuntimeGridRowId(logicalRowId),
+    columnIndex: activeCell?.colIndex ?? parseOptionalInteger(cellElement?.dataset.columnIndex),
+    columnKey: cellElement?.dataset.columnKey ?? null,
+    element: cellElement ?? gridElement,
+  }
+}
+
+function captureDetailGridFocusAnchor(row: GridLotRow) {
+  detailGridFocusAnchor = captureGridFocusAnchor(row.id, true)
+}
+
+function normalizeGridRowId(value: unknown): string | number | null {
+  if (typeof value === 'string' || typeof value === 'number') return value
+  if (value === null || value === undefined) return null
+  return String(value)
+}
+
+function parseOptionalInteger(value: string | undefined) {
+  if (!value) return null
+  const parsed = Number.parseInt(value, 10)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function remapGridSelectionSnapshot(anchor: GridFocusAnchor) {
+  const snapshot = anchor.selectionSnapshot
+  const nextRowId = resolveCurrentRuntimeGridRowId(anchor.logicalRowId)
+  if (!snapshot || !nextRowId || nextRowId === anchor.rowId) return snapshot
+
+  const replacePoint = (point: GridSelectionPoint): GridSelectionPoint =>
+    point.rowId === anchor.rowId ? { ...point, rowId: nextRowId } : point
+
+  return {
+    ...snapshot,
+    activeCell: snapshot.activeCell ? replacePoint(snapshot.activeCell) : snapshot.activeCell,
+    ranges: snapshot.ranges.map((range) => ({
+      ...range,
+      anchor: replacePoint(range.anchor),
+      focus: replacePoint(range.focus),
+      startRowId: range.startRowId === anchor.rowId ? nextRowId : range.startRowId,
+      endRowId: range.endRowId === anchor.rowId ? nextRowId : range.endRowId,
+    })),
+  }
+}
+
+function findGridFocusTarget(anchor: GridFocusAnchor, gridRoot: HTMLElement) {
+  if (anchor.element?.isConnected && gridRoot.contains(anchor.element)) {
+    return anchor.element
+  }
+
+  const currentRuntimeRowId = resolveCurrentRuntimeGridRowId(anchor.logicalRowId)
+  const rowId = currentRuntimeRowId ?? (anchor.rowId === null ? null : String(anchor.rowId))
+  const rowSelector = rowId ? `[data-row-id="${escapeGridSelectorValue(rowId)}"]` : ''
+  const selectors: string[] = []
+
+  if (rowSelector && anchor.columnKey) {
+    selectors.push(`.grid-cell${rowSelector}[data-column-key="${escapeGridSelectorValue(anchor.columnKey)}"]`)
+  }
+  if (rowSelector && anchor.columnIndex !== null) {
+    selectors.push(`.grid-cell${rowSelector}[data-column-index="${anchor.columnIndex}"]`)
+  }
+  if (rowSelector) {
+    selectors.push(`.grid-cell.grid-cell--selection-anchor${rowSelector}`, `.grid-cell${rowSelector}`)
+  }
+  selectors.push('.grid-cell.grid-cell--selection-anchor', '.grid-cell[tabindex="0"]')
+
+  for (const selector of selectors) {
+    const element = gridRoot.querySelector<HTMLElement>(selector)
+    if (element) return element
+  }
+
+  return null
+}
+
+function focusGridElement(element: HTMLElement) {
+  if (!element.hasAttribute('tabindex')) {
+    element.tabIndex = -1
+  }
+  element.focus({ preventScroll: true })
+}
+
+async function restoreGridFocus(anchor: GridFocusAnchor | null) {
+  if (!anchor) return
+
+  await nextTick()
+  window.requestAnimationFrame(() => {
+    const api = gridRef.value?.getApi()
+    const selectionSnapshot = remapGridSelectionSnapshot(anchor)
+    if (selectionSnapshot && api?.selection.hasSupport()) {
+      try {
+        api.selection.setSnapshot(selectionSnapshot)
+      } catch {
+        // The row may have left the current filtered/sorted viewport before focus is restored.
+      }
+    }
+
+    window.requestAnimationFrame(() => {
+      const gridRoot = getGridRootElement()
+      if (!gridRoot) return
+
+      const target = findGridFocusTarget(anchor, gridRoot) ?? gridRoot
+      focusGridElement(target)
+    })
+  })
+}
+
+async function restoreDetailGridFocus() {
+  const anchor = detailGridFocusAnchor
+  detailGridFocusAnchor = null
+  await restoreGridFocus(anchor)
+}
+
 async function openLotDetails(row: GridLotRow) {
+  captureDetailGridFocusAnchor(row)
   selectedLot.value = row
   selectedLotDetails.value = null
   selectedAuctionDetails.value = null
@@ -2550,10 +2966,13 @@ function closeLotDetails() {
   selectedAuctionDetails.value = null
   selectedWorkspace.value = null
   resetWorkDraft()
+  void restoreDetailGridFocus()
 }
 
 function resetCatalogState() {
   allRows.value = []
+  projectedRowsForSummary.value = []
+  gridSummaryReady.value = false
   presets.value = []
   selectedPresetId.value = ''
   selectedLot.value = null
@@ -2565,32 +2984,6 @@ function resetCatalogState() {
   detailLoading.value = false
   backgroundStatus.value = 'Ожидаем фоновое обновление'
   resetWorkDraft()
-}
-
-async function saveWorkItem() {
-  if (!selectedLot.value?.lotId) return
-
-  workSaving.value = true
-  errorMessage.value = ''
-  try {
-    const params = new URLSearchParams()
-    if (selectedLot.value.auctionId) params.set('auction_id', selectedLot.value.auctionId)
-    const workspace = await fetchJson<LotWorkspaceResponse>(
-      `/api/v1/auctions/${selectedLot.value.source}/lots/${encodeURIComponent(selectedLot.value.lotId)}/workspace?${params.toString()}`,
-      {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(buildWorkPayload()),
-      },
-    )
-    selectedWorkspace.value = workspace
-    applyWorkspaceRow(workspace.row)
-    hydrateWorkDraft(workspace.work_item)
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : 'Не удалось сохранить рабочие поля'
-  } finally {
-    workSaving.value = false
-  }
 }
 
 function startDetailResize(event: PointerEvent) {
@@ -2656,7 +3049,7 @@ function subscribeToAuctionEvents() {
     const data = JSON.parse((event as MessageEvent).data)
     const payload = data.payload
     backgroundStatus.value = `Фоново обновлено: ${payload.source}, новых ${payload.created}, изменено ${payload.updated}`
-    void loadLots()
+    scheduleLotsReload()
   })
 
   events.addEventListener('analysis.started', () => {
@@ -2677,7 +3070,15 @@ function subscribeToAuctionEvents() {
     const data = JSON.parse((event as MessageEvent).data)
     const row = data.payload?.row as ApiLotRow | undefined
     if (row) {
-      applyWorkspaceRow(row)
+      queueWorkspaceRows([row])
+    }
+  })
+
+  events.addEventListener('lot.rows_updated', (event) => {
+    const data = JSON.parse((event as MessageEvent).data)
+    const rows = data.payload?.rows as ApiLotRow[] | undefined
+    if (rows?.length) {
+      queueWorkspaceRows(rows)
     }
   })
 
@@ -2707,6 +3108,8 @@ function stopAuctionEvents() {
 
 watch(filters, () => {
   persistServerFilters()
+  gridSummaryReady.value = false
+  scheduleGridSummaryRefresh()
 }, { deep: true })
 
 watch(isAuthenticated, (authenticated) => {
@@ -2733,6 +3136,19 @@ onUnmounted(() => {
   stopDetailResize()
   document.removeEventListener('keydown', handleGlobalKeydown, true)
   stopAuctionEvents()
+  if (rowUpdateFrame !== null) {
+    window.cancelAnimationFrame(rowUpdateFrame)
+    rowUpdateFrame = null
+  }
+  if (deferredLotsReloadTimer !== null) {
+    window.clearTimeout(deferredLotsReloadTimer)
+    deferredLotsReloadTimer = null
+  }
+  if (gridSummaryFrame !== null) {
+    window.cancelAnimationFrame(gridSummaryFrame)
+    gridSummaryFrame = null
+  }
+  queuedRowUpdates.clear()
   pendingGridSaveTimers.forEach((timer) => clearTimeout(timer))
   pendingGridSaveTimers.clear()
 })
@@ -2782,8 +3198,8 @@ onUnmounted(() => {
         <strong>{{ newCount }}</strong>
       </div>
       <div>
-        <span>Активные</span>
-        <strong>{{ activeCount }}</strong>
+        <span>Приём заявок</span>
+        <strong>{{ openApplicationsCount }}</strong>
       </div>
       <div>
         <span>Рейтинг 75+</span>
@@ -2797,7 +3213,7 @@ onUnmounted(() => {
 
     <p v-if="errorMessage" class="error-banner">{{ errorMessage }}</p>
 
-    <section class="grid-surface" :aria-busy="loading">
+    <section ref="gridSurfaceRef" class="grid-surface" :aria-busy="loading">
       <div v-if="loading && allRows.length === 0" class="loading-state" role="status" aria-live="polite">
         <div class="table-skeleton" :style="{ '--skeleton-columns': loadingSkeletonTemplate }">
           <div class="table-skeleton__toolbar">
@@ -2882,6 +3298,66 @@ onUnmounted(() => {
           <mark v-if="selectedLot.isNew">Новый</mark>
         </div>
 
+        <section class="detail-section detail-section--media">
+          <span class="eyebrow">Медиа</span>
+          <div v-if="detailLoading" class="detail-muted">Загрузка</div>
+          <div v-else-if="detailImages.length && activeDetailImage" class="detail-gallery">
+            <div class="detail-gallery__stage">
+              <button
+                v-if="detailImages.length > 1"
+                class="detail-gallery__nav detail-gallery__nav--prev"
+                type="button"
+                aria-label="Предыдущее фото"
+                @click="showPreviousDetailImage"
+              >
+                ‹
+              </button>
+              <img
+                :src="activeDetailImage.thumbnailUrl || activeDetailImage.url"
+                :alt="activeDetailImage.name || 'Изображение лота'"
+                loading="lazy"
+              />
+              <button
+                v-if="detailImages.length > 1"
+                class="detail-gallery__nav detail-gallery__nav--next"
+                type="button"
+                aria-label="Следующее фото"
+                @click="showNextDetailImage"
+              >
+                ›
+              </button>
+            </div>
+            <div v-if="detailImages.length > 1" class="detail-gallery__thumbs" aria-label="Фотографии лота">
+              <button
+                v-for="(image, index) in detailImages"
+                :key="image.url || image.name || `image-${index}`"
+                :class="['detail-gallery__thumb', { 'detail-gallery__thumb--active': index === activeDetailImageIndex }]"
+                type="button"
+                :aria-label="`Показать фото ${index + 1}`"
+                @click="selectDetailImage(index)"
+              >
+                <img :src="image.thumbnailUrl || image.url" :alt="image.name || `Фото ${index + 1}`" loading="lazy" />
+              </button>
+            </div>
+          </div>
+          <ul v-else-if="mediaDocuments.length" class="detail-files">
+            <li
+              v-for="(document, index) in mediaDocuments"
+              :key="document.external_id || document.name || `media-${index}`"
+            >
+              <a v-if="document.url" :href="document.url" target="_blank" rel="noreferrer">
+                {{ document.name || document.document_type || 'Медиафайл' }}
+              </a>
+              <span v-else>{{ document.name || document.document_type || 'Медиафайл' }}</span>
+              <small>{{ document.received_at || document.document_type || '' }}</small>
+            </li>
+          </ul>
+          <div v-else-if="lockedTbankrotImageCount" class="detail-muted">
+            TBankrot скрыл фото за тарифом: в HTML доступен только размытый placeholder.
+          </div>
+          <div v-else class="detail-muted">Медиа не найдены</div>
+        </section>
+
         <section v-if="analysisReasonItems.length" class="detail-section">
           <span class="eyebrow">Анализ модели</span>
           <ul class="detail-bullet-list">
@@ -2894,88 +3370,20 @@ onUnmounted(() => {
           <span>Подгружаю live-данные с площадки</span>
         </div>
 
-        <section class="detail-section detail-section--work">
-          <div class="detail-section__header">
-            <span class="eyebrow">Работа по лоту</span>
-            <button class="secondary-button" type="button" :disabled="workSaving" @click="saveWorkItem">
-              {{ workSaving ? 'Сохраняю' : 'Сохранить' }}
-            </button>
-          </div>
-          <div class="work-grid">
-            <label>
-              <span>Решение</span>
-              <select v-model="workDraft.decision_status">
-                <option value="">Не выбрано</option>
-                <option value="watch">Смотреть</option>
-                <option value="calculate">Считать</option>
-                <option value="inspection">Осмотр</option>
-                <option value="bid">Заявка</option>
-                <option value="reject">Отказ</option>
-              </select>
-            </label>
-            <label>
-              <span>Ответственный</span>
-              <input v-model="workDraft.assignee" type="text" />
-            </label>
-            <label>
-              <span>Рынок</span>
-              <input v-model="workDraft.market_value" type="number" min="0" step="1000" />
-            </label>
-            <label>
-              <span>Комиссия ЭТП</span>
-              <input v-model="workDraft.platform_fee" type="number" min="0" step="1000" />
-            </label>
-            <label>
-              <span>Доставка</span>
-              <input v-model="workDraft.delivery_cost" type="number" min="0" step="1000" />
-            </label>
-            <label>
-              <span>Демонтаж</span>
-              <input v-model="workDraft.dismantling_cost" type="number" min="0" step="1000" />
-            </label>
-            <label>
-              <span>Ремонт</span>
-              <input v-model="workDraft.repair_cost" type="number" min="0" step="1000" />
-            </label>
-            <label>
-              <span>Хранение</span>
-              <input v-model="workDraft.storage_cost" type="number" min="0" step="1000" />
-            </label>
-            <label>
-              <span>Юрист</span>
-              <input v-model="workDraft.legal_cost" type="number" min="0" step="1000" />
-            </label>
-            <label>
-              <span>Прочие расходы</span>
-              <input v-model="workDraft.other_costs" type="number" min="0" step="1000" />
-            </label>
-            <label>
-              <span>Целевая прибыль</span>
-              <input v-model="workDraft.target_profit" type="number" min="0" step="1000" />
-            </label>
-            <label>
-              <span>Категория override</span>
-              <input v-model="workDraft.category_override" type="text" />
-            </label>
-            <label class="work-grid__wide work-grid__toggle-field">
-              <span>Ручное исключение</span>
-              <input v-model="workDraft.exclude_from_analysis" type="checkbox" />
-            </label>
-            <label class="work-grid__wide">
-              <span>Причина исключения</span>
-              <input v-model="workDraft.exclusion_reason" type="text" />
-            </label>
-            <label class="work-grid__wide">
-              <span>Комментарий</span>
-              <textarea v-model="workDraft.comment" rows="3"></textarea>
-            </label>
-          </div>
-        </section>
-
         <section v-if="economyFields.length" class="detail-section">
           <span class="eyebrow">Экономика</span>
           <dl class="detail-list detail-list--dense">
             <template v-for="field in economyFields" :key="field.label">
+              <dt>{{ field.label }}</dt>
+              <dd>{{ field.value }}</dd>
+            </template>
+          </dl>
+        </section>
+
+        <section v-if="priceScheduleFields.length" class="detail-section">
+          <span class="eyebrow">Снижение цены</span>
+          <dl class="detail-list detail-list--dense detail-list--schedule">
+            <template v-for="field in priceScheduleFields" :key="field.label">
               <dt>{{ field.label }}</dt>
               <dd>{{ field.value }}</dd>
             </template>
@@ -3001,12 +3409,15 @@ onUnmounted(() => {
           </dl>
         </section>
 
-        <dl class="detail-list">
-          <template v-for="field in detailFields" :key="field.label">
-            <dt>{{ field.label }}</dt>
-            <dd>{{ field.value || 'Не указано' }}</dd>
-          </template>
-        </dl>
+        <section v-if="detailFields.length" class="detail-section detail-section--summary">
+          <span class="eyebrow">Основные сведения</span>
+          <dl class="detail-list detail-list--dense">
+            <template v-for="field in detailFields" :key="field.label">
+              <dt>{{ field.label }}</dt>
+              <dd>{{ field.value || 'Не указано' }}</dd>
+            </template>
+          </dl>
+        </section>
 
         <section v-if="lotInfoFields.length" class="detail-section">
           <span class="eyebrow">Информация о лоте</span>
@@ -3021,12 +3432,12 @@ onUnmounted(() => {
 
         <section v-if="lotTextFields.length" class="detail-section">
           <span class="eyebrow">Описание и условия</span>
-          <dl class="detail-list detail-list--dense">
-            <template v-for="field in lotTextFields" :key="field.label">
-              <dt>{{ field.label }}</dt>
-              <dd>{{ field.value }}</dd>
-            </template>
-          </dl>
+          <div class="detail-text-fields">
+            <article v-for="field in lotTextFields" :key="field.label" class="detail-text-field">
+              <h3>{{ field.label }}</h3>
+              <p>{{ field.value }}</p>
+            </article>
+          </div>
         </section>
 
         <section v-if="organizerFields.length" class="detail-section">
@@ -3107,41 +3518,12 @@ onUnmounted(() => {
           </dl>
         </section>
 
-        <section class="detail-section detail-section--media">
-          <span class="eyebrow">Медиа</span>
-          <div v-if="detailLoading" class="detail-muted">Загрузка</div>
-          <div v-else-if="detailImages.length" class="detail-images">
-            <a
-              v-for="(image, index) in detailImages"
-              :key="image.url || image.name || `image-${index}`"
-              :href="image.url || '#'"
-              target="_blank"
-              rel="noreferrer"
-            >
-              <img :src="image.url || ''" :alt="image.name || 'Изображение лота'" />
-            </a>
-          </div>
-          <ul v-else-if="mediaDocuments.length" class="detail-files">
-            <li
-              v-for="(document, index) in mediaDocuments"
-              :key="document.external_id || document.name || `media-${index}`"
-            >
-              <a v-if="document.url" :href="document.url" target="_blank" rel="noreferrer">
-                {{ document.name || document.document_type || 'Медиафайл' }}
-              </a>
-              <span v-else>{{ document.name || document.document_type || 'Медиафайл' }}</span>
-              <small>{{ document.received_at || document.document_type || '' }}</small>
-            </li>
-          </ul>
-          <div v-else class="detail-muted">Медиа не найдены</div>
-        </section>
-
         <section class="detail-section">
           <span class="eyebrow">Файлы</span>
           <div v-if="detailLoading" class="detail-muted">Загрузка</div>
-          <ul v-else-if="detailDocuments.length" class="detail-files">
+          <ul v-else-if="fileDocuments.length" class="detail-files">
             <li
-              v-for="(document, index) in detailDocuments"
+              v-for="(document, index) in fileDocuments"
               :key="document.external_id || document.name || `document-${index}`"
             >
               <a v-if="document.url" :href="document.url" target="_blank" rel="noreferrer">

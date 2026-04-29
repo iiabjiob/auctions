@@ -77,7 +77,9 @@ async def update_lot_work_item(
     if record is None:
         raise LookupError("Lot record was not found in persisted catalog")
 
-    detail_cache = await ensure_lot_detail_cache(session, record, refresh=False)
+    detail_cache = await session.scalar(select(AuctionLotDetailCache).where(AuctionLotDetailCache.lot_record_id == record.id))
+    if detail_cache is not None:
+        _sync_record_from_detail_cache(record, detail_cache)
     work_item = await ensure_work_item(session, record)
     updates = payload.model_dump(exclude_unset=True)
     for field, value in updates.items():
@@ -130,10 +132,16 @@ async def ensure_lot_detail_cache(
         return detail_cache
 
     provider = get_source_provider(record.source_code)
-    lot_detail = await asyncio.to_thread(provider.get_lot, record.lot_external_id)
+    try:
+        lot_detail = await asyncio.to_thread(provider.get_lot, record.lot_external_id)
+    except NotImplementedError:
+        return detail_cache
     auction_detail = None
     if record.auction_external_id:
-        auction_detail = await asyncio.to_thread(provider.get_auction, record.auction_external_id)
+        try:
+            auction_detail = await asyncio.to_thread(provider.get_auction, record.auction_external_id)
+        except NotImplementedError:
+            auction_detail = None
 
     lot_payload = lot_detail.model_dump(mode="json")
     auction_payload = auction_detail.model_dump(mode="json") if auction_detail else None
@@ -181,10 +189,14 @@ async def ensure_lot_detail_cache(
 def _sync_record_from_detail_cache(record: AuctionLotRecord, detail_cache: AuctionLotDetailCache) -> None:
     publication_date = _publication_date_from_detail_cache(detail_cache)
     lot_details = _lot_details_from_detail_cache(detail_cache)
+    auction_details = _auction_details_from_detail_cache(detail_cache)
 
     row = dict(record.datagrid_row or {})
     if publication_date and row.get("publication_date") != publication_date:
         row["publication_date"] = publication_date
+    for key, value in auction_details.items():
+        if value is not None:
+            row[key] = value
     for key, value in lot_details.items():
         if value is not None:
             row[key] = value
@@ -207,6 +219,10 @@ def _sync_record_from_detail_cache(record: AuctionLotRecord, detail_cache: Aucti
     auction_payload = dict(normalized_item.get("auction") or {})
     if publication_date and auction_payload.get("publication_date") != publication_date:
         auction_payload["publication_date"] = publication_date
+    for key, value in auction_details.items():
+        if value is not None:
+            auction_payload[key] = value
+    if auction_payload:
         normalized_item["auction"] = auction_payload
     lot_payload = dict(normalized_item.get("lot") or {})
     for key, value in lot_details.items():
@@ -234,6 +250,7 @@ def _lot_details_from_detail_cache(detail_cache: AuctionLotDetailCache | None) -
     payload = detail_cache.lot_detail or {}
     lot = payload.get("lot") or {}
     return {
+        "category": _clean_text(lot.get("category")) or _raw_field_value(payload.get("raw_fields") or [], "Категория площадки", "Категория"),
         "location": _clean_text(lot.get("location")),
         "location_region": _clean_text(lot.get("region")),
         "location_city": _clean_text(lot.get("city")),
@@ -245,11 +262,66 @@ def _lot_details_from_detail_cache(detail_cache: AuctionLotDetailCache | None) -
     }
 
 
+def _auction_details_from_detail_cache(detail_cache: AuctionLotDetailCache | None) -> dict[str, str | None]:
+    details = {
+        "application_start": None,
+        "application_deadline": None,
+        "auction_date": None,
+    }
+    if detail_cache is None:
+        return details
+
+    for payload in (detail_cache.auction_detail or {}, detail_cache.lot_detail or {}):
+        auction = payload.get("auction") or {}
+        for key in details:
+            details[key] = details[key] or _clean_datetime_text(auction.get(key))
+
+        raw_fields = payload.get("raw_fields") or []
+        application_start, application_deadline = _raw_datetime_range(raw_fields, "Прием заявок", "Приём заявок")
+        auction_start, _auction_deadline = _raw_datetime_range(raw_fields, "Проведение торгов")
+        details["application_start"] = details["application_start"] or application_start
+        details["application_deadline"] = details["application_deadline"] or application_deadline
+        details["auction_date"] = details["auction_date"] or auction_start
+
+    return details
+
+
 def _clean_text(value: object) -> str | None:
     if not isinstance(value, str):
         return None
     cleaned = value.strip()
     return cleaned or None
+
+
+def _clean_datetime_text(value: object) -> str | None:
+    cleaned = _clean_text(value)
+    if not cleaned:
+        return None
+    return re.sub(
+        r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b",
+        lambda match: f"{int(match.group(1)):02d}.{int(match.group(2)):02d}.{match.group(3)}",
+        cleaned,
+    )
+
+
+def _raw_field_value(fields: list[dict], *names: str) -> str | None:
+    wanted = {name.lower().rstrip(":") for name in names}
+    for field in fields:
+        field_name = str(field.get("name") or "").lower().rstrip(":")
+        value = field.get("value")
+        if field_name in wanted and isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _raw_datetime_range(fields: list[dict], *names: str) -> tuple[str | None, str | None]:
+    value = _raw_field_value(fields, *names)
+    if not value:
+        return None, None
+    match = re.search(r"\bс\s+(.+?)\s+до\s+(.+)$", value, re.IGNORECASE)
+    if not match:
+        return None, _clean_datetime_text(value)
+    return _clean_datetime_text(match.group(1)), _clean_datetime_text(match.group(2))
 
 
 def _add_detail_observation(
@@ -315,6 +387,8 @@ def recalculate_record_rating(
     exclusion_keywords: tuple[str, ...] | None = None,
     legal_risk_rules: LegalRiskRules | None = None,
 ) -> LotRating:
+    if detail_cache is not None:
+        _sync_record_from_detail_cache(record, detail_cache)
     row = LotDatagridRow.model_validate(record.datagrid_row)
     economy = _calculate_economy(record, work_item) if work_item else LotEconomyResponse(current_price=parse_price(record.initial_price))
     row.analysis = build_lot_analysis(
@@ -327,8 +401,9 @@ def recalculate_record_rating(
         exclusion_keywords=exclusion_keywords,
         legal_risk_rules=legal_risk_rules,
     )
-    row.model_category = row.analysis.category
-    row.market_value = work_item.market_value if work_item else None
+    row.model_category = row.analysis.category or row.model_category
+    row.category = row.category or row.model_category
+    row.market_value = work_item.market_value if work_item and work_item.market_value is not None else row.market_value
     row.platform_fee = work_item.platform_fee if work_item else None
     row.delivery_cost = work_item.delivery_cost if work_item else None
     row.dismantling_cost = work_item.dismantling_cost if work_item else None
@@ -341,7 +416,7 @@ def recalculate_record_rating(
     row.full_entry_cost = economy.full_entry_cost
     row.potential_profit = economy.potential_profit
     row.roi = economy.roi
-    row.market_discount = economy.market_discount
+    row.market_discount = economy.market_discount if economy.market_discount is not None else row.market_discount
     row.formula_max_purchase_price = economy.max_purchase_price
     row.exclude_from_analysis = work_item.exclude_from_analysis if work_item else False
     row.exclusion_reason = work_item.exclusion_reason if work_item else None
@@ -547,7 +622,13 @@ def _is_media_document(document: dict) -> bool:
 def _parse_deadline(value: str | None) -> datetime | None:
     if not value:
         return None
-    for pattern in ("%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M", "%Y-%m-%dT%H:%M:%S"):
+    for pattern in (
+        "%d.%m.%Y %H:%M:%S",
+        "%d.%m.%Y %H:%M",
+        "%d/%m/%Y %H:%M:%S",
+        "%d/%m/%Y %H:%M",
+        "%Y-%m-%dT%H:%M:%S",
+    ):
         try:
             return datetime.strptime(value[:19], pattern)
         except ValueError:

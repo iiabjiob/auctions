@@ -130,7 +130,8 @@ def build_lot_analysis(
         exclusion_keyword = (work_item.exclusion_reason or "").strip() or "manual"
     legal_risk = _resolve_legal_risk(search_text, category, legal_risk_rules or DEFAULT_LEGAL_RISK_RULES)
     has_documents = bool(detail_cache and detail_cache.documents)
-    has_photos = any(_is_media_document(document) for document in (detail_cache.documents if detail_cache else []))
+    has_row_photos = _has_real_row_photos(row)
+    has_photos = has_row_photos or any(_is_media_document(document) for document in (detail_cache.documents if detail_cache else []))
     completeness = "complete" if has_documents and has_photos else "partial"
     hours_to_deadline = _hours_to_deadline(row.application_deadline, analysis_time)
 
@@ -140,7 +141,7 @@ def build_lot_analysis(
     if matched_keyword:
         reasons.append(f"Ключевое слово: {matched_keyword}")
     if work_item and work_item.market_value is not None:
-        reasons.append("Есть ручная рыночная стоимость")
+        reasons.append("Есть рыночная стоимость")
     if economy.roi is not None:
         reasons.append(f"ROI: {_format_percent(economy.roi)}")
     if economy.market_discount is not None:
@@ -207,6 +208,15 @@ def _build_search_text(record: AuctionLotRecord, detail_cache: AuctionLotDetailC
             ]
         )
     return " ".join(parts).lower()
+
+
+def _has_real_row_photos(row: LotDatagridRow) -> bool:
+    urls = [row.primary_image_url or "", *(image.url for image in row.images)]
+    return any(url and not _is_locked_tbankrot_image_url(url) for url in urls)
+
+
+def _is_locked_tbankrot_image_url(url: str) -> bool:
+    return "/img/blur/" in url.lower() or "/blur_" in url.lower()
 
 
 def json_text(value: object) -> str:
@@ -329,7 +339,13 @@ def _hours_to_deadline(value: str | None, now: datetime) -> int | None:
 
 def _parse_deadline(value: str) -> datetime | None:
     normalized = value.strip()
-    for pattern in ("%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M", "%Y-%m-%dT%H:%M:%S"):
+    for pattern in (
+        "%d.%m.%Y %H:%M:%S",
+        "%d.%m.%Y %H:%M",
+        "%d/%m/%Y %H:%M:%S",
+        "%d/%m/%Y %H:%M",
+        "%Y-%m-%dT%H:%M:%S",
+    ):
         try:
             return datetime.strptime(normalized[:19], pattern)
         except ValueError:

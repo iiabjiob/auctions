@@ -50,6 +50,18 @@ class AuctionSummary(BaseModel):
     efrsb_message_number: str | None = None
 
 
+class PriceScheduleStep(BaseModel):
+    starts_at: str
+    price: str
+
+
+class LotImage(BaseModel):
+    url: str
+    thumbnail_url: str | None = None
+    alt: str | None = None
+    source: str | None = None
+
+
 class LotSummary(BaseModel):
     source: str = "utender"
     external_id: str | None = None
@@ -67,6 +79,7 @@ class LotSummary(BaseModel):
     initial_price: str | None = None
     current_price: str | None = None
     minimum_price: str | None = None
+    market_value: str | None = None
     status: str | None = None
     step_percent: str | None = None
     step_amount: str | None = None
@@ -78,6 +91,9 @@ class LotSummary(BaseModel):
     applications_count: str | None = None
     description: str | None = None
     inspection_order: str | None = None
+    price_schedule: list[PriceScheduleStep] = Field(default_factory=list)
+    images: list[LotImage] = Field(default_factory=list)
+    primary_image_url: str | None = None
 
 
 class AuctionDocument(BaseModel):
@@ -95,6 +111,7 @@ class AuctionListItem(BaseModel):
     auction: AuctionSummary
     lot: LotSummary
     organizer: OrganizerInfo
+    debtor: DebtorInfo | None = None
     winner: str | None = None
 
 
@@ -107,6 +124,8 @@ class LotDetailResponse(BaseModel):
     url: str
     auction: AuctionSummary
     lot: LotSummary
+    organizer: OrganizerInfo | None = None
+    debtor: DebtorInfo | None = None
     documents: list[AuctionDocument]
     raw_fields: list[ScrapedField]
     raw_tables: list[list[str]]
@@ -173,6 +192,7 @@ class DatagridColumn(BaseModel):
 
 class LotDatagridRow(BaseModel):
     row_id: str
+    source_position: int | None = None
     source: str
     source_title: str
     auction_id: str | None = None
@@ -183,6 +203,7 @@ class LotDatagridRow(BaseModel):
     lot_id: str | None = None
     lot_number: str | None = None
     lot_name: str | None = None
+    lot_description: str | None = None
     lot_url: str | None = None
     category: str | None = None
     location: str | None = None
@@ -190,6 +211,7 @@ class LotDatagridRow(BaseModel):
     location_city: str | None = None
     location_address: str | None = None
     location_coordinates: str | None = None
+    debtor_name: str | None = None
     model_category: str | None = None
     status: str | None = None
     initial_price: str | None = None
@@ -198,6 +220,10 @@ class LotDatagridRow(BaseModel):
     current_price_value: Decimal | None = None
     minimum_price: str | None = None
     minimum_price_value: Decimal | None = None
+    price_schedule: list[PriceScheduleStep] = Field(default_factory=list)
+    images: list[LotImage] = Field(default_factory=list)
+    primary_image_url: str | None = None
+    image_count: int = 0
     organizer_name: str | None = None
     application_deadline: str | None = None
     auction_date: str | None = None

@@ -14,7 +14,6 @@ from app.models import UserModel
 from app.schemas.analysis_config import AuctionAnalysisConfigResponse, AuctionAnalysisConfigUpdate
 from app.schemas.auctions import (
     AuctionDetailResponse,
-    AuctionListResponse,
     AuctionSourceInfo,
     LotDatagridResponse,
     LotDetailResponse,
@@ -26,11 +25,6 @@ from app.services.auction_analysis_config import auction_analysis_config_service
 from app.services.auction_sources import get_source_provider, list_source_infos
 from app.services.auction_workspace import get_lot_workspace, update_lot_work_item
 from app.infrastructure.redis.streams import read_auction_events
-from app.services.utender_scraper import (
-    fetch_auction_detail,
-    fetch_auction_list,
-    fetch_lot_detail,
-)
 
 
 router = APIRouter(prefix="/api/v1/auctions", tags=["Auctions"])
@@ -70,7 +64,7 @@ async def patch_auction_analysis_config(
 @router.get("/lots", response_model=LotDatagridResponse)
 async def get_lots_datagrid(
     period: str = Query(default="month", pattern="^(week|month|year)$"),
-    source: str | None = Query(default=None),
+    source: str | None = Query(default="tbankrot"),
     q: str | None = Query(default=None),
     status: str | None = Query(default=None),
     min_price: Decimal | None = Query(default=None, ge=0),
@@ -191,27 +185,3 @@ async def get_source_auction(
         raise HTTPException(status_code=400, detail=str(error)) from error
     return await asyncio.to_thread(provider.get_auction, auction_id)
 
-
-@router.get("/utender", response_model=AuctionListResponse)
-async def get_utender_auctions(
-    limit: int = Query(default=20, ge=1, le=100),
-    current_user: UserModel = Depends(get_current_user),
-) -> AuctionListResponse:
-    items = await asyncio.to_thread(fetch_auction_list, limit)
-    return AuctionListResponse(items=items)
-
-
-@router.get("/utender/lots/{lot_id}", response_model=LotDetailResponse)
-async def get_utender_lot(
-    lot_id: str,
-    current_user: UserModel = Depends(get_current_user),
-) -> LotDetailResponse:
-    return await asyncio.to_thread(fetch_lot_detail, lot_id)
-
-
-@router.get("/utender/{auction_id}", response_model=AuctionDetailResponse)
-async def get_utender_auction(
-    auction_id: str,
-    current_user: UserModel = Depends(get_current_user),
-) -> AuctionDetailResponse:
-    return await asyncio.to_thread(fetch_auction_detail, auction_id)

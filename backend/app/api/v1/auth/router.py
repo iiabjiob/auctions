@@ -18,7 +18,6 @@ async def login(
     payload: LoginRequest,
     db: AsyncSession = Depends(get_db),
 ) -> AuthSessionResponse:
-    await auth_service.ensure_default_user(db)
     return AuthSessionResponse.model_validate(
         await auth_service.login(db, email=payload.email, password=payload.password)
     )
