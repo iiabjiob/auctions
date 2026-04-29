@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     debug_level: str = "INFO"
     auth_secret_key: str = "dev-auctions-auth-secret"
     auth_token_ttl_minutes: int = 60 * 24 * 7
+    cors_allowed_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     default_user_enabled: bool = APP_ENV not in ("production", "prod")
     default_user_name: str = "Default User"
     default_user_email: str = "demo@auctions.local"
@@ -46,7 +47,8 @@ class Settings(BaseSettings):
     # ---- Redis / background sync ----
     redis_url: str = "redis://redis:6379/0"
     auction_events_stream: str = "auction:events"
-    auction_sync_interval_seconds: int = 300
+    auction_sync_interval_seconds: int = 60 * 60 * 3
+    auction_sync_interval_jitter_seconds: int = 60 * 15
     auction_sync_limit: int = 0
     auction_sync_commit_chunk_size: int = 25
     auction_sync_progress_log_every: int = 25

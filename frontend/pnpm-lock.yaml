@@ -11,6 +11,9 @@ importers:
       '@affino/combobox-vue':
         specifier: ^0.1.0
         version: 0.1.0(vue@3.5.26(typescript@5.9.3))
+      '@affino/datagrid-vue':
+        specifier: 0.3.26
+        version: 0.3.26(@affino/datagrid-theme@0.2.2)(pinia@3.0.4(typescript@5.9.3)(vue@3.5.26(typescript@5.9.3)))(vue@3.5.26(typescript@5.9.3))
       '@affino/datagrid-vue-app':
         specifier: ^0.1.39
         version: 0.1.39(@affino/menu-core@1.1.0)(pinia@3.0.4(typescript@5.9.3)(vue@3.5.26(typescript@5.9.3)))(vue@3.5.26(typescript@5.9.3))

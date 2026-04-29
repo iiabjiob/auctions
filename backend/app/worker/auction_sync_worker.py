@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
+from collections.abc import Callable
 
 from app.core.config import get_settings
 from app.infrastructure.db.database import AsyncSessionLocal
@@ -12,6 +14,20 @@ from app.services.auction_sync import sync_source_lots
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+
+def calculate_next_sync_delay(
+    interval_seconds: int,
+    jitter_seconds: int,
+    *,
+    random_fraction: Callable[[], float] = random.random,
+) -> float:
+    base_delay = max(1, interval_seconds)
+    jitter = max(0, jitter_seconds)
+    if jitter == 0:
+        return float(base_delay)
+    offset = ((random_fraction() * 2) - 1) * jitter
+    return max(1.0, base_delay + offset)
 
 
 async def sync_all_sources() -> None:
@@ -41,7 +57,12 @@ async def run_worker() -> None:
     logger.info("Auction sync worker started")
     while True:
         await sync_all_sources()
-        await asyncio.sleep(settings.auction_sync_interval_seconds)
+        delay = calculate_next_sync_delay(
+            settings.auction_sync_interval_seconds,
+            settings.auction_sync_interval_jitter_seconds,
+        )
+        logger.info("Next auction sync in %.0f seconds", delay)
+        await asyncio.sleep(delay)
 
 
 def main() -> None:

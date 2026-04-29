@@ -10,6 +10,7 @@ from app.services.tbankrot_scraper import iter_auction_list as iter_tbankrot_auc
 
 
 settings = get_settings()
+LIST_SYNC_INCLUDE_PRICE_SCHEDULE = False
 
 
 class AuctionSourceProvider(Protocol):
@@ -26,7 +27,7 @@ class AuctionSourceProvider(Protocol):
     def iter_lots(self, limit: int | None = None):
         ...
 
-    def get_lot(self, lot_id: str) -> LotDetailResponse:
+    def get_lot(self, lot_id: str, *, include_price_schedule: bool = True) -> LotDetailResponse:
         ...
 
     def get_auction(self, auction_id: str) -> AuctionDetailResponse:
@@ -51,7 +52,7 @@ class TBankrotSourceProvider:
         pages = None if settings.tbankrot_pages <= 0 else settings.tbankrot_pages
         return fetch_tbankrot_auction_list(
             limit=limit,
-            include_price_schedule=settings.tbankrot_include_price_schedule,
+            include_price_schedule=LIST_SYNC_INCLUDE_PRICE_SCHEDULE,
             page=1,
             pages=pages,
             authenticate=authenticate,
@@ -66,7 +67,7 @@ class TBankrotSourceProvider:
         pages = None if settings.tbankrot_pages <= 0 else settings.tbankrot_pages
         return iter_tbankrot_auction_list(
             limit=limit,
-            include_price_schedule=settings.tbankrot_include_price_schedule,
+            include_price_schedule=LIST_SYNC_INCLUDE_PRICE_SCHEDULE,
             page=1,
             pages=pages,
             authenticate=authenticate,
@@ -74,12 +75,13 @@ class TBankrotSourceProvider:
             auth_password=auth_password,
         )
 
-    def get_lot(self, lot_id: str) -> LotDetailResponse:
+    def get_lot(self, lot_id: str, *, include_price_schedule: bool = True) -> LotDetailResponse:
         auth_email = settings.tbankrot_login
         auth_password = settings.tbankrot_password
         authenticate = settings.tbankrot_auth_enabled or bool(auth_email and auth_password)
         return fetch_tbankrot_lot_detail(
             lot_id,
+            include_price_schedule=include_price_schedule,
             authenticate=authenticate,
             auth_email=auth_email,
             auth_password=auth_password,

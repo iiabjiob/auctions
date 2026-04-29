@@ -67,6 +67,7 @@ async def get_lots_datagrid(
     source: str | None = Query(default="tbankrot"),
     q: str | None = Query(default=None),
     status: str | None = Query(default=None),
+    analysis_color: str | None = Query(default=None),
     min_price: Decimal | None = Query(default=None, ge=0),
     max_price: Decimal | None = Query(default=None, ge=0),
     only_new: bool = Query(default=False),
@@ -75,12 +76,19 @@ async def get_lots_datagrid(
     persisted: bool = Query(default=True),
     page: int = Query(default=1, ge=1),
     page_size: int | None = Query(default=None, ge=1, le=10000),
+    offset: int | None = Query(default=None, ge=0),
     limit: int | None = Query(default=None, ge=1, le=10000),
+    sort_by: str | None = Query(default=None),
+    sort_direction: str = Query(default="asc", pattern="^(asc|desc)$"),
+    sort_model: str | None = Query(default=None),
+    grid_filter: str | None = Query(default=None),
     session: AsyncSession = Depends(get_db),
     current_user: UserModel = Depends(get_current_user),
 ) -> LotDatagridResponse:
     resolved_page_size = page_size or limit or 100
     try:
+        parsed_sort_model = _parse_sort_model(sort_model)
+        parsed_grid_filter = _parse_grid_filter(grid_filter)
         if persisted:
             return await list_persisted_lots_for_datagrid(
                 session,
@@ -88,6 +96,7 @@ async def get_lots_datagrid(
                 source=source,
                 q=q,
                 status=status,
+                analysis_color=analysis_color,
                 min_price=min_price,
                 max_price=max_price,
                 only_new=only_new,
@@ -95,6 +104,11 @@ async def get_lots_datagrid(
                 min_rating=min_rating,
                 page=page,
                 page_size=resolved_page_size,
+                offset=offset,
+                sort_by=sort_by,
+                sort_direction=sort_direction,
+                sort_model=parsed_sort_model,
+                grid_filter=parsed_grid_filter,
             )
         return await asyncio.to_thread(
             list_lots_for_datagrid,
@@ -102,6 +116,7 @@ async def get_lots_datagrid(
             source=source,
             q=q,
             status=status,
+            analysis_color=analysis_color,
             min_price=min_price,
             max_price=max_price,
             only_new=only_new,
@@ -112,6 +127,43 @@ async def get_lots_datagrid(
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+def _parse_grid_filter(payload: str | None) -> dict | None:
+    if not payload:
+        return None
+    try:
+        value = json.loads(payload)
+    except json.JSONDecodeError as error:
+        raise ValueError("Invalid grid_filter JSON") from error
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("grid_filter must be a JSON object")
+    return value
+
+
+def _parse_sort_model(payload: str | None) -> list[dict] | None:
+    if not payload:
+        return None
+    try:
+        value = json.loads(payload)
+    except json.JSONDecodeError as error:
+        raise ValueError("Invalid sort_model JSON") from error
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise ValueError("sort_model must be a JSON array")
+    normalized: list[dict] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        key = item.get("key")
+        direction = item.get("direction", "asc")
+        if not isinstance(key, str) or direction not in {"asc", "desc"}:
+            continue
+        normalized.append({"key": key, "direction": direction})
+    return normalized or None
 
 
 @router.get("/events")

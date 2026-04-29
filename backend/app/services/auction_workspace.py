@@ -33,7 +33,7 @@ from app.schemas.auctions import (
 from app.infrastructure.redis.streams import publish_auction_event
 from app.services.auction_analysis import LegalRiskRules, build_lot_analysis
 from app.services.auction_analysis_config import auction_analysis_config_service
-from app.services.auction_catalog import parse_price
+from app.services.auction_catalog import parse_price, validate_datagrid_row_payload
 from app.services.auction_sources import get_source_provider
 
 
@@ -124,16 +124,21 @@ async def ensure_lot_detail_cache(
     record: AuctionLotRecord,
     *,
     refresh: bool = False,
+    include_price_schedule: bool = True,
 ) -> AuctionLotDetailCache | None:
     statement = select(AuctionLotDetailCache).where(AuctionLotDetailCache.lot_record_id == record.id)
     detail_cache = await session.scalar(statement)
-    if detail_cache is not None and not refresh:
+    if detail_cache is not None and not refresh and (not include_price_schedule or _detail_cache_has_price_schedule(detail_cache)):
         _sync_record_from_detail_cache(record, detail_cache)
         return detail_cache
 
     provider = get_source_provider(record.source_code)
     try:
-        lot_detail = await asyncio.to_thread(provider.get_lot, record.lot_external_id)
+        lot_detail = await asyncio.to_thread(
+            provider.get_lot,
+            record.lot_external_id,
+            include_price_schedule=include_price_schedule,
+        )
     except NotImplementedError:
         return detail_cache
     auction_detail = None
@@ -143,7 +148,13 @@ async def ensure_lot_detail_cache(
         except NotImplementedError:
             auction_detail = None
 
-    lot_payload = lot_detail.model_dump(mode="json")
+    existing_schedule = _price_schedule_from_record_or_cache(record, detail_cache)
+    lot_payload = _lot_detail_payload_with_price_schedule_state(
+        lot_detail.model_dump(mode="json"),
+        previous_payload=detail_cache.lot_detail if detail_cache else None,
+        include_price_schedule=include_price_schedule,
+        fallback_price_schedule=existing_schedule,
+    )
     auction_payload = auction_detail.model_dump(mode="json") if auction_detail else None
     documents = _merge_documents(lot_detail, auction_detail)
     content_hash = hashlib.sha256(
@@ -184,6 +195,59 @@ async def ensure_lot_detail_cache(
     if content_changed:
         _add_detail_observation(session, record, detail_cache)
     return detail_cache
+
+
+def _detail_cache_has_price_schedule(detail_cache: AuctionLotDetailCache) -> bool:
+    payload = detail_cache.lot_detail or {}
+    if payload.get("_price_schedule_loaded") is True:
+        return True
+    lot = payload.get("lot") or {}
+    schedule = lot.get("price_schedule")
+    return isinstance(schedule, list) and len(schedule) > 0
+
+
+def _lot_detail_payload_with_price_schedule_state(
+    payload: dict,
+    *,
+    previous_payload: dict | None,
+    include_price_schedule: bool,
+    fallback_price_schedule: list | None = None,
+) -> dict:
+    next_payload = dict(payload)
+    lot = dict(next_payload.get("lot") or {})
+    previous_lot = dict((previous_payload or {}).get("lot") or {})
+    previous_schedule = previous_lot.get("price_schedule") or []
+    current_schedule = lot.get("price_schedule") or []
+    fallback_schedule = fallback_price_schedule or []
+
+    if include_price_schedule:
+        if not current_schedule and (previous_schedule or fallback_schedule):
+            lot["price_schedule"] = previous_schedule or fallback_schedule
+        next_payload["_price_schedule_loaded"] = True
+    elif (previous_payload or {}).get("_price_schedule_loaded") is True or previous_schedule or fallback_schedule:
+        lot["price_schedule"] = previous_schedule or fallback_schedule
+        next_payload["_price_schedule_loaded"] = True
+    else:
+        next_payload["_price_schedule_loaded"] = False
+
+    next_payload["lot"] = lot
+    return next_payload
+
+
+def _price_schedule_from_record_or_cache(
+    record: AuctionLotRecord,
+    detail_cache: AuctionLotDetailCache | None,
+) -> list:
+    row_schedule = (record.datagrid_row or {}).get("price_schedule")
+    if isinstance(row_schedule, list) and row_schedule:
+        return row_schedule
+    normalized_lot = (record.normalized_item or {}).get("lot") or {}
+    normalized_schedule = normalized_lot.get("price_schedule")
+    if isinstance(normalized_schedule, list) and normalized_schedule:
+        return normalized_schedule
+    cache_lot = ((detail_cache.lot_detail or {}).get("lot") or {}) if detail_cache else {}
+    cache_schedule = cache_lot.get("price_schedule")
+    return cache_schedule if isinstance(cache_schedule, list) else []
 
 
 def _sync_record_from_detail_cache(record: AuctionLotRecord, detail_cache: AuctionLotDetailCache) -> None:
@@ -367,13 +431,13 @@ async def build_workspace_response(
     detail_cache: AuctionLotDetailCache | None,
     work_item: AuctionLotWorkItem,
 ) -> LotWorkspaceResponse:
-    lot_detail = LotDetailResponse.model_validate(detail_cache.lot_detail) if detail_cache else None
+    lot_detail = _lot_detail_response_from_cache(record, detail_cache)
     auction_detail = (
         AuctionDetailResponse.model_validate(detail_cache.auction_detail)
         if detail_cache and detail_cache.auction_detail
         else None
     )
-    row = LotDatagridRow.model_validate(record.datagrid_row)
+    row = validate_datagrid_row_payload(record.datagrid_row)
     row.work_decision_status = work_item.decision_status
     return LotWorkspaceResponse(
         record_id=record.id,
@@ -387,6 +451,23 @@ async def build_workspace_response(
     )
 
 
+def _lot_detail_response_from_cache(
+    record: AuctionLotRecord,
+    detail_cache: AuctionLotDetailCache | None,
+) -> LotDetailResponse | None:
+    if detail_cache is None:
+        return None
+
+    payload = dict(detail_cache.lot_detail or {})
+    lot = dict(payload.get("lot") or {})
+    if not lot.get("price_schedule"):
+        fallback_schedule = _price_schedule_from_record_or_cache(record, detail_cache)
+        if fallback_schedule:
+            lot["price_schedule"] = fallback_schedule
+            payload["lot"] = lot
+    return LotDetailResponse.model_validate(payload)
+
+
 def recalculate_record_rating(
     record: AuctionLotRecord,
     detail_cache: AuctionLotDetailCache | None,
@@ -398,7 +479,7 @@ def recalculate_record_rating(
 ) -> LotRating:
     if detail_cache is not None:
         _sync_record_from_detail_cache(record, detail_cache)
-    row = LotDatagridRow.model_validate(record.datagrid_row)
+    row = validate_datagrid_row_payload(record.datagrid_row)
     economy = _calculate_economy(record, work_item) if work_item else LotEconomyResponse(current_price=parse_price(record.initial_price))
     row.analysis = build_lot_analysis(
         record,
@@ -427,7 +508,7 @@ def recalculate_record_rating(
     row.roi = economy.roi
     row.market_discount = economy.market_discount if economy.market_discount is not None else row.market_discount
     row.formula_max_purchase_price = economy.max_purchase_price
-    row.exclude_from_analysis = work_item.exclude_from_analysis if work_item else False
+    row.exclude_from_analysis = bool(work_item.exclude_from_analysis) if work_item else False
     row.exclusion_reason = work_item.exclusion_reason if work_item else None
     rating = _calculate_workspace_rating(record, row, detail_cache, work_item, economy)
     row.rating = rating
@@ -439,7 +520,7 @@ def recalculate_record_rating(
 
 
 async def _publish_row_updated(record: AuctionLotRecord) -> None:
-    row = LotDatagridRow.model_validate(record.datagrid_row)
+    row = validate_datagrid_row_payload(record.datagrid_row)
     await publish_auction_event("lot.row_updated", {"row": row.model_dump(mode="json")})
 
 
@@ -528,6 +609,7 @@ def _calculate_workspace_rating(
     score = 35
     reasons = ["Базовая оценка по статусу, данным площадки и ручной экономике"]
     status = (record.status or row.status or "").lower()
+    is_cancelled = False
 
     if "приём" in status or "прием" in status:
         score += 20
@@ -537,6 +619,7 @@ def _calculate_workspace_rating(
         reasons.append("Публичное предложение")
     if "отмен" in status:
         score -= 50
+        is_cancelled = True
         reasons.append("Лот отменен")
     if economy.current_price is not None:
         score += 8
@@ -603,6 +686,7 @@ def _calculate_workspace_rating(
         reasons.append("Потенциальная прибыль положительная")
 
     decision = (work_item.decision_status or "") if work_item else ""
+    is_rejected = decision == "reject"
     if decision == "reject":
         score -= 60
         reasons.append("Команда отметила отказ")
@@ -612,6 +696,17 @@ def _calculate_workspace_rating(
     elif decision in {"watch", "calculate"}:
         score += 4
         reasons.append("Лот отмечен для проверки")
+
+    if row.analysis.legal_risk == "high":
+        score = min(score, 44)
+        reasons.append("Высокий юридический риск ограничивает рейтинг")
+    if row.analysis.is_excluded or row.exclude_from_analysis:
+        score = min(score, 20)
+        reasons.append("Лот исключен из анализа")
+    if is_rejected:
+        score = min(score, 20)
+    if is_cancelled:
+        score = min(score, 20)
 
     score = max(0, min(100, score))
     if score >= 70:

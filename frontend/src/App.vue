@@ -1,17 +1,24 @@
 <script setup lang="ts">
-import { computed, defineComponent, h, nextTick, onMounted, onUnmounted, reactive, ref, watch, type PropType } from 'vue'
+import { computed, defineComponent, h, nextTick, onMounted, onUnmounted, reactive, ref, shallowRef, watch, type PropType } from 'vue'
 import type { ComponentPublicInstance } from 'vue'
 import { storeToRefs } from 'pinia'
 import {
   DataGrid,
   type DataGridAppToolbarModule,
-  type DataGridAppClientRowModelOptions,
   type DataGridAppColumnInput,
   type DataGridExposed,
   type DataGridSavedViewSnapshot,
   readDataGridSavedViewFromStorage,
   writeDataGridSavedViewToStorage,
 } from '@affino/datagrid-vue-app'
+import {
+  createDataSourceBackedRowModel,
+  type DataGridDataSource,
+  type DataGridFilterSnapshot,
+  type DataGridSortState,
+  type DataGridDataSourcePushListener,
+  type DataSourceBackedRowModel,
+} from '@affino/datagrid-vue'
 import { createDialogFocusOrchestrator, useDialogController } from '@affino/dialog-vue'
 import AuthLoginScreen from './components/AuthLoginScreen.vue'
 import AnalysisSignalTooltip from './components/AnalysisSignalTooltip.vue'
@@ -216,6 +223,7 @@ type ApiLotSummary = {
   applications_count: string | null
   description: string | null
   inspection_order: string | null
+  price_schedule: ApiPriceScheduleStep[]
   images: ApiLotImage[]
   primary_image_url: string | null
 }
@@ -502,6 +510,7 @@ type ServerQuickFiltersState = {
 }
 
 const allRows = ref<GridLotRow[]>([])
+const catalogTotal = ref(0)
 const sources = ref<ApiSource[]>([])
 const presets = ref<FilterPreset[]>([])
 const analysisConfig = ref<AnalysisConfigResponse | null>(null)
@@ -530,19 +539,31 @@ const LOTS_DATASET_SIZE = 10_000
 const DETAIL_PANE_DEFAULT_WIDTH = 720
 const DETAIL_PANE_MIN_WIDTH = 420
 const DETAIL_PANE_MAX_WIDTH = 980
+const LOTS_RELOAD_DELAY_MS = 1200
+const SYNC_PROGRESS_RELOAD_INTERVAL_MS = 30_000
+const SERVER_ROW_MODEL_INITIAL_TOTAL = 100
+const SERVER_ROW_MODEL_INITIAL_FETCH_SIZE = 64
 const detailPaneWidth = ref(readStoredDetailPaneWidth())
 const gridRef = ref<DataGridExposed<GridLotRow> | null>(null)
 const gridSurfaceRef = ref<HTMLElement | null>(null)
 const gridSavedViewRestored = ref(false)
 const gridRowRevision = ref(0)
+let gridSavedViewApplying = false
 let resizeStartX = 0
 let resizeStartWidth = 0
 let detailRequestId = 0
 let detailGridFocusAnchor: GridFocusAnchor | null = null
 const queuedRowUpdates = new Map<string, ApiLotRow>()
+const catalogDataSourceListeners = new Set<DataGridDataSourcePushListener<GridLotRow>>()
 let rowUpdateFrame: number | null = null
 let deferredLotsReloadTimer: ReturnType<typeof window.setTimeout> | null = null
+let deferredLotsReloadShouldResetViewport = false
 let gridSummaryFrame: number | null = null
+let lastLotsReloadStartedAt = 0
+let lastGridServerQuerySignature = ''
+let catalogPullRequestSeq = 0
+let catalogSoftReloadSeq = 0
+const catalogFetchRequests = new Map<string, Promise<LotsResponse>>()
 
 const DEFAULT_SERVER_FILTERS: ServerQuickFiltersState = {
   period: 'month',
@@ -1351,11 +1372,7 @@ function resolveClientGridRowId(row: Pick<GridLotRow, 'id'>) {
   return row.id
 }
 
-const clientRowModelOptions = {
-  resolveRowId: resolveClientGridRowId,
-} satisfies DataGridAppClientRowModelOptions<GridLotRow>
-
-const publicClientRowModelOptions = clientRowModelOptions as DataGridAppClientRowModelOptions<unknown>
+const catalogRowModel = shallowRef<DataSourceBackedRowModel<GridLotRow> | null>(null)
 const isGridCellEditable = ({ column }: { column: { key: string } }) => EDITABLE_GRID_COLUMN_KEYS.has(column.key)
 const columnLayoutOptions = { buttonLabel: 'Колонки' }
 const advancedFilterOptions = { buttonLabel: 'Расширенный фильтр' }
@@ -1384,7 +1401,6 @@ const toolbarModules = computed<readonly DataGridAppToolbarModule[]>(() => [
         const nextPeriod = isDatasetPeriod(value) ? value : DEFAULT_SERVER_FILTERS.period
         if (filters.period === nextPeriod) return
         filters.period = nextPeriod
-        void loadLots()
       },
       onSourceChange: (value: string) => {
         filters.source = value
@@ -1475,7 +1491,7 @@ const statusOptions = computed(() => {
 
 const rows = computed(() => allRows.value.filter(matchesQuickFilters))
 const summaryRows = computed(() => (gridSummaryReady.value ? projectedRowsForSummary.value : rows.value))
-const totalRows = computed(() => summaryRows.value.length)
+const totalRows = computed(() => catalogTotal.value || summaryRows.value.length)
 const loadedRowsCount = computed(() => allRows.value.length)
 const openApplicationsCount = computed(() =>
   summaryRows.value.filter((row) => row.status.toLowerCase().includes('прием') || row.status.toLowerCase().includes('приём'))
@@ -1568,8 +1584,14 @@ const lotTextFields = computed(() =>
   ]),
 )
 
+const priceScheduleSteps = computed(() => {
+  if (selectedLot.value?.priceSchedule?.length) return selectedLot.value.priceSchedule
+  if (liveLot.value?.price_schedule?.length) return liveLot.value.price_schedule
+  return []
+})
+
 const priceScheduleFields = computed(() =>
-  (selectedLot.value?.priceSchedule ?? []).map((step, index) => ({
+  priceScheduleSteps.value.map((step, index) => ({
     label: `${index + 1}. ${step.starts_at}`,
     value: step.price,
   })),
@@ -1860,11 +1882,12 @@ function persistServerFilters() {
   window.localStorage.setItem(SERVER_FILTERS_STORAGE_KEY, JSON.stringify(sanitizeServerFilters(filters)))
 }
 
-function withoutGridSort<TRow extends Record<string, unknown>>(
+function sanitizeGridSavedView<TRow extends Record<string, unknown>>(
   savedView: DataGridSavedViewSnapshot<TRow>,
+  options: { dropSort?: boolean } = {},
 ): DataGridSavedViewSnapshot<TRow> {
   const rowSnapshot = savedView.state.rows.snapshot
-  if (!rowSnapshot.sortModel.length) return savedView
+  const rowCount = Math.max(0, rowSnapshot.rowCount)
 
   return {
     ...savedView,
@@ -1874,19 +1897,132 @@ function withoutGridSort<TRow extends Record<string, unknown>>(
         ...savedView.state.rows,
         snapshot: {
           ...rowSnapshot,
-          sortModel: [],
+          sortModel: options.dropSort ? [] : rowSnapshot.sortModel,
+          pagination: {
+            ...rowSnapshot.pagination,
+            enabled: false,
+            pageSize: 0,
+            currentPage: 0,
+            pageCount: rowCount > 0 ? 1 : 0,
+            totalRowCount: rowCount,
+            startIndex: rowCount > 0 ? 0 : -1,
+            endIndex: rowCount > 0 ? rowCount - 1 : -1,
+          },
         },
       },
     },
   }
 }
 
-function clearGridSortModel() {
+function buildGridServerQuerySignature<TRow extends Record<string, unknown>>(savedView: DataGridSavedViewSnapshot<TRow>) {
+  const rowSnapshot = savedView.state.rows.snapshot
+  return JSON.stringify({
+    sortModel: rowSnapshot.sortModel ?? [],
+    filterModel: rowSnapshot.filterModel ?? null,
+    groupBy: rowSnapshot.groupBy ?? null,
+    pivotModel: rowSnapshot.pivotModel ?? null,
+    aggregationModel: savedView.state.rows.aggregationModel ?? null,
+    groupExpansion: rowSnapshot.groupExpansion ?? null,
+  })
+}
+
+function resolveViewportRangeSize(range?: { start: number; end: number } | null) {
+  return range && Number.isFinite(range.start) && Number.isFinite(range.end) ? Math.trunc(range.end - range.start + 1) : 0
+}
+
+function resolveCatalogServerViewportSize(preferredRange?: { start: number; end: number } | null) {
+  const range = preferredRange ?? catalogRowModel.value?.getSnapshot().viewportRange
+  const size = resolveViewportRangeSize(range)
+  if (size > 1) {
+    return Math.min(LOTS_DATASET_SIZE, Math.max(SERVER_ROW_MODEL_INITIAL_FETCH_SIZE, size))
+  }
+  return SERVER_ROW_MODEL_INITIAL_FETCH_SIZE
+}
+
+function ensureCatalogServerViewport(preferredRange?: { start: number; end: number } | null) {
+  const size = resolveCatalogServerViewportSize(preferredRange)
+  const rowModel = catalogRowModel.value
+  if (!rowModel) return false
+
+  const nextRange = { start: 0, end: size - 1 }
+  const currentRange = rowModel.getSnapshot().viewportRange
+  const changed = currentRange.start !== nextRange.start || currentRange.end !== nextRange.end
+  rowModel.setViewportRange(nextRange)
+  return changed
+}
+
+function expandCollapsedCatalogServerViewport() {
+  const range = catalogRowModel.value?.getSnapshot().viewportRange
+  if (resolveViewportRangeSize(range) > 1) return false
+  return ensureCatalogServerViewport()
+}
+
+function resetCatalogServerViewportOnQueryChange<TRow extends Record<string, unknown>>(
+  savedView: DataGridSavedViewSnapshot<TRow>,
+  options: { force?: boolean; onlyWhenCollapsed?: boolean } = {},
+) {
+  const nextSignature = buildGridServerQuerySignature(savedView)
+  if (!options.force && nextSignature === lastGridServerQuerySignature) return
+
+  lastGridServerQuerySignature = nextSignature
+  if (options.onlyWhenCollapsed && resolveViewportRangeSize(catalogRowModel.value?.getSnapshot().viewportRange) > 1) return
+  ensureCatalogServerViewport(savedView.state.rows.snapshot.viewportRange)
+}
+
+function hasSavedViewServerQueryState<TRow extends Record<string, unknown>>(savedView: DataGridSavedViewSnapshot<TRow>) {
+  const rowSnapshot = savedView.state.rows.snapshot
+  return (
+    rowSnapshot.sortModel.length > 0 ||
+    hasGridFilterModel(rowSnapshot.filterModel) ||
+    Boolean(rowSnapshot.groupBy?.fields?.length) ||
+    Boolean(rowSnapshot.pivotModel?.rows?.length || rowSnapshot.pivotModel?.columns?.length || rowSnapshot.pivotModel?.values?.length) ||
+    Boolean(savedView.state.rows.aggregationModel) ||
+    Boolean(rowSnapshot.groupExpansion?.toggledGroupKeys?.length)
+  )
+}
+
+function applyGridSavedColumns<TRow extends Record<string, unknown>>(savedView: DataGridSavedViewSnapshot<TRow>) {
   const api = gridRef.value?.getApi()
-  if (!api) return
-  const sortModel = api.rows.getSnapshot().sortModel
-  if (sortModel.length) {
-    api.rows.setSortModel([])
+  if (!api) return false
+
+  const { order, visibility, widths, pins } = savedView.state.columns
+  if (order.length > 0) {
+    api.columns.setOrder(order)
+  }
+  for (const [key, visible] of Object.entries(visibility)) {
+    api.columns.setVisibility(key, Boolean(visible))
+  }
+  for (const [key, width] of Object.entries(widths)) {
+    api.columns.setWidth(key, Number.isFinite(width) ? Math.max(0, Math.trunc(width as number)) : null)
+  }
+  for (const [key, pin] of Object.entries(pins)) {
+    if (pin === 'left' || pin === 'right' || pin === 'none') {
+      api.columns.setPin(key, pin)
+    }
+  }
+  return true
+}
+
+function applyGridSavedViewWithoutIntermediatePulls(
+  savedView: DataGridSavedViewSnapshot<GridLotRow & Record<string, unknown>>,
+  options: { forceViewportReset?: boolean } = {},
+) {
+  if (!gridRef.value) return false
+
+  const rowModel = catalogRowModel.value
+  const paused = rowModel?.pauseBackpressure() ?? false
+  const wasApplying = gridSavedViewApplying
+  gridSavedViewApplying = true
+  try {
+    const applied = gridRef.value.applySavedView(savedView, { applyViewport: false })
+    resetCatalogServerViewportOnQueryChange(savedView, { force: options.forceViewportReset })
+    return applied
+  } finally {
+    gridSavedViewApplying = wasApplying
+    if (paused) {
+      rowModel?.resumeBackpressure()
+      void rowModel?.flushBackpressure()
+    }
   }
 }
 
@@ -1896,52 +2032,63 @@ function readStoredGridSavedView() {
   const savedView = readDataGridSavedViewFromStorage(window.localStorage, GRID_SAVED_VIEW_STORAGE_KEY, (state, options) =>
     gridRef.value?.migrateState(state, options) ?? null,
   )
-  return savedView ? withoutGridSort(savedView) : null
+  return savedView ? sanitizeGridSavedView(savedView, { dropSort: true }) : null
 }
 
 function restoreGridSavedView() {
-  if (gridSavedViewRestored.value || !gridRef.value) return
+  if (gridSavedViewRestored.value || !gridRef.value) return false
 
   gridSavedViewRestored.value = true
   const savedView = readStoredGridSavedView()
   if (savedView) {
     try {
-      gridRef.value.applySavedView(savedView)
-      clearGridSortModel()
+      if (hasSavedViewServerQueryState(savedView)) {
+        applyGridSavedViewWithoutIntermediatePulls(savedView, { forceViewportReset: true })
+      } else {
+        const wasApplying = gridSavedViewApplying
+        gridSavedViewApplying = true
+        try {
+          applyGridSavedColumns(savedView)
+        } finally {
+          gridSavedViewApplying = wasApplying
+        }
+        lastGridServerQuerySignature = buildGridServerQuerySignature(savedView)
+      }
       writeDataGridSavedViewToStorage(window.localStorage, GRID_SAVED_VIEW_STORAGE_KEY, savedView)
     } catch {
       window.localStorage.removeItem(GRID_SAVED_VIEW_STORAGE_KEY)
     }
   }
   scheduleGridSummaryRefresh()
+  return true
 }
 
 function persistGridSavedView() {
-  if (!gridSavedViewRestored.value) return
+  if (!gridSavedViewRestored.value || gridSavedViewApplying) return
 
-  clearGridSortModel()
   const savedView = gridRef.value?.getSavedView()
   if (!savedView) return
 
-  writeDataGridSavedViewToStorage(window.localStorage, GRID_SAVED_VIEW_STORAGE_KEY, withoutGridSort(savedView))
+  const stableView = sanitizeGridSavedView(savedView)
+  resetCatalogServerViewportOnQueryChange(stableView, { onlyWhenCollapsed: true })
+  writeDataGridSavedViewToStorage(window.localStorage, GRID_SAVED_VIEW_STORAGE_KEY, stableView)
   scheduleGridSummaryRefresh()
 }
 
 function writeGridSavedView(view: unknown | null) {
   if (!gridRef.value || !view) return
   const migratedView = view as NonNullable<ReturnType<NonNullable<typeof gridRef.value>['getSavedView']>>
-  const stableView = withoutGridSort(migratedView)
-  gridRef.value.applySavedView(stableView)
-  clearGridSortModel()
+  const stableView = sanitizeGridSavedView(migratedView)
+  applyGridSavedViewWithoutIntermediatePulls(stableView, { forceViewportReset: true })
   writeDataGridSavedViewToStorage(window.localStorage, GRID_SAVED_VIEW_STORAGE_KEY, stableView)
   scheduleGridSummaryRefresh()
 }
 
 async function ensureGridSavedViewRestored() {
-  if (gridSavedViewRestored.value) return
+  if (gridSavedViewRestored.value) return false
 
   await nextTick()
-  restoreGridSavedView()
+  return restoreGridSavedView()
 }
 
 function authHeaders() {
@@ -1954,27 +2101,86 @@ function authHeaders() {
   })
 }
 
-function buildLotsUrl() {
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? 'http://localhost:8000' : '')).replace(/\/$/, '')
+
+function apiUrl(path: string) {
+  if (/^https?:\/\//i.test(path)) return path
+  return `${API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`
+}
+
+function hasGridFilterModel(filterModel: DataGridFilterSnapshot | null | undefined) {
+  if (!filterModel) return false
+  return (
+    Object.keys(filterModel.columnFilters ?? {}).length > 0 ||
+    Object.keys(filterModel.advancedFilters ?? {}).length > 0 ||
+    Boolean(filterModel.advancedExpression)
+  )
+}
+
+function buildLotsUrl(
+  options: {
+    offset?: number
+    limit?: number
+    sortModel?: readonly DataGridSortState[]
+    filterModel?: DataGridFilterSnapshot | null
+  } = {},
+) {
+  const limit = Math.max(1, Math.min(options.limit ?? LOTS_DATASET_SIZE, LOTS_DATASET_SIZE))
+  const offset = Math.max(0, options.offset ?? 0)
   const params = new URLSearchParams({
     period: filters.period,
     source: filters.source,
-    page: '1',
-    page_size: String(LOTS_DATASET_SIZE),
+    offset: String(offset),
+    limit: String(limit),
     persisted: 'true',
   })
 
-  return `/api/v1/auctions/lots?${params.toString()}`
+  const query = filters.query.trim()
+  const minPrice = parseFilterNumber(filters.minPrice)
+  const maxPrice = parseFilterNumber(filters.maxPrice)
+  if (query) params.set('q', query)
+  if (filters.status) params.set('status', filters.status)
+  if (filters.analysisColor) params.set('analysis_color', filters.analysisColor)
+  if (minPrice !== null) params.set('min_price', String(minPrice))
+  if (maxPrice !== null) params.set('max_price', String(maxPrice))
+  if (filters.onlyNew) params.set('only_new', 'true')
+  if (filters.shortlist) params.set('shortlist', 'true')
+  if (filters.minRating > 0) params.set('min_rating', String(filters.minRating))
+
+  const sort = options.sortModel?.[0]
+  if (sort) {
+    params.set('sort_by', sort.key)
+    params.set('sort_direction', sort.direction)
+  }
+  if (options.sortModel?.length) {
+    params.set('sort_model', JSON.stringify(options.sortModel))
+  }
+  if (hasGridFilterModel(options.filterModel)) {
+    params.set('grid_filter', JSON.stringify(options.filterModel))
+  }
+
+  return apiUrl(`/api/v1/auctions/lots?${params.toString()}`)
 }
 
-async function loadLots() {
-  if (!isAuthenticated.value) return
+function isAbortLikeError(error: unknown) {
+  return error instanceof DOMException && error.name === 'AbortError'
+}
 
-  loading.value = true
-  errorMessage.value = ''
-  try {
-    const response = await fetch(buildLotsUrl(), {
-      headers: authHeaders(),
-    })
+async function fetchCatalogResponse(url: string) {
+  return fetch(url, {
+    headers: authHeaders(),
+  })
+}
+
+async function fetchCatalogJson(url: string) {
+  const requestKey = `${accessToken.value ?? ''}\n${url}`
+  const existingRequest = catalogFetchRequests.get(requestKey)
+  if (existingRequest) {
+    return existingRequest
+  }
+
+  const request = (async () => {
+    const response = await fetchCatalogResponse(url)
     if (response.status === 401) {
       authStore.logout()
       throw new Error('Сессия истекла. Войдите снова.')
@@ -1982,23 +2188,188 @@ async function loadLots() {
     if (!response.ok) {
       throw new Error(`API вернул ${response.status}`)
     }
+    return (await response.json()) as LotsResponse
+  })()
 
-    const data = (await response.json()) as LotsResponse
-    const nextRevision = gridRowRevision.value + 1
-    const mappedRows = data.rows.map((row) => mapApiRow(row, nextRevision))
-    sources.value = data.available_sources
-    gridRowRevision.value = nextRevision
-    allRows.value = mappedRows
-    savedGridWorkSnapshots.clear()
-    mappedRows.forEach(rememberGridWorkSnapshot)
-    lastLoadedAt.value = new Date().toLocaleString('ru-RU')
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : 'Не удалось загрузить лоты'
+  catalogFetchRequests.set(requestKey, request)
+  try {
+    return await request
   } finally {
-    loading.value = false
-    await ensureGridSavedViewRestored()
+    if (catalogFetchRequests.get(requestKey) === request) {
+      catalogFetchRequests.delete(requestKey)
+    }
+  }
+}
+
+function rememberLoadedRows(rows: GridLotRow[]) {
+  const byId = new Map(allRows.value.map((row) => [row.id, row]))
+  for (const row of rows) {
+    byId.set(row.id, row)
+    rememberGridWorkSnapshot(row)
+  }
+  allRows.value = Array.from(byId.values())
+}
+
+async function fetchLotsRange(request: {
+  start: number
+  end: number
+  signal?: AbortSignal
+  sortModel?: readonly DataGridSortState[]
+  filterModel?: DataGridFilterSnapshot | null
+}) {
+  if (request.signal?.aborted) {
+    throw new DOMException('Request aborted', 'AbortError')
+  }
+  const start = Math.max(0, request.start)
+  const end = Math.max(start, request.end)
+  const data = await fetchCatalogJson(
+    buildLotsUrl({
+      offset: start,
+      limit: end - start + 1,
+      sortModel: request.sortModel,
+      filterModel: request.filterModel,
+    }),
+  )
+
+  if (request.signal?.aborted) {
+    throw new DOMException('Request aborted', 'AbortError')
+  }
+
+  const nextRevision = gridRowRevision.value + 1
+  const mappedRows = data.rows.map((row) => mapApiRow(row, nextRevision))
+  sources.value = data.available_sources
+  catalogTotal.value = data.total
+  gridRowRevision.value = nextRevision
+  rememberLoadedRows(mappedRows)
+  lastLoadedAt.value = new Date().toLocaleString('ru-RU')
+  return { rows: mappedRows, total: data.total }
+}
+
+function createCatalogDataSource(): DataGridDataSource<GridLotRow> {
+  return {
+    subscribe(listener) {
+      catalogDataSourceListeners.add(listener)
+      return () => {
+        catalogDataSourceListeners.delete(listener)
+      }
+    },
+    async pull(request) {
+      const requestSeq = catalogPullRequestSeq + 1
+      catalogPullRequestSeq = requestSeq
+      if (allRows.value.length === 0) {
+        loading.value = true
+      }
+      errorMessage.value = ''
+      try {
+        const result = await fetchLotsRange({
+          start: request.range.start,
+          end: request.range.end,
+          signal: request.signal,
+          sortModel: request.sortModel,
+          filterModel: request.filterModel,
+        })
+        return {
+          rows: result.rows.map((row, index) => ({
+            index: request.range.start + index,
+            row,
+            rowId: row.id,
+          })),
+          total: result.total,
+        }
+      } catch (error) {
+        if (!isAbortLikeError(error) && requestSeq === catalogPullRequestSeq) {
+          errorMessage.value = error instanceof Error ? error.message : 'Не удалось загрузить лоты'
+        }
+        throw error
+      } finally {
+        if (requestSeq === catalogPullRequestSeq) {
+          loading.value = false
+        }
+        scheduleGridSummaryRefresh()
+      }
+    },
+  }
+}
+
+function emitCatalogRowsUpsert(rows: readonly GridLotRow[], total: number, startIndex: number) {
+  if (!catalogDataSourceListeners.size) return
+
+  const event = {
+    type: 'upsert' as const,
+    total,
+    rows: rows.map((row, index) => ({
+      index: startIndex + index,
+      row,
+      rowId: row.id,
+    })),
+  }
+  for (const listener of catalogDataSourceListeners) {
+    listener(event)
+  }
+}
+
+function resolveCatalogReloadRange() {
+  const snapshot = catalogRowModel.value?.getSnapshot()
+  const viewportRange = snapshot?.viewportRange
+  const rowCount = snapshot?.rowCount ?? catalogTotal.value
+  const size = resolveCatalogServerViewportSize(viewportRange)
+  const start = Math.max(0, viewportRange?.start ?? 0)
+  const maxStart = Math.max(0, rowCount - 1)
+  const safeStart = Math.min(start, maxStart)
+  return {
+    start: safeStart,
+    end: Math.min(LOTS_DATASET_SIZE - 1, safeStart + size - 1),
+  }
+}
+
+async function softRefreshCatalogRows() {
+  if (!isAuthenticated.value || !catalogRowModel.value) return
+
+  const reloadSeq = catalogSoftReloadSeq + 1
+  catalogSoftReloadSeq = reloadSeq
+  const snapshot = catalogRowModel.value.getSnapshot()
+  const range = resolveCatalogReloadRange()
+  try {
+    const result = await fetchLotsRange({
+      start: range.start,
+      end: range.end,
+      sortModel: snapshot.sortModel,
+      filterModel: snapshot.filterModel,
+    })
+    if (reloadSeq !== catalogSoftReloadSeq) return
+    emitCatalogRowsUpsert(result.rows, result.total, range.start)
+    errorMessage.value = ''
+  } catch (error) {
+    if (!isAbortLikeError(error) && reloadSeq === catalogSoftReloadSeq) {
+      errorMessage.value = error instanceof Error ? error.message : 'Не удалось загрузить лоты'
+    }
+  } finally {
     scheduleGridSummaryRefresh()
   }
+}
+
+function resetCatalogRowModel() {
+  catalogRowModel.value?.dispose()
+  catalogDataSourceListeners.clear()
+  allRows.value = []
+  projectedRowsForSummary.value = []
+  gridSummaryReady.value = false
+  gridSavedViewRestored.value = false
+  lastGridServerQuerySignature = ''
+  catalogRowModel.value = createDataSourceBackedRowModel({
+    dataSource: createCatalogDataSource(),
+    resolveRowId: resolveClientGridRowId,
+    initialTotal: catalogTotal.value || SERVER_ROW_MODEL_INITIAL_TOTAL,
+    rowCacheLimit: LOTS_DATASET_SIZE,
+  })
+}
+
+async function loadLots() {
+  if (!isAuthenticated.value) return
+  resetCatalogRowModel()
+  savedGridWorkSnapshots.clear()
+  await ensureGridSavedViewRestored()
+  ensureCatalogServerViewport({ start: 0, end: SERVER_ROW_MODEL_INITIAL_FETCH_SIZE - 1 })
 }
 
 function matchesQuickFilters(row: GridLotRow) {
@@ -2194,7 +2565,7 @@ function readProjectedRowsFromGrid() {
   const count = api.rows.getCount()
   if (count <= 0) return []
 
-  return api.rows.getRange({ start: 0, end: count }).flatMap((node) => {
+  return api.rows.getRange({ start: 0, end: count - 1 }).flatMap((node) => {
     const row = node.data as GridLotRow | undefined
     return row && typeof row.id === 'string' ? [row] : []
   })
@@ -2230,14 +2601,32 @@ function flushQueuedWorkspaceRows() {
   applyWorkspaceRows(rows)
 }
 
-function scheduleLotsReload() {
+function scheduleLotsReload(
+  delayMs = LOTS_RELOAD_DELAY_MS,
+  replacePending = true,
+  options: { resetViewport?: boolean } = {},
+) {
+  deferredLotsReloadShouldResetViewport ||= options.resetViewport === true
   if (deferredLotsReloadTimer !== null) {
+    if (!replacePending) return
     window.clearTimeout(deferredLotsReloadTimer)
   }
   deferredLotsReloadTimer = window.setTimeout(() => {
+    const shouldResetViewport = deferredLotsReloadShouldResetViewport
     deferredLotsReloadTimer = null
-    void loadLots()
-  }, 1200)
+    deferredLotsReloadShouldResetViewport = false
+    lastLotsReloadStartedAt = Date.now()
+    const viewportChanged = shouldResetViewport ? ensureCatalogServerViewport() : expandCollapsedCatalogServerViewport()
+    if (!viewportChanged) {
+      void softRefreshCatalogRows()
+    }
+  }, delayMs)
+}
+
+function scheduleProgressLotsReload() {
+  const elapsedSinceLastReload = Date.now() - lastLotsReloadStartedAt
+  const remainingDelay = Math.max(0, SYNC_PROGRESS_RELOAD_INTERVAL_MS - elapsedSinceLastReload)
+  scheduleLotsReload(Math.max(LOTS_RELOAD_DELAY_MS, remainingDelay), false)
 }
 
 function recomputeGridEconomyFields(row: GridLotRow) {
@@ -2457,7 +2846,7 @@ function formatApiPercent(value: string | number | null | undefined) {
 }
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, {
+  const response = await fetch(apiUrl(url), {
     ...init,
     headers: new Headers({
       ...Object.fromEntries(authHeaders().entries()),
@@ -2970,7 +3359,10 @@ function closeLotDetails() {
 }
 
 function resetCatalogState() {
+  catalogRowModel.value?.dispose()
+  catalogRowModel.value = null
   allRows.value = []
+  catalogTotal.value = 0
   projectedRowsForSummary.value = []
   gridSummaryReady.value = false
   presets.value = []
@@ -3038,7 +3430,7 @@ function resetFilters() {
 }
 
 function subscribeToAuctionEvents() {
-  const events = new EventSource('/api/v1/auctions/events')
+  const events = new EventSource(apiUrl('/api/v1/auctions/events'))
 
   events.addEventListener('sync.started', (event) => {
     const data = JSON.parse((event as MessageEvent).data)
@@ -3056,7 +3448,7 @@ function subscribeToAuctionEvents() {
     const data = JSON.parse((event as MessageEvent).data)
     const payload = data.payload
     backgroundStatus.value = `Фоновое обновление: ${payload.source} · ${payload.processed}/${payload.fetched} · новых ${payload.created}`
-    scheduleLotsReload()
+    scheduleProgressLotsReload()
   })
 
   events.addEventListener('analysis.started', () => {
@@ -3116,6 +3508,7 @@ function stopAuctionEvents() {
 watch(filters, () => {
   persistServerFilters()
   gridSummaryReady.value = false
+  scheduleLotsReload(LOTS_RELOAD_DELAY_MS, true, { resetViewport: true })
   scheduleGridSummaryRefresh()
 }, { deep: true })
 
@@ -3140,6 +3533,8 @@ onMounted(() => {
   document.addEventListener('keydown', handleGlobalKeydown, true)
 })
 onUnmounted(() => {
+  catalogRowModel.value?.dispose()
+  catalogRowModel.value = null
   stopDetailResize()
   document.removeEventListener('keydown', handleGlobalKeydown, true)
   stopAuctionEvents()
@@ -3214,7 +3609,7 @@ onUnmounted(() => {
       </div>
       <p>
         {{ backgroundStatus }}
-        <span v-if="lastLoadedAt"> · Загружено {{ loadedRowsCount }} · Таблица {{ lastLoadedAt }}</span>
+        <span v-if="lastLoadedAt"> · В кэше {{ loadedRowsCount }} · Таблица {{ lastLoadedAt }}</span>
       </p>
     </section>
 
@@ -3253,12 +3648,11 @@ onUnmounted(() => {
         <span class="loading-state__chip">Обновляю данные каталога</span>
       </div>
       <DataGrid
-        v-if="!loading || allRows.length > 0"
+        v-if="catalogRowModel"
         ref="gridRef"
-        :rows="rows"
+        :row-model="catalogRowModel"
         :columns="columns"
         :base-row-height="26"
-        :client-row-model-options="publicClientRowModelOptions"
         :toolbar-modules="toolbarModules"
         :theme="workspaceDataGridTheme"
         :is-cell-editable="isGridCellEditable"

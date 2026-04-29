@@ -245,7 +245,12 @@ async def _sync_detail_if_needed(
         return detail_sync_count
 
     try:
-        detail_cache = await ensure_lot_detail_cache(session, record, refresh=refresh)
+        detail_cache = await ensure_lot_detail_cache(
+            session,
+            record,
+            refresh=refresh,
+            include_price_schedule=False,
+        )
     except NotImplementedError:
         logger.info("Detail sync is not implemented for source %s", record.source_code)
         return detail_sync_count

@@ -699,6 +699,7 @@ def iter_auction_list(
 def fetch_lot_detail(
     lot_id: str,
     *,
+    include_price_schedule: bool = True,
     authenticate: bool = False,
     auth_email: str | None = None,
     auth_password: str | None = None,
@@ -723,6 +724,11 @@ def fetch_lot_detail(
     inspection_order = _raw_field_value(raw_fields, "Порядок ознакомления")
     platform_category = _raw_field_value(raw_fields, "Категория площадки", "Категория") or _extract_category(html)
     market_value = _extract_cadastral_market_value(raw_fields, platform_category, title)
+    price_schedule = (
+        fetch_price_schedule(lot_id, authenticate=authenticate, auth_email=auth_email, auth_password=auth_password)
+        if include_price_schedule
+        else []
+    )
     inn_values = _raw_field_values(raw_fields, "ИНН")
     debtor_inn = _extract_input_value(html, "debtor_inn") or (inn_values[0] if inn_values else None)
     organizer_inn = inn_values[1] if len(inn_values) > 1 else None
@@ -758,6 +764,7 @@ def fetch_lot_detail(
             market_value=market_value,
             description=lot_text,
             inspection_order=inspection_order,
+            price_schedule=price_schedule,
             images=images,
             primary_image_url=images[0].url if images else None,
         ),

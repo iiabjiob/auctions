@@ -255,6 +255,7 @@ class LotDatagridFilters(BaseModel):
     source: str | None = None
     q: str | None = None
     status: str | None = None
+    analysis_color: str | None = None
     min_price: Decimal | None = None
     max_price: Decimal | None = None
     only_new: bool = False

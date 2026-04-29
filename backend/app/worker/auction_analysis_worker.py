@@ -11,8 +11,8 @@ from app.core.config import get_settings
 from app.infrastructure.db.database import AsyncSessionLocal
 from app.infrastructure.redis.streams import publish_auction_event
 from app.models.auction import AuctionLotDetailCache, AuctionLotRecord, AuctionLotWorkItem
-from app.schemas.auctions import LotDatagridRow
 from app.services.auction_analysis_config import auction_analysis_config_service
+from app.services.auction_catalog import validate_datagrid_row_payload
 from app.services.auction_sources import SOURCE_PROVIDERS
 from app.services.auction_workspace import recalculate_record_rating
 
@@ -84,7 +84,7 @@ async def analyze_all_lots(limit: int | None = None) -> dict[str, int]:
                 after = json.dumps(record.datagrid_row, sort_keys=True, ensure_ascii=False)
                 if after == before:
                     continue
-                changed_rows.append(LotDatagridRow.model_validate(record.datagrid_row).model_dump(mode="json"))
+                changed_rows.append(validate_datagrid_row_payload(record.datagrid_row).model_dump(mode="json"))
 
             await session.commit()
 

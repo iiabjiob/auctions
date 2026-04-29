@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 
-from sqlalchemy import select
+from sqlalchemy import Integer, Numeric, String, and_, cast, func, not_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.auction import AuctionLotDetailCache, AuctionLotRecord, AuctionLotWorkItem
@@ -56,6 +56,7 @@ def list_lots_for_datagrid(
     source: str | None = None,
     q: str | None = None,
     status: str | None = None,
+    analysis_color: str | None = None,
     min_price: Decimal | None = None,
     max_price: Decimal | None = None,
     only_new: bool = False,
@@ -69,6 +70,7 @@ def list_lots_for_datagrid(
         source=source,
         q=q,
         status=status,
+        analysis_color=analysis_color,
         min_price=min_price,
         max_price=max_price,
         only_new=only_new,
@@ -107,6 +109,7 @@ async def list_persisted_lots_for_datagrid(
     source: str | None = None,
     q: str | None = None,
     status: str | None = None,
+    analysis_color: str | None = None,
     min_price: Decimal | None = None,
     max_price: Decimal | None = None,
     only_new: bool = False,
@@ -114,6 +117,11 @@ async def list_persisted_lots_for_datagrid(
     min_rating: int | None = None,
     page: int = 1,
     page_size: int = 100,
+    offset: int | None = None,
+    sort_by: str | None = None,
+    sort_direction: str = "asc",
+    sort_model: list[dict] | None = None,
+    grid_filter: dict | None = None,
 ) -> LotDatagridResponse:
     safe_page_size = min(page_size, LOT_DATASET_MAX_ROWS)
     filters = LotDatagridFilters(
@@ -121,6 +129,7 @@ async def list_persisted_lots_for_datagrid(
         source=source,
         q=q,
         status=status,
+        analysis_color=analysis_color,
         min_price=min_price,
         max_price=max_price,
         only_new=only_new,
@@ -131,47 +140,487 @@ async def list_persisted_lots_for_datagrid(
     if source and source != "all" and source not in SOURCE_PROVIDERS:
         supported = ", ".join(sorted(SOURCE_PROVIDERS))
         raise ValueError(f"Unsupported auction source '{source}'. Supported: {supported}")
-    statement = select(AuctionLotRecord).order_by(AuctionLotRecord.last_seen_at.desc())
-    statement = statement.where(AuctionLotRecord.last_seen_at >= _period_cutoff(period))
-    if source and source != "all":
-        statement = statement.where(AuctionLotRecord.source_code == source)
-    else:
-        statement = statement.where(AuctionLotRecord.source_code.in_(active_sources))
-    if status:
-        statement = statement.where(AuctionLotRecord.status == status)
-    if only_new:
-        statement = statement.where(AuctionLotRecord.is_new.is_(True))
-    if min_rating is not None:
-        statement = statement.where(AuctionLotRecord.rating_score >= min_rating)
-    statement = statement.limit(LOT_DATASET_MAX_ROWS)
+    statement = _build_persisted_lots_statement(filters, active_sources, grid_filter=grid_filter)
+    total = await _count_persisted_lots(session, statement)
+    pagination = _pagination_from_total(total, page=page, page_size=safe_page_size, offset=offset)
+    resolved_offset = max(0, offset) if offset is not None else (pagination.page - 1) * safe_page_size
+    statement = _apply_record_sort(statement, sort_by=sort_by, sort_direction=sort_direction, sort_model=sort_model)
+    statement = statement.offset(resolved_offset).limit(safe_page_size)
     records = (await session.scalars(statement)).all()
     work_items = await _work_items_by_record_id(session, [record.id for record in records])
     detail_caches = await _detail_caches_by_record_id(session, [record.id for record in records])
-    matched_rows: list[LotDatagridRow] = []
+    rows: list[LotDatagridRow] = []
     for record in records:
-        row = LotDatagridRow.model_validate(record.datagrid_row)
+        row = validate_datagrid_row_payload(record.datagrid_row)
         _hydrate_row_from_normalized_item(row, record.normalized_item)
         _hydrate_row_from_detail_cache(row, detail_caches.get(record.id))
         row.model_category = row.model_category or row.analysis.category
         _apply_display_category(row)
         work_item = work_items.get(record.id)
         _attach_work_item_state(row, work_item)
-        if filters.shortlist and not _is_shortlist_candidate(row, work_item):
-            continue
-        if _matches_filters(row, filters):
-            matched_rows.append(row)
-
-    matched_rows.sort(key=_default_row_sort_key)
-    paged_rows, pagination = paginate_rows(matched_rows, page=page, page_size=safe_page_size)
+        rows.append(row)
 
     return LotDatagridResponse(
         columns=LOT_GRID_COLUMNS,
-        rows=paged_rows,
+        rows=rows,
         filters=filters,
-        total=pagination.total,
+        total=total,
         pagination=pagination,
         available_sources=list_source_infos(),
     )
+
+
+def _build_persisted_lots_statement(
+    filters: LotDatagridFilters,
+    active_sources: tuple[str, ...],
+    *,
+    grid_filter: dict | None = None,
+):
+    statement = select(AuctionLotRecord).where(AuctionLotRecord.last_seen_at >= _period_cutoff(filters.period))
+    if filters.source and filters.source != "all":
+        statement = statement.where(AuctionLotRecord.source_code == filters.source)
+    else:
+        statement = statement.where(AuctionLotRecord.source_code.in_(active_sources))
+    if filters.status:
+        statement = statement.where(AuctionLotRecord.status == filters.status)
+    if filters.analysis_color:
+        statement = statement.where(_json_nested_text_value("analysis", "color") == filters.analysis_color)
+    if filters.only_new:
+        statement = statement.where(AuctionLotRecord.is_new.is_(True))
+    if filters.min_rating is not None:
+        statement = statement.where(AuctionLotRecord.rating_score >= filters.min_rating)
+    if filters.min_price is not None:
+        statement = statement.where(_json_decimal_value("current_price_value") >= filters.min_price)
+    if filters.max_price is not None:
+        statement = statement.where(_json_decimal_value("current_price_value") <= filters.max_price)
+    if filters.q:
+        statement = statement.where(_record_search_predicate(filters.q))
+    if filters.shortlist:
+        statement = statement.where(_shortlist_record_predicate())
+    grid_predicate = _grid_filter_predicate(grid_filter)
+    if grid_predicate is not None:
+        statement = statement.where(grid_predicate)
+    return statement
+
+
+async def _count_persisted_lots(session: AsyncSession, statement) -> int:
+    return int(await session.scalar(select(func.count()).select_from(statement.order_by(None).subquery())) or 0)
+
+
+def _apply_record_sort(
+    statement,
+    *,
+    sort_by: str | None = None,
+    sort_direction: str = "asc",
+    sort_model: list[dict] | None = None,
+):
+    sort_entries = _normalize_sort_model(sort_by=sort_by, sort_direction=sort_direction, sort_model=sort_model)
+    order_by = []
+    for entry in sort_entries[:5]:
+        expression = _sort_expression(entry["key"])
+        if expression is None:
+            continue
+        ordered_expression = expression.desc() if entry["direction"] == "desc" else expression.asc()
+        order_by.append(ordered_expression.nulls_last())
+
+    if not order_by:
+        return _apply_default_record_sort(statement)
+
+    return statement.order_by(
+        *order_by,
+        AuctionLotRecord.source_code.asc(),
+        AuctionLotRecord.auction_external_id.asc(),
+        AuctionLotRecord.lot_external_id.asc(),
+        AuctionLotRecord.id.asc(),
+    )
+
+
+def _normalize_sort_model(*, sort_by: str | None, sort_direction: str, sort_model: list[dict] | None) -> list[dict]:
+    if sort_model:
+        normalized = []
+        for item in sort_model:
+            key = item.get("key") if isinstance(item, dict) else None
+            direction = item.get("direction") if isinstance(item, dict) else None
+            if isinstance(key, str) and direction in {"asc", "desc"}:
+                normalized.append({"key": key, "direction": direction})
+        if normalized:
+            return normalized
+    if sort_by:
+        return [{"key": sort_by, "direction": sort_direction if sort_direction in {"asc", "desc"} else "asc"}]
+    return []
+
+
+def _apply_default_record_sort(statement):
+    return statement.order_by(
+        AuctionLotRecord.source_code.asc(),
+        AuctionLotRecord.first_seen_at.desc(),
+        AuctionLotRecord.id.desc(),
+    )
+
+
+def _sort_expression(sort_by: str | None):
+    expression = _grid_column_expression(sort_by)[0]
+    if expression is not None:
+        return expression
+    return {
+        "analysisCategory": _json_text_value("category"),
+        "analysisColor": _json_nested_text_value("analysis", "color"),
+        "analysisLabel": _json_nested_text_value("analysis", "label"),
+        "applicationDeadline": _json_text_value("application_deadline"),
+        "auctionDate": _json_text_value("auction_date"),
+        "auctionNumber": AuctionLotRecord.auction_number,
+        "category": _json_text_value("category"),
+        "debtorName": _json_text_value("debtor_name"),
+        "initialPrice": _json_decimal_value("initial_price_value"),
+        "isNew": AuctionLotRecord.is_new,
+        "location": _json_text_value("location"),
+        "lotName": AuctionLotRecord.lot_name,
+        "lotNumber": AuctionLotRecord.lot_number,
+        "marketValue": _json_decimal_value("market_value"),
+        "minimumPrice": _json_decimal_value("minimum_price_value"),
+        "organizer": _json_text_value("organizer_name"),
+        "price": _json_decimal_value("current_price_value"),
+        "publicationDate": _json_text_value("publication_date"),
+        "ratingScore": AuctionLotRecord.rating_score,
+        "source": AuctionLotRecord.source_code,
+        "sourcePosition": _json_integer_value("source_position"),
+        "sourceTitle": AuctionLotRecord.source_code,
+        "status": AuctionLotRecord.status,
+        "workDecisionStatus": _work_item_text_value("decision_status"),
+    }.get(sort_by or "")
+
+
+def _grid_column_expression(key: str | None):
+    if not key:
+        return None, "text"
+    return {
+        "analysisCategory": (_json_text_value("category"), "text"),
+        "analysisColor": (_json_nested_text_value("analysis", "color"), "text"),
+        "analysisLabel": (_json_nested_text_value("analysis", "label"), "text"),
+        "applicationDeadline": (_json_text_value("application_deadline"), "text"),
+        "auctionDate": (_json_text_value("auction_date"), "text"),
+        "auctionNumber": (AuctionLotRecord.auction_number, "text"),
+        "auctionName": (_json_text_value("auction_name"), "text"),
+        "category": (_json_text_value("category"), "text"),
+        "debtorName": (_json_text_value("debtor_name"), "text"),
+        "deliveryCost": (_json_decimal_value("delivery_cost"), "number"),
+        "dismantlingCost": (_json_decimal_value("dismantling_cost"), "number"),
+        "excludeFromAnalysis": (_json_boolean_value("exclude_from_analysis"), "boolean"),
+        "exclusionReason": (_json_text_value("exclusion_reason"), "text"),
+        "formulaMaxPurchasePrice": (_json_decimal_value("formula_max_purchase_price"), "number"),
+        "fullEntryCost": (_json_decimal_value("full_entry_cost"), "number"),
+        "initialPrice": (_json_decimal_value("initial_price_value"), "number"),
+        "isNew": (AuctionLotRecord.is_new, "boolean"),
+        "lastSeenAt": (AuctionLotRecord.last_seen_at, "datetime"),
+        "legalCost": (_json_decimal_value("legal_cost"), "number"),
+        "location": (_json_text_value("location"), "text"),
+        "lotName": (AuctionLotRecord.lot_name, "text"),
+        "lotNumber": (AuctionLotRecord.lot_number, "text"),
+        "marketDiscount": (_json_decimal_value("market_discount"), "number"),
+        "marketValue": (_json_decimal_value("market_value"), "number"),
+        "minimumPrice": (_json_decimal_value("minimum_price_value"), "number"),
+        "organizer": (_json_text_value("organizer_name"), "text"),
+        "otherCosts": (_json_decimal_value("other_costs"), "number"),
+        "platformFee": (_json_decimal_value("platform_fee"), "number"),
+        "potentialProfit": (_json_decimal_value("potential_profit"), "number"),
+        "price": (_json_decimal_value("current_price_value"), "number"),
+        "publicationDate": (_json_text_value("publication_date"), "text"),
+        "ratingScore": (AuctionLotRecord.rating_score, "number"),
+        "repairCost": (_json_decimal_value("repair_cost"), "number"),
+        "roiValue": (_json_decimal_value("roi"), "number"),
+        "source": (AuctionLotRecord.source_code, "text"),
+        "sourcePosition": (_json_integer_value("source_position"), "number"),
+        "sourceTitle": (AuctionLotRecord.source_code, "text"),
+        "status": (AuctionLotRecord.status, "text"),
+        "storageCost": (_json_decimal_value("storage_cost"), "number"),
+        "targetProfit": (_json_decimal_value("target_profit"), "number"),
+        "totalExpenses": (_json_decimal_value("total_expenses"), "number"),
+        "workDecisionStatus": (_work_item_text_value("decision_status"), "text"),
+    }.get(key, (None, "text"))
+
+
+def _grid_filter_predicate(grid_filter: dict | None):
+    if not grid_filter:
+        return None
+    predicates = []
+    column_filters = grid_filter.get("columnFilters")
+    if isinstance(column_filters, dict):
+        for key, payload in column_filters.items():
+            predicate = _column_filter_predicate(str(key), payload)
+            if predicate is not None:
+                predicates.append(predicate)
+
+    advanced_filters = grid_filter.get("advancedFilters")
+    if isinstance(advanced_filters, dict):
+        for key, payload in advanced_filters.items():
+            predicate = _advanced_filter_predicate(str(key), payload)
+            if predicate is not None:
+                predicates.append(predicate)
+
+    advanced_expression = grid_filter.get("advancedExpression")
+    predicate = _advanced_expression_predicate(advanced_expression)
+    if predicate is not None:
+        predicates.append(predicate)
+
+    if not predicates:
+        return None
+    return and_(*predicates)
+
+
+def _column_filter_predicate(key: str, payload):
+    if not isinstance(payload, dict):
+        return None
+    kind = payload.get("kind")
+    if kind == "valueSet":
+        tokens = payload.get("tokens")
+        if not isinstance(tokens, list) or not tokens:
+            return None
+        expression, _ = _grid_column_expression(key)
+        if expression is None:
+            return None
+        return cast(expression, String).in_([str(token) for token in tokens])
+    if kind == "predicate":
+        return _predicate_filter_condition(key, payload.get("operator"), payload.get("value"), payload.get("value2"), payload.get("caseSensitive"))
+    return None
+
+
+def _advanced_filter_predicate(key: str, payload):
+    if not isinstance(payload, dict):
+        return None
+    predicates = []
+    for clause in payload.get("clauses") or []:
+        if not isinstance(clause, dict):
+            continue
+        predicate = _predicate_filter_condition(key, clause.get("operator"), clause.get("value"), clause.get("value2"), False)
+        if predicate is not None:
+            predicates.append((clause.get("join") or "and", predicate))
+    return _combine_joined_predicates(predicates)
+
+
+def _advanced_expression_predicate(payload):
+    if not isinstance(payload, dict):
+        return None
+    kind = payload.get("kind")
+    if kind == "condition":
+        return _predicate_filter_condition(payload.get("key"), payload.get("operator"), payload.get("value"), payload.get("value2"), False)
+    if kind == "group":
+        children = [_advanced_expression_predicate(child) for child in payload.get("children") or []]
+        predicates = [predicate for predicate in children if predicate is not None]
+        if not predicates:
+            return None
+        return or_(*predicates) if payload.get("operator") == "or" else and_(*predicates)
+    if kind == "not":
+        child = _advanced_expression_predicate(payload.get("child"))
+        return not_(child) if child is not None else None
+    return None
+
+
+def _predicate_filter_condition(key, operator, value=None, value2=None, case_sensitive=False):
+    expression, value_type = _grid_column_expression(str(key) if key else None)
+    if expression is None or not isinstance(operator, str):
+        return None
+
+    text_expression = cast(expression, String)
+    comparable_expression = expression if value_type in {"number", "boolean", "datetime"} else text_expression
+    normalized_value = _coerce_filter_value(value, value_type)
+    normalized_value2 = _coerce_filter_value(value2, value_type)
+
+    if operator == "isNull":
+        return expression.is_(None)
+    if operator == "notNull":
+        return expression.is_not(None)
+    if operator == "isEmpty":
+        return or_(expression.is_(None), text_expression == "")
+    if operator == "notEmpty":
+        return and_(expression.is_not(None), text_expression != "")
+    if operator == "between":
+        if normalized_value is None or normalized_value2 is None:
+            return None
+        return and_(comparable_expression >= normalized_value, comparable_expression <= normalized_value2)
+    if operator in {"gt", "gte", "lt", "lte", "equals", "notEquals"}:
+        if normalized_value is None:
+            return None
+        if operator == "gt":
+            return comparable_expression > normalized_value
+        if operator == "gte":
+            return comparable_expression >= normalized_value
+        if operator == "lt":
+            return comparable_expression < normalized_value
+        if operator == "lte":
+            return comparable_expression <= normalized_value
+        if operator == "equals":
+            return comparable_expression == normalized_value
+        return comparable_expression != normalized_value
+
+    if value is None:
+        return None
+    pattern_value = _escape_like(str(value))
+    compared_text = text_expression if case_sensitive else func.lower(text_expression)
+    compared_value = pattern_value if case_sensitive else pattern_value.lower()
+    if operator == "contains":
+        return compared_text.like(f"%{compared_value}%", escape="\\")
+    if operator == "startsWith":
+        return compared_text.like(f"{compared_value}%", escape="\\")
+    if operator == "endsWith":
+        return compared_text.like(f"%{compared_value}", escape="\\")
+    return None
+
+
+def _combine_joined_predicates(joined_predicates: list[tuple[str, object]]):
+    if not joined_predicates:
+        return None
+    expression = joined_predicates[0][1]
+    for join, predicate in joined_predicates[1:]:
+        expression = or_(expression, predicate) if join == "or" else and_(expression, predicate)
+    return expression
+
+
+def _coerce_filter_value(value, value_type: str):
+    if value is None:
+        return None
+    if value_type == "boolean":
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "да"}
+    if value_type == "number":
+        try:
+            return Decimal(str(value).replace(" ", "").replace(",", "."))
+        except (InvalidOperation, ValueError):
+            return None
+    return str(value) if value_type == "text" else value
+
+
+def _pagination_from_total(
+    total: int,
+    *,
+    page: int,
+    page_size: int,
+    offset: int | None = None,
+) -> LotDatagridPagination:
+    safe_page = max(1, page)
+    safe_page_size = max(1, page_size)
+    total_pages = max(1, (total + safe_page_size - 1) // safe_page_size)
+    if offset is not None:
+        safe_page = min(max(1, (max(0, offset) // safe_page_size) + 1), total_pages)
+    return LotDatagridPagination(
+        page=min(safe_page, total_pages),
+        page_size=safe_page_size,
+        total=total,
+        total_pages=total_pages,
+    )
+
+
+def _record_search_predicate(query: str):
+    pattern = f"%{_escape_like(query.strip().lower())}%"
+    search_columns = (
+        AuctionLotRecord.lot_name,
+        AuctionLotRecord.auction_number,
+        AuctionLotRecord.lot_number,
+        AuctionLotRecord.status,
+        _json_text_value("auction_name"),
+        _json_text_value("organizer_name"),
+        _json_text_value("debtor_name"),
+        _json_text_value("location"),
+        _json_text_value("category"),
+        cast(AuctionLotRecord.datagrid_row, String),
+    )
+    return or_(*[func.lower(func.coalesce(column, "")).like(pattern, escape="\\") for column in search_columns])
+
+
+def _shortlist_record_predicate():
+    shortlist_decision_exists = (
+        select(AuctionLotWorkItem.id)
+        .where(AuctionLotWorkItem.lot_record_id == AuctionLotRecord.id)
+        .where(func.lower(func.coalesce(AuctionLotWorkItem.decision_status, "")).in_(SHORTLIST_DECISIONS))
+        .exists()
+    )
+    return or_(AuctionLotRecord.rating_score >= SHORTLIST_MIN_SCORE, shortlist_decision_exists)
+
+
+def _json_text_value(key: str):
+    return AuctionLotRecord.datagrid_row[key].as_string()
+
+
+def _json_nested_text_value(first_key: str, second_key: str):
+    return AuctionLotRecord.datagrid_row[first_key][second_key].as_string()
+
+
+def _json_decimal_value(key: str):
+    return cast(func.nullif(_json_text_value(key), ""), Numeric(14, 2))
+
+
+def _json_integer_value(key: str):
+    return cast(func.nullif(_json_text_value(key), ""), Integer)
+
+
+def _json_boolean_value(key: str):
+    return AuctionLotRecord.datagrid_row[key].as_boolean()
+
+
+def _work_item_text_value(key: str):
+    return (
+        select(getattr(AuctionLotWorkItem, key))
+        .where(AuctionLotWorkItem.lot_record_id == AuctionLotRecord.id)
+        .limit(1)
+        .scalar_subquery()
+    )
+
+
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+DECIMAL_ROW_FIELDS = {
+    "initial_price_value",
+    "current_price_value",
+    "minimum_price_value",
+    "market_value",
+    "platform_fee",
+    "delivery_cost",
+    "dismantling_cost",
+    "repair_cost",
+    "storage_cost",
+    "legal_cost",
+    "other_costs",
+    "target_profit",
+    "total_expenses",
+    "full_entry_cost",
+    "potential_profit",
+    "roi",
+    "market_discount",
+    "formula_max_purchase_price",
+}
+
+
+def validate_datagrid_row_payload(payload: dict) -> LotDatagridRow:
+    return LotDatagridRow.model_validate(sanitize_datagrid_row_payload(payload))
+
+
+def sanitize_datagrid_row_payload(payload: dict) -> dict:
+    row = dict(payload or {})
+    for field in DECIMAL_ROW_FIELDS:
+        if field in row:
+            row[field] = _sanitize_decimal_row_value(row[field])
+    if row.get("exclude_from_analysis") is None:
+        row["exclude_from_analysis"] = False
+    return row
+
+
+def _sanitize_decimal_row_value(value: object) -> object:
+    if value is None or isinstance(value, Decimal):
+        return value
+    if isinstance(value, int | float):
+        return str(value)
+    if not isinstance(value, str):
+        return value
+    normalized = value.strip()
+    if not normalized:
+        return None
+    if any(char.isdigit() for char in normalized):
+        parsed = parse_price(normalized)
+        return str(parsed) if parsed is not None else value
+    return value
 
 
 def _default_row_sort_key(row: LotDatagridRow) -> tuple[str, int, str, str]:
