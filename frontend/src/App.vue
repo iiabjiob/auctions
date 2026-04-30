@@ -626,16 +626,24 @@ const CATALOG_SERVER_FETCH_LIMIT = 10_000
 const CATALOG_ROW_CACHE_LIMIT = 20_000
 const CATALOG_VIEWPORT_ROW_OVERSCAN = 100
 const CATALOG_VIEWPORT_COLUMN_OVERSCAN = 2
-const CATALOG_PREFETCH_BACKWARD_ROWS = 120
-const CATALOG_PREFETCH_FORWARD_ROWS = 320
-const CATALOG_PREFETCH_MIN_BATCH_SIZE = 384
-const CATALOG_SCROLL_PREFETCH_VIEWPORTS = 3
-const CATALOG_SCROLL_PREFETCH_TRIGGER_VIEWPORTS = 1
+const CATALOG_ROW_MODEL_PREFETCH_TRIGGER_VIEWPORT_FACTOR = 1
+const CATALOG_ROW_MODEL_PREFETCH_WINDOW_VIEWPORT_FACTOR = 3
+const CATALOG_ROW_MODEL_PREFETCH_MIN_BATCH_SIZE = 256
+const CATALOG_ROW_MODEL_PREFETCH_MAX_BATCH_SIZE = 768
+const EMPTY_GRID_ROWS: readonly GridLotRow[] = []
 const catalogVirtualizationOptions = {
   rows: true,
   columns: true,
   rowOverscan: CATALOG_VIEWPORT_ROW_OVERSCAN,
   columnOverscan: CATALOG_VIEWPORT_COLUMN_OVERSCAN,
+}
+const catalogRowModelPrefetchOptions = {
+  enabled: true,
+  triggerViewportFactor: CATALOG_ROW_MODEL_PREFETCH_TRIGGER_VIEWPORT_FACTOR,
+  windowViewportFactor: CATALOG_ROW_MODEL_PREFETCH_WINDOW_VIEWPORT_FACTOR,
+  minBatchSize: CATALOG_ROW_MODEL_PREFETCH_MIN_BATCH_SIZE,
+  maxBatchSize: CATALOG_ROW_MODEL_PREFETCH_MAX_BATCH_SIZE,
+  directionalBias: 'scroll-direction' as const,
 }
 const DETAIL_PANE_DEFAULT_WIDTH = 720
 const DETAIL_PANE_MIN_WIDTH = 420
@@ -681,11 +689,6 @@ let lastLotsReloadStartedAt = 0
 let lastGridServerQuerySignature = ''
 let catalogPullRequestSeq = 0
 let catalogSoftReloadSeq = 0
-let lastCatalogPullRange: { start: number; end: number } | null = null
-let catalogPrefetchEpoch = 0
-let catalogPrefetchFrame: number | null = null
-let catalogPrefetchInFlight: { start: number; end: number; direction: 'forward' | 'backward'; epoch: number } | null = null
-let catalogViewportScrollElement: HTMLElement | null = null
 let catalogViewportDimRequests = 0
 let catalogViewportDimShowTimer: ReturnType<typeof window.setTimeout> | null = null
 let catalogViewportDimHideTimer: ReturnType<typeof window.setTimeout> | null = null
@@ -2512,54 +2515,6 @@ async function requestLotsWindow(request: {
   }
 }
 
-function resolveCatalogFetchDirection(range: { start: number; end: number }) {
-  const previousRange = lastCatalogPullRange
-  lastCatalogPullRange = { ...range }
-  if (!previousRange) return 0
-  if (range.start > previousRange.start) return 1
-  if (range.start < previousRange.start) return -1
-  return 0
-}
-
-function expandCatalogFetchRange(range: { start: number; end: number }) {
-  const requestedStart = Math.max(0, range.start)
-  const requestedEnd = Math.max(requestedStart, range.end)
-  const requestedSize = requestedEnd - requestedStart + 1
-  const direction = resolveCatalogFetchDirection({ start: requestedStart, end: requestedEnd })
-  const totalRows = Math.max(0, catalogRowModel.value?.getSnapshot().rowCount ?? catalogTotal.value)
-  const maxEnd = totalRows > 0 ? totalRows - 1 : Number.POSITIVE_INFINITY
-
-  const backwardRows = direction > 0 ? CATALOG_PREFETCH_BACKWARD_ROWS : CATALOG_PREFETCH_FORWARD_ROWS
-  const forwardRows = direction < 0 ? CATALOG_PREFETCH_BACKWARD_ROWS : CATALOG_PREFETCH_FORWARD_ROWS
-
-  let start = Math.max(0, requestedStart - backwardRows)
-  let end = requestedEnd + forwardRows
-  const targetSize = Math.max(CATALOG_PREFETCH_MIN_BATCH_SIZE, requestedSize + backwardRows + forwardRows)
-
-  if (Number.isFinite(maxEnd)) {
-    end = Math.min(maxEnd, end)
-  }
-
-  let currentSize = end - start + 1
-  if (currentSize < targetSize) {
-    const missing = targetSize - currentSize
-    const growBefore = Math.min(start, Math.ceil(missing / 2))
-    start -= growBefore
-    end += missing - growBefore
-    if (Number.isFinite(maxEnd) && end > maxEnd) {
-      const overflow = end - maxEnd
-      end = maxEnd
-      start = Math.max(0, start - overflow)
-    }
-  }
-
-  const cappedEnd = Number.isFinite(maxEnd) ? Math.min(maxEnd, end) : end
-  return {
-    start,
-    end: Math.max(start, cappedEnd),
-  }
-}
-
 async function fetchLotsRange(request: {
   start: number
   end: number
@@ -2570,13 +2525,9 @@ async function fetchLotsRange(request: {
   if (request.signal?.aborted) {
     throw new DOMException('Request aborted', 'AbortError')
   }
-  const expandedRange = expandCatalogFetchRange({
+  return requestLotsWindow({
     start: Math.max(0, request.start),
     end: Math.max(Math.max(0, request.start), request.end),
-  })
-  return requestLotsWindow({
-    start: expandedRange.start,
-    end: expandedRange.end,
     signal: request.signal,
     sortModel: request.sortModel,
     filterModel: request.filterModel,
@@ -2699,12 +2650,15 @@ function createCatalogDataSource(): DataGridDataSource<GridLotRow> {
     async pull(request) {
       const requestSeq = catalogPullRequestSeq + 1
       catalogPullRequestSeq = requestSeq
+      const isBackgroundPrefetch = request.reason === 'prefetch' || request.priority === 'background'
       const dimViewport = shouldDimCatalogPull(request.reason)
-      if (allRows.value.length === 0) {
+      if (!isBackgroundPrefetch && allRows.value.length === 0) {
         loading.value = true
       }
       const dimActive = dimViewport && beginCatalogViewportDim()
-      errorMessage.value = ''
+      if (!isBackgroundPrefetch) {
+        errorMessage.value = ''
+      }
       try {
         const result = await fetchLotsRange({
           start: request.range.start,
@@ -2722,17 +2676,16 @@ function createCatalogDataSource(): DataGridDataSource<GridLotRow> {
           total: result.total,
         }
       } catch (error) {
-        if (!isAbortLikeError(error) && requestSeq === catalogPullRequestSeq) {
+        if (!isBackgroundPrefetch && !isAbortLikeError(error) && requestSeq === catalogPullRequestSeq) {
           errorMessage.value = error instanceof Error ? error.message : 'Не удалось загрузить лоты'
         }
         throw error
       } finally {
-        if (requestSeq === catalogPullRequestSeq) {
+        if (!isBackgroundPrefetch && requestSeq === catalogPullRequestSeq) {
           loading.value = false
         }
         endCatalogViewportDim(dimActive)
         scheduleGridSummaryRefresh()
-        scheduleCatalogScrollPrefetch()
       }
     },
     getColumnHistogram(request) {
@@ -2793,6 +2746,7 @@ function createCatalogRowModel(): PatchableCatalogRowModel {
     resolveRowId: resolveClientGridRowId,
     initialTotal: Math.min(CATALOG_TOTAL_ROW_LIMIT, Math.max(catalogTotal.value || 0, SERVER_ROW_MODEL_INITIAL_FETCH_SIZE)),
     rowCacheLimit: CATALOG_ROW_CACHE_LIMIT,
+    prefetch: catalogRowModelPrefetchOptions,
   }))
 }
 
@@ -2861,7 +2815,6 @@ async function softRefreshCatalogRows(options: {
   } finally {
     endCatalogViewportDim(dimActive)
     scheduleGridSummaryRefresh()
-    scheduleCatalogScrollPrefetch()
   }
 }
 
@@ -2869,9 +2822,6 @@ function resetCatalogRowModel() {
   catalogRowModel.value?.dispose()
   catalogDataSourceListeners.clear()
   clearCatalogViewportDim()
-  catalogPrefetchEpoch += 1
-  catalogPrefetchInFlight = null
-  lastCatalogPullRange = null
   allRows.value = []
   projectedRowsForSummary.value = []
   gridSummaryReady.value = false
@@ -2886,9 +2836,7 @@ async function loadLots() {
   savedGridWorkSnapshots.clear()
   await ensureGridSavedViewRestored()
   await nextTick()
-  bindCatalogViewportScrollListener()
   ensureCatalogServerViewport({ start: 0, end: SERVER_ROW_MODEL_INITIAL_FETCH_SIZE - 1 })
-  scheduleCatalogScrollPrefetch()
 }
 
 function matchesQuickFilters(row: GridLotRow) {
@@ -3698,113 +3646,6 @@ function getGridRootElement() {
   return gridSurfaceRef.value?.querySelector<HTMLElement>('.affino-datagrid-app-root') ?? null
 }
 
-function getGridBodyViewportElement() {
-  return gridSurfaceRef.value?.querySelector<HTMLElement>('.grid-body-viewport') ?? null
-}
-
-function getCatalogRuntimeViewportRange() {
-  const virtualWindow = gridRef.value?.getRuntime()?.virtualWindow?.value
-  const rowTotal = Math.max(0, Math.trunc(virtualWindow?.rowTotal ?? catalogTotal.value))
-  if (!virtualWindow || rowTotal <= 0) return null
-
-  const start = Math.max(0, Math.min(rowTotal - 1, Math.trunc(virtualWindow.rowStart)))
-  const end = Math.max(start, Math.min(rowTotal - 1, Math.trunc(virtualWindow.rowEnd)))
-  return { start, end, total: rowTotal }
-}
-
-function hasCatalogCachedRow(index: number) {
-  const rowModel = catalogRowModel.value
-  if (!rowModel) return false
-  if (!Number.isFinite(index) || index < 0) return false
-  return Boolean(rowModel.getRow(Math.trunc(index)))
-}
-
-async function prefetchCatalogRange(range: { start: number; end: number }, direction: 'forward' | 'backward', epoch: number) {
-  const rowModel = catalogRowModel.value
-  const snapshot = rowModel?.getSnapshot()
-  if (!snapshot) return
-
-  catalogPrefetchInFlight = { start: range.start, end: range.end, direction, epoch }
-  try {
-    const result = await requestLotsWindow({
-      start: range.start,
-      end: range.end,
-      sortModel: snapshot.sortModel,
-      filterModel: snapshot.filterModel,
-    })
-    if (epoch !== catalogPrefetchEpoch) return
-    emitCatalogRowsUpsert(result.rows, result.total, result.start)
-    scheduleGridSummaryRefresh()
-  } catch (error) {
-    if (!isAbortLikeError(error) && epoch === catalogPrefetchEpoch) {
-      console.warn('Catalog background prefetch failed', error)
-    }
-  } finally {
-    if (catalogPrefetchInFlight?.epoch === epoch) {
-      catalogPrefetchInFlight = null
-    }
-  }
-}
-
-function maybePrefetchCatalogAroundViewport() {
-  if (!isAuthenticated.value || !catalogRowModel.value || catalogPrefetchInFlight) return
-
-  const viewportRange = getCatalogRuntimeViewportRange()
-  if (!viewportRange) return
-
-  const viewportSize = Math.max(1, viewportRange.end - viewportRange.start + 1)
-  const triggerDistance = viewportSize * CATALOG_SCROLL_PREFETCH_TRIGGER_VIEWPORTS
-  const batchSize = Math.max(viewportSize * CATALOG_SCROLL_PREFETCH_VIEWPORTS, CATALOG_PREFETCH_MIN_BATCH_SIZE)
-  const epoch = catalogPrefetchEpoch
-
-  const forwardProbeIndex = Math.min(viewportRange.total - 1, viewportRange.end + triggerDistance)
-  if (forwardProbeIndex > viewportRange.end && !hasCatalogCachedRow(forwardProbeIndex)) {
-    const start = viewportRange.end + 1
-    const end = Math.min(viewportRange.total - 1, start + batchSize - 1)
-    if (start <= end) {
-      void prefetchCatalogRange({ start, end }, 'forward', epoch)
-      return
-    }
-  }
-
-  const backwardProbeIndex = Math.max(0, viewportRange.start - triggerDistance)
-  if (backwardProbeIndex < viewportRange.start && !hasCatalogCachedRow(backwardProbeIndex)) {
-    const end = viewportRange.start - 1
-    const start = Math.max(0, end - batchSize + 1)
-    if (start <= end) {
-      void prefetchCatalogRange({ start, end }, 'backward', epoch)
-    }
-  }
-}
-
-function scheduleCatalogScrollPrefetch() {
-  if (catalogPrefetchFrame !== null) return
-  catalogPrefetchFrame = window.requestAnimationFrame(() => {
-    catalogPrefetchFrame = null
-    maybePrefetchCatalogAroundViewport()
-  })
-}
-
-function handleCatalogViewportScroll() {
-  scheduleCatalogScrollPrefetch()
-}
-
-function bindCatalogViewportScrollListener() {
-  const nextElement = getGridBodyViewportElement()
-  if (catalogViewportScrollElement === nextElement) return
-  if (catalogViewportScrollElement) {
-    catalogViewportScrollElement.removeEventListener('scroll', handleCatalogViewportScroll)
-  }
-  catalogViewportScrollElement = nextElement
-  catalogViewportScrollElement?.addEventListener('scroll', handleCatalogViewportScroll, { passive: true })
-}
-
-function unbindCatalogViewportScrollListener() {
-  if (!catalogViewportScrollElement) return
-  catalogViewportScrollElement.removeEventListener('scroll', handleCatalogViewportScroll)
-  catalogViewportScrollElement = null
-}
-
 function escapeGridSelectorValue(value: string) {
   if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
     return CSS.escape(value)
@@ -4118,14 +3959,6 @@ function resetCatalogState() {
   catalogRowModel.value?.dispose()
   catalogRowModel.value = null
   clearCatalogViewportDim()
-  catalogPrefetchEpoch += 1
-  catalogPrefetchInFlight = null
-  lastCatalogPullRange = null
-  if (catalogPrefetchFrame !== null) {
-    window.cancelAnimationFrame(catalogPrefetchFrame)
-    catalogPrefetchFrame = null
-  }
-  unbindCatalogViewportScrollListener()
   allRows.value = []
   catalogTotal.value = 0
   projectedRowsForSummary.value = []
@@ -4332,11 +4165,7 @@ watch(isAuthenticated, (authenticated) => {
     void loadLots()
     void loadPresets()
     startAuctionEvents()
-    void nextTick(() => {
-      startGridSurfaceResizeObserver()
-      bindCatalogViewportScrollListener()
-      scheduleCatalogScrollPrefetch()
-    })
+    void nextTick(() => startGridSurfaceResizeObserver())
     return
   }
 
@@ -4350,11 +4179,7 @@ onMounted(() => {
     void loadLots()
     void loadPresets()
     startAuctionEvents()
-    void nextTick(() => {
-      startGridSurfaceResizeObserver()
-      bindCatalogViewportScrollListener()
-      scheduleCatalogScrollPrefetch()
-    })
+    void nextTick(() => startGridSurfaceResizeObserver())
   }
   window.addEventListener('resize', updateLoadingSkeletonRows)
   document.addEventListener('keydown', handleGlobalKeydown, true)
@@ -4367,7 +4192,6 @@ onUnmounted(() => {
   catalogRowModel.value = null
   clearCatalogViewportDim()
   stopGridSurfaceResizeObserver()
-  unbindCatalogViewportScrollListener()
   stopDetailResize()
   window.removeEventListener('resize', updateLoadingSkeletonRows)
   document.removeEventListener('keydown', handleGlobalKeydown, true)
@@ -4383,10 +4207,6 @@ onUnmounted(() => {
   if (gridSummaryFrame !== null) {
     window.cancelAnimationFrame(gridSummaryFrame)
     gridSummaryFrame = null
-  }
-  if (catalogPrefetchFrame !== null) {
-    window.cancelAnimationFrame(catalogPrefetchFrame)
-    catalogPrefetchFrame = null
   }
   queuedRowUpdates.clear()
   pendingGridSaveTimers.forEach((timer) => clearTimeout(timer))
@@ -4489,7 +4309,7 @@ onUnmounted(() => {
       <DataGrid
         v-else-if="catalogRowModel"
         ref="gridRef"
-        :rows="allRows"
+        :rows="EMPTY_GRID_ROWS"
         :row-model="catalogRowModel"
         :columns="columns"
         :column-widths="gridColumnWidths"
