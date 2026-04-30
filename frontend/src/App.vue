@@ -626,6 +626,9 @@ const CATALOG_SERVER_FETCH_LIMIT = 10_000
 const CATALOG_ROW_CACHE_LIMIT = 20_000
 const CATALOG_VIEWPORT_ROW_OVERSCAN = 100
 const CATALOG_VIEWPORT_COLUMN_OVERSCAN = 2
+const CATALOG_PREFETCH_BACKWARD_ROWS = 120
+const CATALOG_PREFETCH_FORWARD_ROWS = 320
+const CATALOG_PREFETCH_MIN_BATCH_SIZE = 384
 const catalogVirtualizationOptions = {
   rows: true,
   columns: true,
@@ -676,6 +679,7 @@ let lastLotsReloadStartedAt = 0
 let lastGridServerQuerySignature = ''
 let catalogPullRequestSeq = 0
 let catalogSoftReloadSeq = 0
+let lastCatalogPullRange: { start: number; end: number } | null = null
 let catalogViewportDimRequests = 0
 let catalogViewportDimShowTimer: ReturnType<typeof window.setTimeout> | null = null
 let catalogViewportDimHideTimer: ReturnType<typeof window.setTimeout> | null = null
@@ -2416,13 +2420,14 @@ function isAbortLikeError(error: unknown) {
   return error instanceof DOMException && error.name === 'AbortError'
 }
 
-async function fetchCatalogResponse(url: string) {
+async function fetchCatalogResponse(url: string, signal?: AbortSignal) {
   return fetch(url, {
     headers: authHeaders(),
+    signal,
   })
 }
 
-async function fetchCatalogJson(url: string) {
+async function fetchCatalogJson(url: string, signal?: AbortSignal) {
   const requestKey = `${accessToken.value ?? ''}\n${url}`
   const existingRequest = catalogFetchRequests.get(requestKey)
   if (existingRequest) {
@@ -2430,7 +2435,7 @@ async function fetchCatalogJson(url: string) {
   }
 
   const request = (async () => {
-    const response = await fetchCatalogResponse(url)
+    const response = await fetchCatalogResponse(url, signal)
     if (response.status === 401) {
       authStore.logout()
       throw new Error('Сессия истекла. Войдите снова.')
@@ -2460,6 +2465,54 @@ function rememberLoadedRows(rows: GridLotRow[]) {
   allRows.value = Array.from(byId.values())
 }
 
+function resolveCatalogFetchDirection(range: { start: number; end: number }) {
+  const previousRange = lastCatalogPullRange
+  lastCatalogPullRange = { ...range }
+  if (!previousRange) return 0
+  if (range.start > previousRange.start) return 1
+  if (range.start < previousRange.start) return -1
+  return 0
+}
+
+function expandCatalogFetchRange(range: { start: number; end: number }) {
+  const requestedStart = Math.max(0, range.start)
+  const requestedEnd = Math.max(requestedStart, range.end)
+  const requestedSize = requestedEnd - requestedStart + 1
+  const direction = resolveCatalogFetchDirection({ start: requestedStart, end: requestedEnd })
+  const totalRows = Math.max(0, catalogRowModel.value?.getSnapshot().rowCount ?? catalogTotal.value)
+  const maxEnd = totalRows > 0 ? totalRows - 1 : Number.POSITIVE_INFINITY
+
+  const backwardRows = direction > 0 ? CATALOG_PREFETCH_BACKWARD_ROWS : CATALOG_PREFETCH_FORWARD_ROWS
+  const forwardRows = direction < 0 ? CATALOG_PREFETCH_BACKWARD_ROWS : CATALOG_PREFETCH_FORWARD_ROWS
+
+  let start = Math.max(0, requestedStart - backwardRows)
+  let end = requestedEnd + forwardRows
+  const targetSize = Math.max(CATALOG_PREFETCH_MIN_BATCH_SIZE, requestedSize + backwardRows + forwardRows)
+
+  if (Number.isFinite(maxEnd)) {
+    end = Math.min(maxEnd, end)
+  }
+
+  let currentSize = end - start + 1
+  if (currentSize < targetSize) {
+    const missing = targetSize - currentSize
+    const growBefore = Math.min(start, Math.ceil(missing / 2))
+    start -= growBefore
+    end += missing - growBefore
+    if (Number.isFinite(maxEnd) && end > maxEnd) {
+      const overflow = end - maxEnd
+      end = maxEnd
+      start = Math.max(0, start - overflow)
+    }
+  }
+
+  const cappedEnd = Number.isFinite(maxEnd) ? Math.min(maxEnd, end) : end
+  return {
+    start,
+    end: Math.max(start, cappedEnd),
+  }
+}
+
 async function fetchLotsRange(request: {
   start: number
   end: number
@@ -2470,15 +2523,18 @@ async function fetchLotsRange(request: {
   if (request.signal?.aborted) {
     throw new DOMException('Request aborted', 'AbortError')
   }
-  const start = Math.max(0, request.start)
-  const end = Math.max(start, request.end)
+  const expandedRange = expandCatalogFetchRange({
+    start: Math.max(0, request.start),
+    end: Math.max(Math.max(0, request.start), request.end),
+  })
   const data = await fetchCatalogJson(
     buildLotsUrl({
-      offset: start,
-      limit: end - start + 1,
+      offset: expandedRange.start,
+      limit: expandedRange.end - expandedRange.start + 1,
       sortModel: request.sortModel,
       filterModel: request.filterModel,
     }),
+    request.signal,
   )
 
   if (request.signal?.aborted) {
@@ -2492,7 +2548,11 @@ async function fetchLotsRange(request: {
   gridRowRevision.value = nextRevision
   rememberLoadedRows(mappedRows)
   lastLoadedAt.value = new Date().toLocaleString('ru-RU')
-  return { rows: mappedRows, total: data.total }
+  return {
+    rows: mappedRows,
+    total: data.total,
+    start: expandedRange.start,
+  }
 }
 
 function buildColumnHistogramPayload(request: CatalogColumnHistogramRequest): LotHistogramPayload {
@@ -2627,7 +2687,7 @@ function createCatalogDataSource(): DataGridDataSource<GridLotRow> {
         })
         return {
           rows: result.rows.map((row, index) => ({
-            index: request.range.start + index,
+            index: result.start + index,
             row,
             rowId: row.id,
           })),
@@ -2760,7 +2820,7 @@ async function softRefreshCatalogRows(options: {
       filterModel: typeof options.filterModel === 'undefined' ? snapshot.filterModel : options.filterModel,
     })
     if (reloadSeq !== catalogSoftReloadSeq) return
-    emitCatalogRowsUpsert(result.rows, result.total, range.start)
+    emitCatalogRowsUpsert(result.rows, result.total, result.start)
     if (options.expandViewportAfter === true) {
       ensureCatalogServerViewport(range)
     }
