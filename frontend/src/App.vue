@@ -624,12 +624,20 @@ const SERVER_FILTERS_STORAGE_KEY = 'auction-server-filters'
 const CATALOG_TOTAL_ROW_LIMIT = 1_000_000
 const CATALOG_SERVER_FETCH_LIMIT = 10_000
 const CATALOG_ROW_CACHE_LIMIT = 20_000
+const CATALOG_VIEWPORT_ROW_OVERSCAN = 100
+const CATALOG_VIEWPORT_COLUMN_OVERSCAN = 2
+const catalogVirtualizationOptions = {
+  rows: true,
+  columns: true,
+  rowOverscan: CATALOG_VIEWPORT_ROW_OVERSCAN,
+  columnOverscan: CATALOG_VIEWPORT_COLUMN_OVERSCAN,
+}
 const DETAIL_PANE_DEFAULT_WIDTH = 720
 const DETAIL_PANE_MIN_WIDTH = 420
 const DETAIL_PANE_MAX_WIDTH = 980
 const LOTS_RELOAD_DELAY_MS = 1200
 const SYNC_PROGRESS_RELOAD_INTERVAL_MS = 30_000
-const SERVER_ROW_MODEL_INITIAL_FETCH_SIZE = 128
+const SERVER_ROW_MODEL_INITIAL_FETCH_SIZE = 256
 const GRID_SUMMARY_MAX_READ_ROWS = 1000
 const DETAIL_FETCH_TIMEOUT_MS = 15_000
 const DETAIL_LIVE_REFRESH_ENQUEUE_TIMEOUT_MS = 5_000
@@ -4266,7 +4274,7 @@ onUnmounted(() => {
         :toolbar-modules="toolbarModules"
         :theme="workspaceDataGridTheme"
         :is-cell-editable="isGridCellEditable"
-        virtualization
+        :virtualization="catalogVirtualizationOptions"
         :advanced-filter="advancedFilterOptions"
         :column-layout="columnLayoutOptions"
         layout-mode="fill"
