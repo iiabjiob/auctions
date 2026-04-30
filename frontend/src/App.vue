@@ -621,7 +621,9 @@ const DETAIL_PANE_WIDTH_STORAGE_KEY = 'auction-detail-pane-width'
 const GRID_SAVED_VIEW_STORAGE_KEY = 'auction-grid-saved-view-v2'
 const GRID_COLUMN_WIDTHS_STORAGE_KEY = 'auction-grid-column-widths-v1'
 const SERVER_FILTERS_STORAGE_KEY = 'auction-server-filters'
-const LOTS_DATASET_SIZE = 10_000
+const CATALOG_TOTAL_ROW_LIMIT = 1_000_000
+const CATALOG_SERVER_FETCH_LIMIT = 10_000
+const CATALOG_ROW_CACHE_LIMIT = 20_000
 const DETAIL_PANE_DEFAULT_WIDTH = 720
 const DETAIL_PANE_MIN_WIDTH = 420
 const DETAIL_PANE_MAX_WIDTH = 980
@@ -2173,7 +2175,7 @@ function resolveCatalogServerViewportSize(preferredRange?: { start: number; end:
   const range = preferredRange ?? catalogRowModel.value?.getSnapshot().viewportRange
   const size = resolveViewportRangeSize(range)
   if (size > 1) {
-    return Math.min(LOTS_DATASET_SIZE, Math.max(SERVER_ROW_MODEL_INITIAL_FETCH_SIZE, size))
+    return Math.min(CATALOG_SERVER_FETCH_LIMIT, Math.max(SERVER_ROW_MODEL_INITIAL_FETCH_SIZE, size))
   }
   return SERVER_ROW_MODEL_INITIAL_FETCH_SIZE
 }
@@ -2365,7 +2367,7 @@ function buildLotsUrl(
     filterModel?: DataGridFilterSnapshot | null
   } = {},
 ) {
-  const limit = Math.max(1, Math.min(options.limit ?? LOTS_DATASET_SIZE, LOTS_DATASET_SIZE))
+  const limit = Math.max(1, Math.min(options.limit ?? CATALOG_SERVER_FETCH_LIMIT, CATALOG_SERVER_FETCH_LIMIT))
   const offset = Math.max(0, options.offset ?? 0)
   const params = new URLSearchParams({
     period: filters.period,
@@ -2692,8 +2694,8 @@ function createCatalogRowModel(): PatchableCatalogRowModel {
   return attachCatalogPatchRows(createDataSourceBackedRowModel({
     dataSource: createCatalogDataSource(),
     resolveRowId: resolveClientGridRowId,
-    initialTotal: Math.max(catalogTotal.value || 0, SERVER_ROW_MODEL_INITIAL_FETCH_SIZE),
-    rowCacheLimit: LOTS_DATASET_SIZE,
+    initialTotal: Math.min(CATALOG_TOTAL_ROW_LIMIT, Math.max(catalogTotal.value || 0, SERVER_ROW_MODEL_INITIAL_FETCH_SIZE)),
+    rowCacheLimit: CATALOG_ROW_CACHE_LIMIT,
   }))
 }
 
@@ -2724,7 +2726,7 @@ function resolveCatalogReloadRange() {
   const safeStart = Math.min(start, maxStart)
   return {
     start: safeStart,
-    end: Math.min(LOTS_DATASET_SIZE - 1, safeStart + size - 1),
+    end: Math.min(Math.max(0, rowCount - 1), safeStart + size - 1),
   }
 }
 
@@ -4214,7 +4216,7 @@ onUnmounted(() => {
       </div>
       <p>
         {{ backgroundStatus }}
-        <span v-if="lastLoadedAt"> · В кэше {{ loadedRowsCount }} · Таблица {{ lastLoadedAt }}</span>
+        <span v-if="lastLoadedAt"> · Загружено {{ loadedRowsCount }} · Таблица {{ lastLoadedAt }}</span>
       </p>
     </section>
 
