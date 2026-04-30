@@ -507,6 +507,15 @@ h2 {
   min-height: 0;
 }
 
+.grid-surface :where(.grid-body-viewport) {
+  transition: opacity 160ms ease, filter 160ms ease;
+}
+
+.grid-surface--query-busy :where(.grid-body-viewport) {
+  opacity: 0.48;
+  filter: saturate(0.82);
+}
+
 .error-banner {
   grid-row: 3;
   margin: 0;
@@ -553,7 +562,7 @@ h2 {
 }
 
 .table-skeleton {
-  --skeleton-row-height: 36px;
+  --skeleton-row-height: 26px;
   display: grid;
   grid-template-rows: 42px minmax(0, 1fr);
   width: 100%;
@@ -670,6 +679,12 @@ h2 {
   }
   50% {
     opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .grid-surface :where(.grid-body-viewport) {
+    transition: none;
   }
 }
 
