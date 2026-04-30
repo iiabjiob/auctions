@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
+from typing import Any
 
 from sqlalchemy import Integer, Numeric, String, and_, cast, func, not_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +12,7 @@ from app.schemas.auctions import (
     AuctionListItem,
     DatagridColumn,
     LotDatagridFilters,
+    LotDatagridHistogramEntry,
     LotDatagridPagination,
     LotDatagridResponse,
     LotDatagridRow,
@@ -168,6 +170,76 @@ async def list_persisted_lots_for_datagrid(
         pagination=pagination,
         available_sources=list_source_infos(),
     )
+
+
+async def list_persisted_lot_column_histogram(
+    session: AsyncSession,
+    *,
+    period: str = "month",
+    source: str | None = None,
+    q: str | None = None,
+    status: str | None = None,
+    analysis_color: str | None = None,
+    min_price: Decimal | None = None,
+    max_price: Decimal | None = None,
+    only_new: bool = False,
+    shortlist: bool = False,
+    min_rating: int | None = None,
+    column_id: str,
+    histogram_options: dict[str, Any] | None = None,
+    sort_model: list[dict] | None = None,
+    grid_filter: dict | None = None,
+) -> list[LotDatagridHistogramEntry]:
+    expression, value_type = _grid_column_expression(column_id)
+    if expression is None:
+        raise ValueError(f"Unsupported histogram column '{column_id}'")
+
+    filters = LotDatagridFilters(
+        period=period,
+        source=source,
+        q=q,
+        status=status,
+        analysis_color=analysis_color,
+        min_price=min_price,
+        max_price=max_price,
+        only_new=only_new,
+        shortlist=shortlist,
+        min_rating=min_rating,
+    )
+    active_sources = tuple(SOURCE_PROVIDERS)
+    if source and source != "all" and source not in SOURCE_PROVIDERS:
+        supported = ", ".join(sorted(SOURCE_PROVIDERS))
+        raise ValueError(f"Unsupported auction source '{source}'. Supported: {supported}")
+
+    options = histogram_options or {}
+    effective_grid_filter = None if options.get("scope") == "sourceAll" else grid_filter
+    value_label = "histogram_value"
+    base_statement = _build_persisted_lots_statement(filters, active_sources, grid_filter=effective_grid_filter)
+    base_query = base_statement.with_only_columns(expression.label(value_label)).order_by(None).subquery()
+    value_column = base_query.c[value_label]
+    count_column = func.count().label("count")
+    statement = select(value_column, count_column).select_from(base_query)
+
+    search = str(options.get("search") or "").strip().lower()
+    if search:
+        statement = statement.where(func.lower(func.coalesce(cast(value_column, String), "")).like(f"%{_escape_like(search)}%", escape="\\"))
+
+    statement = statement.group_by(value_column)
+    if options.get("orderBy") == "valueAsc":
+        statement = statement.order_by(cast(value_column, String).asc().nulls_first())
+    else:
+        statement = statement.order_by(count_column.desc(), cast(value_column, String).asc().nulls_first())
+
+    result = await session.execute(statement.limit(_histogram_limit(options.get("limit"))))
+    return [
+        LotDatagridHistogramEntry(
+            token=_serialize_histogram_token(value, value_type),
+            value=_histogram_json_value(value),
+            count=int(count or 0),
+            text=_histogram_text_value(value),
+        )
+        for value, count in result.all()
+    ]
 
 
 def _build_persisted_lots_statement(
@@ -378,7 +450,11 @@ def _column_filter_predicate(key: str, payload):
         expression, _ = _grid_column_expression(key)
         if expression is None:
             return None
-        return cast(expression, String).in_([str(token) for token in tokens])
+        predicates = [_value_set_token_predicate(expression, str(token)) for token in tokens]
+        predicates = [predicate for predicate in predicates if predicate is not None]
+        if not predicates:
+            return None
+        return or_(*predicates)
     if kind == "predicate":
         return _predicate_filter_condition(key, payload.get("operator"), payload.get("value"), payload.get("value2"), payload.get("caseSensitive"))
     return None
@@ -489,6 +565,59 @@ def _coerce_filter_value(value, value_type: str):
         except (InvalidOperation, ValueError):
             return None
     return str(value) if value_type == "text" else value
+
+
+def _value_set_token_predicate(expression, token: str):
+    if token == "null":
+        return expression.is_(None)
+    if token.startswith("string:"):
+        return cast(expression, String) == token.removeprefix("string:")
+    if token.startswith("number:"):
+        try:
+            return expression == Decimal(token.removeprefix("number:"))
+        except (InvalidOperation, ValueError):
+            return None
+    if token.startswith("boolean:"):
+        value = token.removeprefix("boolean:").strip().lower()
+        if value == "true":
+            return expression.is_(True)
+        if value == "false":
+            return expression.is_(False)
+        return None
+    return cast(expression, String) == token
+
+
+def _histogram_limit(value: object) -> int:
+    try:
+        return min(250, max(1, int(value or 50)))
+    except (TypeError, ValueError):
+        return 50
+
+
+def _serialize_histogram_token(value: object, value_type: str) -> str:
+    if value is None:
+        return "null"
+    if value_type == "boolean" or isinstance(value, bool):
+        return f"boolean:{str(bool(value)).lower()}"
+    if value_type == "number" or isinstance(value, int | float | Decimal):
+        return f"number:{value}"
+    return f"string:{_histogram_text_value(value)}"
+
+
+def _histogram_json_value(value: object) -> object:
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return value
+
+
+def _histogram_text_value(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
 
 
 def _pagination_from_total(

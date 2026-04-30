@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -277,6 +278,30 @@ class LotDatagridResponse(BaseModel):
     total: int
     pagination: LotDatagridPagination
     available_sources: list[AuctionSourceInfo]
+
+
+class LotDatagridHistogramEntry(BaseModel):
+    token: str
+    value: Any = None
+    count: int
+    text: str | None = None
+
+
+class LotDatagridHistogramRequest(BaseModel):
+    column_id: str
+    options: dict[str, Any] = Field(default_factory=dict)
+    period: str = "month"
+    source: str | None = None
+    q: str | None = None
+    status: str | None = None
+    analysis_color: str | None = None
+    min_price: Decimal | None = None
+    max_price: Decimal | None = None
+    only_new: bool = False
+    shortlist: bool = False
+    min_rating: int | None = None
+    sort_model: list[dict] | None = None
+    grid_filter: dict | None = None
 
 
 class SourceSyncResult(BaseModel):

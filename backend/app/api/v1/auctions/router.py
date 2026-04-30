@@ -16,11 +16,13 @@ from app.schemas.auctions import (
     AuctionDetailResponse,
     AuctionSourceInfo,
     LotDatagridResponse,
+    LotDatagridHistogramEntry,
+    LotDatagridHistogramRequest,
     LotDetailResponse,
     LotWorkItemUpdate,
     LotWorkspaceResponse,
 )
-from app.services.auction_catalog import list_lots_for_datagrid, list_persisted_lots_for_datagrid
+from app.services.auction_catalog import list_lots_for_datagrid, list_persisted_lots_for_datagrid, list_persisted_lot_column_histogram
 from app.services.auction_analysis_config import auction_analysis_config_service
 from app.services.auction_sources import get_source_provider, list_source_infos
 from app.services.auction_workspace import get_lot_workspace, update_lot_work_item
@@ -124,6 +126,34 @@ async def get_lots_datagrid(
             min_rating=min_rating,
             page=page,
             page_size=resolved_page_size,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.post("/lots/histogram", response_model=list[LotDatagridHistogramEntry])
+async def get_lots_column_histogram(
+    payload: LotDatagridHistogramRequest,
+    session: AsyncSession = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
+) -> list[LotDatagridHistogramEntry]:
+    try:
+        return await list_persisted_lot_column_histogram(
+            session,
+            period=payload.period,
+            source=payload.source,
+            q=payload.q,
+            status=payload.status,
+            analysis_color=payload.analysis_color,
+            min_price=payload.min_price,
+            max_price=payload.max_price,
+            only_new=payload.only_new,
+            shortlist=payload.shortlist,
+            min_rating=payload.min_rating,
+            column_id=payload.column_id,
+            histogram_options=payload.options,
+            sort_model=payload.sort_model,
+            grid_filter=payload.grid_filter,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error

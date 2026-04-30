@@ -13,6 +13,9 @@ import {
 } from '@affino/datagrid-vue-app'
 import {
   createDataSourceBackedRowModel,
+  type DataGridClientRowPatch,
+  type DataGridClientRowPatchOptions,
+  type DataGridColumnHistogram,
   type DataGridDataSource,
   type DataGridFilterSnapshot,
   type DataGridSortState,
@@ -367,6 +370,29 @@ type LotsResponse = {
   available_sources: ApiSource[]
 }
 
+type CatalogColumnHistogramRequest = Parameters<NonNullable<DataGridDataSource<GridLotRow>['getColumnHistogram']>>[0]
+
+type PatchableCatalogRowModel = DataSourceBackedRowModel<GridLotRow> & {
+  patchRows: (updates: readonly DataGridClientRowPatch<GridLotRow>[], options?: DataGridClientRowPatchOptions) => void
+}
+
+type LotHistogramPayload = {
+  column_id: string
+  options: Record<string, unknown>
+  period: string
+  source: string | null
+  q: string | null
+  status: string | null
+  analysis_color: string | null
+  min_price: number | null
+  max_price: number | null
+  only_new: boolean
+  shortlist: boolean
+  min_rating: number | null
+  sort_model: readonly DataGridSortState[]
+  grid_filter: DataGridFilterSnapshot | null
+}
+
 type GridLotRow = {
   id: string
   rowRevision: number
@@ -542,9 +568,7 @@ const DETAIL_PANE_MIN_WIDTH = 420
 const DETAIL_PANE_MAX_WIDTH = 980
 const LOTS_RELOAD_DELAY_MS = 1200
 const SYNC_PROGRESS_RELOAD_INTERVAL_MS = 30_000
-const SERVER_ROW_MODEL_INITIAL_TOTAL = 100
 const SERVER_ROW_MODEL_INITIAL_FETCH_SIZE = 128
-const SERVER_ROW_MODEL_SMALL_DATASET_PREFETCH_LIMIT = 256
 const LOADING_SKELETON_MIN_ROWS = 16
 const LOADING_SKELETON_TOOLBAR_HEIGHT = 42
 const LOADING_SKELETON_HEADER_HEIGHT = 34
@@ -570,31 +594,12 @@ let lastLotsReloadStartedAt = 0
 let lastGridServerQuerySignature = ''
 let catalogPullRequestSeq = 0
 let catalogSoftReloadSeq = 0
-let catalogSmallTailLoadKey = ''
 let catalogViewportDimRequests = 0
 let catalogViewportDimShowTimer: ReturnType<typeof window.setTimeout> | null = null
 let catalogViewportDimHideTimer: ReturnType<typeof window.setTimeout> | null = null
 let catalogViewportDimVisibleAt = 0
 let catalogNextViewportPullShouldDim = false
 const catalogFetchRequests = new Map<string, Promise<LotsResponse>>()
-type CatalogVirtualWindowSnapshot = {
-  rowStart: number
-  rowEnd: number
-  rowTotal?: number
-}
-type CatalogGridRuntime = {
-  virtualWindow?: { value: CatalogVirtualWindowSnapshot | null | undefined }
-  getVirtualWindowSnapshot?: () => CatalogVirtualWindowSnapshot | null
-  subscribeVirtualWindow?: (listener: (snapshot: CatalogVirtualWindowSnapshot | null) => void) => () => void
-}
-type CatalogGridExposed = DataGridExposed<GridLotRow> & {
-  getRuntime?: () => CatalogGridRuntime | null
-}
-type SparseCatalogRowModel = DataSourceBackedRowModel<GridLotRow> & {
-  getWorkerProtocolDiagnostics: () => Record<string, unknown>
-}
-let catalogVirtualWindowUnsubscribe: (() => void) | null = null
-let catalogVirtualWindowRowModel: SparseCatalogRowModel | null = null
 let gridSurfaceResizeObserver: ResizeObserver | null = null
 
 const DEFAULT_SERVER_FILTERS: ServerQuickFiltersState = {
@@ -1404,10 +1409,75 @@ function resolveClientGridRowId(row: Pick<GridLotRow, 'id'>) {
   return row.id
 }
 
-const catalogRowModel = shallowRef<SparseCatalogRowModel | null>(null)
+const catalogRowModel = shallowRef<PatchableCatalogRowModel | null>(null)
 const isGridCellEditable = ({ column }: { column: { key: string } }) => EDITABLE_GRID_COLUMN_KEYS.has(column.key)
-const columnLayoutOptions = { buttonLabel: 'Колонки' }
-const advancedFilterOptions = { buttonLabel: 'Расширенный фильтр' }
+const columnLayoutOptions = {
+  buttonLabel: 'Колонки',
+  labels: {
+    buttonLabel: 'Колонки',
+    eyebrow: 'Колонки',
+    title: 'Настройка колонок',
+    close: 'Закрыть',
+    cancel: 'Отмена',
+    apply: 'Применить',
+    moveUp: 'Выше',
+    moveDown: 'Ниже',
+  },
+}
+const advancedFilterOptions = {
+  buttonLabel: 'Расширенный фильтр',
+  labels: {
+    buttonLabel: 'Расширенный фильтр',
+    eyebrow: 'Расширенный фильтр',
+    title: 'Условия фильтрации',
+    close: 'Закрыть',
+    appliedEyebrow: 'Применено к таблице',
+    appliedTitle: 'Текущие фильтры',
+    resetAllFilters: 'Сбросить все фильтры',
+    noFiltersApplied: 'Фильтры не применены',
+    joinLabel: 'Связка',
+    joinAriaLabel: 'Логическая связка',
+    columnLabel: 'Колонка',
+    columnAriaLabel: 'Колонка',
+    operatorLabel: 'Условие',
+    operatorAriaLabel: 'Условие фильтра',
+    valueLabel: 'Значение',
+    valuePlaceholder: 'Значение',
+    valueAriaLabel: 'Значение условия',
+    clearClause: 'Очистить',
+    removeClause: 'Удалить',
+    addClause: 'Добавить условие',
+    cancel: 'Отмена',
+    apply: 'Применить',
+    activeSummaryPrefix: 'Расширенный',
+    activeSummaryFallback: 'активен',
+    valuesSummaryLabel: 'значения',
+    blankValueLabel: '(Пустые)',
+    betweenJoiner: 'и',
+    notOperatorLabel: 'НЕ',
+    operators: {
+      contains: 'Содержит',
+      in: 'В списке',
+      equals: 'Равно',
+      'not-equals': 'Не равно',
+      'starts-with': 'Начинается с',
+      'ends-with': 'Заканчивается на',
+      gt: '>',
+      gte: '>=',
+      lt: '<',
+      lte: '<=',
+      between: 'между',
+      'is-empty': 'пусто',
+      'not-empty': 'не пусто',
+      'is-null': 'нет значения',
+      'not-null': 'есть значение',
+    },
+    joins: {
+      and: 'И',
+      or: 'ИЛИ',
+    },
+  },
+}
 
 const toolbarModules = computed<readonly DataGridAppToolbarModule[]>(() => [
   {
@@ -1984,65 +2054,6 @@ function ensureCatalogServerViewport(preferredRange?: { start: number; end: numb
   return currentRange.start !== appliedRange.start || currentRange.end !== appliedRange.end
 }
 
-function getCatalogGridRuntime() {
-  return (gridRef.value as CatalogGridExposed | null)?.getRuntime?.() ?? null
-}
-
-function syncCatalogRowModelViewportFromWindow(snapshot: CatalogVirtualWindowSnapshot | null) {
-  const rowModel = catalogRowModel.value
-  if (!rowModel || !snapshot) return
-
-  const rowTotal = Math.max(0, Math.trunc(rowModel.getSnapshot().rowCount || snapshot.rowTotal || 0))
-  if (rowTotal <= 0) return
-
-  const start = Math.max(0, Math.min(rowTotal - 1, Math.trunc(snapshot.rowStart)))
-  const end = Math.max(start, Math.min(rowTotal - 1, Math.trunc(snapshot.rowEnd)))
-  const currentRange = rowModel.getSnapshot().viewportRange
-  if (currentRange.start === start && currentRange.end === end) return
-
-  rowModel.setViewportRange({ start, end })
-}
-
-function disposeCatalogVirtualWindowBridge() {
-  catalogVirtualWindowUnsubscribe?.()
-  catalogVirtualWindowUnsubscribe = null
-  catalogVirtualWindowRowModel = null
-}
-
-function installCatalogVirtualWindowBridge() {
-  const rowModel = catalogRowModel.value
-  const runtime = getCatalogGridRuntime()
-  if (!rowModel || !runtime) return false
-  if (catalogVirtualWindowUnsubscribe && catalogVirtualWindowRowModel === rowModel) return true
-
-  disposeCatalogVirtualWindowBridge()
-  catalogVirtualWindowRowModel = rowModel
-
-  if (runtime.subscribeVirtualWindow) {
-    catalogVirtualWindowUnsubscribe = runtime.subscribeVirtualWindow(syncCatalogRowModelViewportFromWindow)
-    syncCatalogRowModelViewportFromWindow(runtime.getVirtualWindowSnapshot?.() ?? runtime.virtualWindow?.value ?? null)
-    return true
-  }
-
-  if (runtime.virtualWindow) {
-    catalogVirtualWindowUnsubscribe = watch(
-      () => runtime.virtualWindow?.value ?? null,
-      (snapshot) => syncCatalogRowModelViewportFromWindow(snapshot),
-      { immediate: true },
-    )
-    return true
-  }
-
-  syncCatalogRowModelViewportFromWindow(runtime.getVirtualWindowSnapshot?.() ?? null)
-  return true
-}
-
-function handleCatalogGridReady() {
-  void nextTick(() => {
-    installCatalogVirtualWindowBridge()
-  })
-}
-
 function expandCollapsedCatalogServerViewport() {
   const range = catalogRowModel.value?.getSnapshot().viewportRange
   if (resolveViewportRangeSize(range) > 1) return false
@@ -2293,31 +2304,6 @@ async function fetchCatalogJson(url: string) {
   }
 }
 
-async function fetchSmallCatalogTail(options: {
-  start: number
-  loadedCount: number
-  total: number
-  sortModel?: readonly DataGridSortState[]
-  filterModel?: DataGridFilterSnapshot | null
-}) {
-  if (options.start !== 0) return []
-  if (options.total > SERVER_ROW_MODEL_SMALL_DATASET_PREFETCH_LIMIT) return []
-
-  const tailOffset = options.start + options.loadedCount
-  const tailLimit = options.total - tailOffset
-  if (tailLimit <= 0) return []
-
-  const tailData = await fetchCatalogJson(
-    buildLotsUrl({
-      offset: tailOffset,
-      limit: tailLimit,
-      sortModel: options.sortModel,
-      filterModel: options.filterModel,
-    }),
-  )
-  return tailData.rows
-}
-
 function rememberLoadedRows(rows: GridLotRow[]) {
   const byId = new Map(allRows.value.map((row) => [row.id, row]))
   for (const row of rows) {
@@ -2352,26 +2338,54 @@ async function fetchLotsRange(request: {
     throw new DOMException('Request aborted', 'AbortError')
   }
 
-  const tailRows = await fetchSmallCatalogTail({
-    start,
-    loadedCount: data.rows.length,
-    total: data.total,
-    sortModel: request.sortModel,
-    filterModel: request.filterModel,
-  })
-
-  if (request.signal?.aborted) {
-    throw new DOMException('Request aborted', 'AbortError')
-  }
-
   const nextRevision = gridRowRevision.value + 1
-  const mappedRows = [...data.rows, ...tailRows].map((row) => mapApiRow(row, nextRevision))
+  const mappedRows = data.rows.map((row) => mapApiRow(row, nextRevision))
   sources.value = data.available_sources
   catalogTotal.value = data.total
   gridRowRevision.value = nextRevision
   rememberLoadedRows(mappedRows)
   lastLoadedAt.value = new Date().toLocaleString('ru-RU')
   return { rows: mappedRows, total: data.total }
+}
+
+function buildColumnHistogramPayload(request: CatalogColumnHistogramRequest): LotHistogramPayload {
+  const minPrice = parseFilterNumber(filters.minPrice)
+  const maxPrice = parseFilterNumber(filters.maxPrice)
+  return {
+    column_id: request.columnId,
+    options: request.options as Record<string, unknown>,
+    period: filters.period,
+    source: filters.source || null,
+    q: filters.query.trim() || null,
+    status: filters.status || null,
+    analysis_color: filters.analysisColor || null,
+    min_price: minPrice,
+    max_price: maxPrice,
+    only_new: filters.onlyNew,
+    shortlist: filters.shortlist,
+    min_rating: filters.minRating > 0 ? filters.minRating : null,
+    sort_model: request.sortModel,
+    grid_filter: hasGridFilterModel(request.filterModel) ? request.filterModel : null,
+  }
+}
+
+async function fetchColumnHistogram(request: CatalogColumnHistogramRequest): Promise<DataGridColumnHistogram> {
+  const response = await fetch(apiUrl('/api/v1/auctions/lots/histogram'), {
+    method: 'POST',
+    headers: new Headers({
+      ...Object.fromEntries(authHeaders().entries()),
+      'Content-Type': 'application/json',
+    }),
+    body: JSON.stringify(buildColumnHistogramPayload(request)),
+  })
+  if (response.status === 401) {
+    authStore.logout()
+    throw new Error('Сессия истекла. Войдите снова.')
+  }
+  if (!response.ok) {
+    throw new Error(`API вернул ${response.status}`)
+  }
+  return (await response.json()) as DataGridColumnHistogram
 }
 
 function beginCatalogViewportDim() {
@@ -2485,23 +2499,65 @@ function createCatalogDataSource(): DataGridDataSource<GridLotRow> {
         scheduleGridSummaryRefresh()
       }
     },
+    getColumnHistogram(request) {
+      return fetchColumnHistogram(request)
+    },
   }
 }
 
-function createCatalogRowModel(): SparseCatalogRowModel {
-  const rowModel = createDataSourceBackedRowModel({
+function findCachedCatalogRow(rowModel: DataSourceBackedRowModel<GridLotRow>, rowId: string | number) {
+  const snapshot = rowModel.getSnapshot()
+  if (snapshot.rowCount <= 0) return null
+
+  const viewportRange = {
+    start: Math.max(0, snapshot.viewportRange.start),
+    end: Math.min(snapshot.rowCount - 1, snapshot.viewportRange.end),
+  }
+  for (let rowIndex = viewportRange.start; rowIndex <= viewportRange.end; rowIndex += 1) {
+    const rowNode = rowModel.getRow(rowIndex)
+    if (rowNode?.rowId !== rowId) continue
+    if (Number.isFinite(rowNode.originalIndex)) return { index: rowNode.originalIndex, row: rowNode.data }
+    if (Number.isFinite(rowNode.displayIndex)) return { index: rowNode.displayIndex, row: rowNode.data }
+    return { index: rowIndex, row: rowNode.data }
+  }
+  return null
+}
+
+function attachCatalogPatchRows(rowModel: DataSourceBackedRowModel<GridLotRow>): PatchableCatalogRowModel {
+  const patchableRowModel = rowModel as PatchableCatalogRowModel
+  patchableRowModel.patchRows = (updates) => {
+    const snapshot = rowModel.getSnapshot()
+    const patchedRows: Array<{ row: GridLotRow; index: number }> = []
+    for (const update of updates) {
+      const cachedRow = findCachedCatalogRow(rowModel, update.rowId)
+      if (!cachedRow) continue
+
+      const currentRow = cachedRow.row ?? getLatestGridRow(String(update.rowId))
+      if (!currentRow) continue
+
+      patchedRows.push({
+        index: cachedRow.index,
+        row: {
+          ...currentRow,
+          ...normalizeGridRowPatch(update.data),
+        },
+      })
+    }
+
+    for (const patchedRow of patchedRows) {
+      emitCatalogRowsUpsert([patchedRow.row], snapshot.rowCount, patchedRow.index)
+    }
+  }
+  return patchableRowModel
+}
+
+function createCatalogRowModel(): PatchableCatalogRowModel {
+  return attachCatalogPatchRows(createDataSourceBackedRowModel({
     dataSource: createCatalogDataSource(),
     resolveRowId: resolveClientGridRowId,
-    initialTotal: catalogTotal.value || SERVER_ROW_MODEL_INITIAL_TOTAL,
+    initialTotal: Math.max(catalogTotal.value || 0, SERVER_ROW_MODEL_INITIAL_FETCH_SIZE),
     rowCacheLimit: LOTS_DATASET_SIZE,
-  }) as SparseCatalogRowModel
-
-  rowModel.getWorkerProtocolDiagnostics = () => ({
-    transportKind: 'data-source',
-    dispatchCount: 0,
-    fallbackCount: 0,
-  })
-  return rowModel
+  }))
 }
 
 function emitCatalogRowsUpsert(rows: readonly GridLotRow[], total: number, startIndex: number) {
@@ -2563,40 +2619,7 @@ async function softRefreshCatalogRows(options: { dimViewport?: boolean } = {}) {
   }
 }
 
-async function loadMissingSmallCatalogTail() {
-  const rowModel = catalogRowModel.value
-  const total = Math.max(0, Math.trunc(catalogTotal.value))
-  const loadedCount = allRows.value.length
-  if (!isAuthenticated.value || !rowModel) return
-  if (total <= 0 || total > SERVER_ROW_MODEL_SMALL_DATASET_PREFETCH_LIMIT) return
-  if (loadedCount <= 0 || loadedCount >= total) return
-
-  const snapshot = rowModel.getSnapshot()
-  const loadKey = `${loadedCount}:${total}:${JSON.stringify(snapshot.sortModel)}:${JSON.stringify(snapshot.filterModel)}`
-  if (catalogSmallTailLoadKey === loadKey) return
-  catalogSmallTailLoadKey = loadKey
-
-  try {
-    const result = await fetchLotsRange({
-      start: loadedCount,
-      end: total - 1,
-      sortModel: snapshot.sortModel,
-      filterModel: snapshot.filterModel,
-    })
-    emitCatalogRowsUpsert(result.rows, result.total, loadedCount)
-    scheduleGridSummaryRefresh()
-  } catch (error) {
-    if (catalogSmallTailLoadKey === loadKey) {
-      catalogSmallTailLoadKey = ''
-    }
-    if (!isAbortLikeError(error)) {
-      errorMessage.value = error instanceof Error ? error.message : 'Не удалось загрузить хвост каталога'
-    }
-  }
-}
-
 function resetCatalogRowModel() {
-  disposeCatalogVirtualWindowBridge()
   catalogRowModel.value?.dispose()
   catalogDataSourceListeners.clear()
   clearCatalogViewportDim()
@@ -2605,7 +2628,6 @@ function resetCatalogRowModel() {
   gridSummaryReady.value = false
   gridSavedViewRestored.value = false
   lastGridServerQuerySignature = ''
-  catalogSmallTailLoadKey = ''
   catalogRowModel.value = createCatalogRowModel()
 }
 
@@ -2615,7 +2637,6 @@ async function loadLots() {
   savedGridWorkSnapshots.clear()
   await ensureGridSavedViewRestored()
   await nextTick()
-  installCatalogVirtualWindowBridge()
   ensureCatalogServerViewport({ start: 0, end: SERVER_ROW_MODEL_INITIAL_FETCH_SIZE - 1 })
 }
 
@@ -3608,11 +3629,9 @@ function closeLotDetails() {
 }
 
 function resetCatalogState() {
-  disposeCatalogVirtualWindowBridge()
   catalogRowModel.value?.dispose()
   catalogRowModel.value = null
   clearCatalogViewportDim()
-  catalogSmallTailLoadKey = ''
   allRows.value = []
   catalogTotal.value = 0
   projectedRowsForSummary.value = []
@@ -3801,13 +3820,6 @@ watch(isAuthenticated, (authenticated) => {
   resetCatalogState()
 })
 
-watch(
-  () => [isAuthenticated.value, catalogTotal.value, allRows.value.length] as const,
-  () => {
-    void loadMissingSmallCatalogTail()
-  },
-)
-
 onMounted(() => {
   if (isAuthenticated.value) {
     void loadLots()
@@ -3819,7 +3831,6 @@ onMounted(() => {
   document.addEventListener('keydown', handleGlobalKeydown, true)
 })
 onUnmounted(() => {
-  disposeCatalogVirtualWindowBridge()
   catalogRowModel.value?.dispose()
   catalogRowModel.value = null
   clearCatalogViewportDim()
@@ -3954,7 +3965,6 @@ onUnmounted(() => {
         :row-selection="false"
         :chrome="{ toolbarPlacement: 'integrated', density: 'compact', toolbarGap: 0, workspaceGap: 8 }"
         :history="{ controls: false }"
-        @ready="handleCatalogGridReady"
         @cell-change="handleGridCellChange"
         @update:state="persistGridSavedView"
       />
