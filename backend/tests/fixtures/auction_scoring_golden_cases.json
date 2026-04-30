@@ -1,0 +1,173 @@
+[
+  {
+    "id": "excellent_excavator",
+    "label": "Excellent спецтехника with strong economics",
+    "review_bucket": "known_excellent",
+    "baseline_rank": 1,
+    "lot_name": "Экскаватор гусеничный Caterpillar 320",
+    "status": "Идет прием заявок",
+    "current_price": "1000000",
+    "market_value": "2400000",
+    "target_profit": "350000",
+    "region": "Московская область",
+    "category": "Спецтехника",
+    "description": "Рабочее состояние, комплект документов, осмотр по предварительной записи.",
+    "inspection_order": "Осмотр по записи у организатора торгов",
+    "documents": ["Документы.pdf", "Фотоархив.zip"],
+    "expected": {
+      "level": "high",
+      "score_min": 90,
+      "forbidden_cap_keys": ["excluded", "manual_reject", "high_legal_risk"]
+    }
+  },
+  {
+    "id": "urgent_loader",
+    "label": "Urgent loader with acceptable economics",
+    "review_bucket": "urgent",
+    "baseline_rank": 2,
+    "lot_name": "Фронтальный погрузчик SDLG",
+    "status": "Идет прием заявок",
+    "application_deadline_hours_from_now": 24,
+    "current_price": "800000",
+    "market_value": "1500000",
+    "target_profit": "200000",
+    "region": "Тульская область",
+    "category": "Спецтехника",
+    "description": "Погрузчик на ходу, есть порядок допуска к осмотру.",
+    "inspection_order": "По заявке на площадке хранения",
+    "documents": ["Документы.pdf", "photo.jpg"],
+    "expected": {
+      "level": "high",
+      "score_min": 85,
+      "forbidden_cap_keys": ["excluded", "manual_reject"]
+    }
+  },
+  {
+    "id": "manual_bid_legal_risk",
+    "label": "Manual bid can approve legal risk after review",
+    "review_bucket": "manual_bid",
+    "baseline_rank": 3,
+    "lot_name": "Экскаватор в залоге после юридической проверки",
+    "status": "Идет прием заявок",
+    "current_price": "900000",
+    "market_value": "2200000",
+    "target_profit": "300000",
+    "decision_status": "bid",
+    "region": "Московская область",
+    "category": "Спецтехника",
+    "description": "Есть отметка о залоге, команда проверила документы и решила участвовать.",
+    "inspection_order": "Осмотр согласован",
+    "documents": ["Юридическое заключение.pdf", "photo.jpg"],
+    "expected": {
+      "level": "high",
+      "score_min": 80,
+      "forbidden_cap_keys": ["high_legal_risk", "manual_reject"]
+    }
+  },
+  {
+    "id": "manual_watch_equipment",
+    "label": "Manual watch keeps promising lot in review",
+    "review_bucket": "manual_watch",
+    "baseline_rank": 4,
+    "lot_name": "Дизельный генератор Cummins",
+    "status": "Идет прием заявок",
+    "current_price": "450000",
+    "market_value": "800000",
+    "target_profit": "120000",
+    "decision_status": "watch",
+    "region": "Калужская область",
+    "category": "Оборудование",
+    "description": "Генератор требует проверки моточасов.",
+    "inspection_order": "Осмотр по записи",
+    "documents": ["Документы.pdf", "generator-photo.jpg"],
+    "expected": {
+      "level": "high",
+      "score_min": 75,
+      "forbidden_cap_keys": ["excluded", "manual_reject"]
+    }
+  },
+  {
+    "id": "high_risk_good_economics",
+    "label": "Good economics but high legal risk must stay below high",
+    "review_bucket": "good_economics_high_risk",
+    "baseline_rank": 5,
+    "lot_name": "Экскаватор гусеничный в залоге",
+    "status": "Идет прием заявок",
+    "current_price": "1000000",
+    "market_value": "2600000",
+    "target_profit": "350000",
+    "region": "Московская область",
+    "category": "Спецтехника",
+    "description": "В описании есть залог и возможное обременение.",
+    "inspection_order": "По записи",
+    "documents": ["Документы.pdf", "photo.jpg"],
+    "expected": {
+      "level": "low",
+      "score_max": 44,
+      "required_cap_keys": ["high_legal_risk"]
+    }
+  },
+  {
+    "id": "missing_price_incomplete",
+    "label": "Missing price and missing data require review",
+    "review_bucket": "missing_data",
+    "baseline_rank": 6,
+    "lot_name": "Компрессор промышленный без цены",
+    "status": "Идет прием заявок",
+    "current_price": null,
+    "market_value": "1400000",
+    "target_profit": "200000",
+    "region": "Рязанская область",
+    "category": "Оборудование",
+    "description": "",
+    "inspection_order": "",
+    "documents": [],
+    "expected": {
+      "score_max": 69,
+      "required_cap_keys": ["missing_price"]
+    }
+  },
+  {
+    "id": "excluded_apartment",
+    "label": "Excluded apartment category must stay low",
+    "review_bucket": "excluded_category",
+    "baseline_rank": 7,
+    "lot_name": "Квартира с дисконтом",
+    "status": "Идет прием заявок",
+    "current_price": "1000000",
+    "market_value": "2400000",
+    "target_profit": "350000",
+    "region": "Москва",
+    "category": "Недвижимость",
+    "description": "Жилая квартира должника.",
+    "inspection_order": "По записи",
+    "documents": ["Документы.pdf", "photo.jpg"],
+    "expected": {
+      "level": "low",
+      "score_max": 20,
+      "required_cap_keys": ["excluded"]
+    }
+  },
+  {
+    "id": "manual_reject_profitable",
+    "label": "Manual reject overrides attractive economics",
+    "review_bucket": "manual_reject",
+    "baseline_rank": 8,
+    "lot_name": "Экскаватор гусеничный Komatsu",
+    "status": "Идет прием заявок",
+    "current_price": "900000",
+    "market_value": "2200000",
+    "target_profit": "300000",
+    "decision_status": "reject",
+    "region": "Московская область",
+    "category": "Спецтехника",
+    "description": "Хорошая экономика, но команда отказалась после осмотра.",
+    "inspection_order": "Осмотр проведен",
+    "documents": ["Документы.pdf", "photo.jpg"],
+    "expected": {
+      "level": "low",
+      "score_max": 20,
+      "required_cap_keys": ["manual_reject"]
+    }
+  }
+]

@@ -139,6 +139,8 @@ Verification:
 
 ## Stage 2: Best-Lot Discovery
 
+Implementation checklist: [Auction Scoring Enterprise TODO](auction-scoring-enterprise-todo.md).
+
 ### 7. Rating Correctness Foundation
 
 Status: in progress

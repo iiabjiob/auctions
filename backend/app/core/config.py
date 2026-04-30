@@ -12,7 +12,7 @@ ENV_FILE = None if APP_ENV in ("production", "prod") else REPO_ROOT / ".env.dev"
 print("ENV_FILE resolved to:", ENV_FILE)
 
 if ENV_FILE and not ENV_FILE.exists():
-    raise FileNotFoundError("❌ ENV FILE NOT FOUND: .env.dev")
+    raise FileNotFoundError("ENV file not found: .env.dev")
 
 
 model_config: dict = {"extra": "allow"}
@@ -44,24 +44,26 @@ class Settings(BaseSettings):
     postgres_host: str
     postgres_port: int
     postgres_db: str
+    sqlalchemy_echo: bool = False
 
     # ---- Redis / background sync ----
     redis_url: str = "redis://redis:6379/0"
     auction_events_stream: str = "auction:events"
-    auction_sync_interval_seconds: int = 60 * 60 * 3
-    auction_sync_interval_jitter_seconds: int = 60 * 15
+    auction_sync_run_on_start: bool = False
+    auction_sync_interval_seconds: int = 60 * 60 * 12
+    auction_sync_interval_jitter_seconds: int = 60 * 45
     auction_sync_limit: int = 0
     auction_sync_commit_chunk_size: int = 25
     auction_sync_progress_log_every: int = 25
-    auction_detail_sync_enabled: bool = True
-    auction_detail_sync_limit: int = 25
+    auction_detail_sync_enabled: bool = False
+    auction_detail_sync_limit: int = 0
     auction_publication_sync_limit: int = 0
     auction_analysis_enabled: bool = True
-    auction_analysis_interval_seconds: int = 180
-    auction_analysis_batch_size: int = 500
+    auction_analysis_interval_seconds: int = 60 * 30
+    auction_analysis_batch_size: int = 250
     auction_analysis_commit_chunk_size: int = 25
     auction_analysis_event_chunk_size: int = 25
-    auction_analysis_event_pause_seconds: float = 0.05
+    auction_analysis_event_pause_seconds: float = 0.1
 
     @field_validator("debug", mode="before")
     @classmethod
@@ -74,8 +76,11 @@ class Settings(BaseSettings):
     tbankrot_auth_enabled: bool = False
     tbankrot_login: str | None = None
     tbankrot_password: str | None = None
-    tbankrot_pages: int = 3
-    tbankrot_include_price_schedule: bool = True
+    tbankrot_pages: int = 1
+    tbankrot_include_price_schedule: bool = False
+    tbankrot_request_min_delay_seconds: float = 2.5
+    tbankrot_request_max_delay_seconds: float = 7.0
+    tbankrot_blocked_cooldown_seconds: int = 60 * 60 * 6
 
     # ---- Database URL ----
     @property

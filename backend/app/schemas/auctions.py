@@ -164,6 +164,10 @@ class LotRating(BaseModel):
     score: int
     level: str
     reasons: list[str]
+    scoring_version: str | None = None
+    scored_at: datetime | None = None
+    input_hash: str | None = None
+    breakdown: dict[str, Any] | None = None
 
 
 class LotAnalysis(BaseModel):
@@ -399,3 +403,8 @@ class LotWorkspaceResponse(BaseModel):
     work_item: LotWorkItemResponse
     economy: LotEconomyResponse
     changes: LotChangeSummary
+
+
+class LotWorkspaceRefreshResponse(BaseModel):
+    status: str
+    queued: bool

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import Integer, Numeric, String, and_, cast, func, not_, or_, select
@@ -17,9 +17,12 @@ from app.schemas.auctions import (
     LotDatagridResponse,
     LotDatagridRow,
     LotFreshness,
-    LotRating,
 )
+from app.services.auction_analysis_config import auction_analysis_config_service
+from app.services.auction_datagrid_payload import validate_datagrid_row_payload
+from app.services.auction_scoring import calculate_list_lot_rating, recalculate_record_rating
 from app.services.auction_sources import SOURCE_PROVIDERS, list_source_infos
+from app.services.auction_values import parse_price
 
 
 LOT_GRID_COLUMNS = [
@@ -151,8 +154,28 @@ async def list_persisted_lots_for_datagrid(
     records = (await session.scalars(statement)).all()
     work_items = await _work_items_by_record_id(session, [record.id for record in records])
     detail_caches = await _detail_caches_by_record_id(session, [record.id for record in records])
+    runtime_config = await auction_analysis_config_service.get_runtime_config(session)
+    visible_scores_changed = False
     rows: list[LotDatagridRow] = []
     for record in records:
+        before_hash = record.score_input_hash
+        before_version = record.scoring_version
+        before_rating = dict((record.datagrid_row or {}).get("rating") or {})
+        recalculate_record_rating(
+            record,
+            detail_caches.get(record.id),
+            work_items.get(record.id),
+            category_keywords=runtime_config.category_keywords,
+            exclusion_keywords=runtime_config.exclusion_keywords,
+            legal_risk_rules=runtime_config.legal_risk_rules,
+            owner_profile=runtime_config.owner_profile,
+            dimension_weights=runtime_config.dimension_weights,
+        )
+        visible_scores_changed = visible_scores_changed or (
+            before_hash != record.score_input_hash
+            or before_version != record.scoring_version
+            or before_rating != dict((record.datagrid_row or {}).get("rating") or {})
+        )
         row = validate_datagrid_row_payload(record.datagrid_row)
         _hydrate_row_from_normalized_item(row, record.normalized_item)
         _hydrate_row_from_detail_cache(row, detail_caches.get(record.id))
@@ -161,6 +184,8 @@ async def list_persisted_lots_for_datagrid(
         work_item = work_items.get(record.id)
         _attach_work_item_state(row, work_item)
         rows.append(row)
+    if visible_scores_changed:
+        await session.commit()
 
     return LotDatagridResponse(
         columns=LOT_GRID_COLUMNS,
@@ -702,58 +727,6 @@ def _escape_like(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-DECIMAL_ROW_FIELDS = {
-    "initial_price_value",
-    "current_price_value",
-    "minimum_price_value",
-    "market_value",
-    "platform_fee",
-    "delivery_cost",
-    "dismantling_cost",
-    "repair_cost",
-    "storage_cost",
-    "legal_cost",
-    "other_costs",
-    "target_profit",
-    "total_expenses",
-    "full_entry_cost",
-    "potential_profit",
-    "roi",
-    "market_discount",
-    "formula_max_purchase_price",
-}
-
-
-def validate_datagrid_row_payload(payload: dict) -> LotDatagridRow:
-    return LotDatagridRow.model_validate(sanitize_datagrid_row_payload(payload))
-
-
-def sanitize_datagrid_row_payload(payload: dict) -> dict:
-    row = dict(payload or {})
-    for field in DECIMAL_ROW_FIELDS:
-        if field in row:
-            row[field] = _sanitize_decimal_row_value(row[field])
-    if row.get("exclude_from_analysis") is None:
-        row["exclude_from_analysis"] = False
-    return row
-
-
-def _sanitize_decimal_row_value(value: object) -> object:
-    if value is None or isinstance(value, Decimal):
-        return value
-    if isinstance(value, int | float):
-        return str(value)
-    if not isinstance(value, str):
-        return value
-    normalized = value.strip()
-    if not normalized:
-        return None
-    if any(char.isdigit() for char in normalized):
-        parsed = parse_price(normalized)
-        return str(parsed) if parsed is not None else value
-    return value
-
-
 def _default_row_sort_key(row: LotDatagridRow) -> tuple[str, int, str, str]:
     return (
         row.source,
@@ -884,7 +857,7 @@ def build_datagrid_row(item: AuctionListItem, source_title: str) -> LotDatagridR
     minimum_price_value = parse_price(item.lot.minimum_price)
     market_value = parse_price(item.lot.market_value)
     freshness = LotFreshness()
-    rating = calculate_lot_rating(item, current_price_value)
+    rating = calculate_list_lot_rating(item, current_price_value)
     row_id = f"{item.source}:{item.auction.external_id or item.auction.number}:{item.lot.external_id or item.lot.number}"
 
     return LotDatagridRow(
@@ -943,48 +916,6 @@ def build_datagrid_row(item: AuctionListItem, source_title: str) -> LotDatagridR
         freshness=freshness,
         rating=rating,
     )
-
-
-def parse_price(value: str | None) -> Decimal | None:
-    if not value:
-        return None
-    normalized = value.replace(" ", "").replace("\xa0", "").replace(",", ".")
-    normalized = "".join(char for char in normalized if char.isdigit() or char == ".")
-    if not normalized:
-        return None
-    try:
-        return Decimal(normalized)
-    except InvalidOperation:
-        return None
-
-
-def calculate_lot_rating(item: AuctionListItem, price_value: Decimal | None) -> LotRating:
-    score = 50
-    reasons: list[str] = ["Базовая оценка до подключения пользовательской модели рейтинга"]
-    status = (item.lot.status or "").lower()
-
-    if "приём" in status or "прием" in status:
-        score += 25
-        reasons.append("Идет прием заявок")
-    if "отмен" in status:
-        score -= 45
-        reasons.append("Лот отменен")
-    if price_value is not None:
-        score += 10
-        reasons.append("Цена распознана и доступна для фильтрации")
-    if item.auction.application_deadline:
-        score += 5
-        reasons.append("Есть срок окончания приема заявок")
-
-    score = max(0, min(100, score))
-    if score >= 75:
-        level = "high"
-    elif score >= 45:
-        level = "medium"
-    else:
-        level = "low"
-
-    return LotRating(score=score, level=level, reasons=reasons)
 
 
 def _matches_filters(row: LotDatagridRow, filters: LotDatagridFilters) -> bool:

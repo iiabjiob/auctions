@@ -12,12 +12,19 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.models.auction import AuctionLotDetailCache, AuctionLotObservation, AuctionLotRecord, AuctionSourceState
+from app.models.auction import (
+    AuctionLotDetailCache,
+    AuctionLotObservation,
+    AuctionLotRecord,
+    AuctionLotWorkItem,
+    AuctionSourceState,
+)
 from app.schemas.auctions import AuctionListItem, SourceSyncResult
 from app.services.auction_analysis_config import auction_analysis_config_service
 from app.services.auction_catalog import build_datagrid_row
 from app.services.auction_sources import get_source_provider
-from app.services.auction_workspace import ensure_lot_detail_cache, ensure_work_item, recalculate_record_rating
+from app.services.auction_scoring import recalculate_record_rating
+from app.services.auction_workspace import ensure_lot_detail_cache, ensure_work_item
 
 
 settings = get_settings()
@@ -112,6 +119,10 @@ async def sync_source_lots(
                 is_new=is_new,
                 rating_score=snapshot.datagrid_row["rating"]["score"],
                 rating_level=snapshot.datagrid_row["rating"]["level"],
+                scoring_version=_rating_scoring_version(snapshot.datagrid_row),
+                scored_at=_rating_scored_at(snapshot.datagrid_row),
+                score_input_hash=_rating_input_hash(snapshot.datagrid_row),
+                score_breakdown=_rating_breakdown(snapshot.datagrid_row),
                 datagrid_row=_with_freshness(
                     snapshot.datagrid_row,
                     first_seen_at=now,
@@ -123,6 +134,7 @@ async def sync_source_lots(
             )
             session.add(record)
             await session.flush()
+            await _recalculate_record_with_cached_inputs(session, record, runtime_config=runtime_config)
             result.created += 1
             await _add_observation(session, record, snapshot)
             detail_sync_count = await _sync_detail_if_needed(
@@ -140,6 +152,17 @@ async def sync_source_lots(
             content_changed = record.content_hash != snapshot.content_hash
             status_changed_at = now if status_changed else record.status_changed_at
             record.is_new = _is_new_record(published_at=publication_at, observed_at=now)
+            next_row = _with_freshness(
+                snapshot.datagrid_row,
+                first_seen_at=record.first_seen_at,
+                last_seen_at=now,
+                status_changed_at=status_changed_at,
+                is_new=record.is_new,
+                published_at=publication_at,
+            )
+            preserved_scoring = _record_scoring_payload(record) if not content_changed and not status_changed else None
+            if preserved_scoring is not None:
+                next_row["rating"] = preserved_scoring["rating"]
 
             record.last_seen_at = now
             record.auction_number = item.auction.number
@@ -149,21 +172,22 @@ async def sync_source_lots(
             record.initial_price = item.lot.initial_price
             record.rating_score = snapshot.datagrid_row["rating"]["score"]
             record.rating_level = snapshot.datagrid_row["rating"]["level"]
-            record.datagrid_row = _with_freshness(
-                snapshot.datagrid_row,
-                first_seen_at=record.first_seen_at,
-                last_seen_at=now,
-                status_changed_at=status_changed_at,
-                is_new=record.is_new,
-                published_at=publication_at,
-            )
+            record.scoring_version = _rating_scoring_version(snapshot.datagrid_row)
+            record.scored_at = _rating_scored_at(snapshot.datagrid_row)
+            record.score_input_hash = _rating_input_hash(snapshot.datagrid_row)
+            record.score_breakdown = _rating_breakdown(snapshot.datagrid_row)
+            record.datagrid_row = next_row
             record.normalized_item = snapshot.normalized_item
+            if preserved_scoring is not None:
+                _apply_record_scoring(record, preserved_scoring)
 
             if status_changed:
                 record.status_changed_at = now
                 result.status_changed += 1
-            if content_changed:
+            if content_changed or status_changed:
                 record.content_hash = snapshot.content_hash
+                await _recalculate_record_with_cached_inputs(session, record, runtime_config=runtime_config)
+            if content_changed:
                 result.updated += 1
                 await _add_observation(session, record, snapshot)
                 detail_sync_count = await _sync_detail_if_needed(
@@ -263,8 +287,30 @@ async def _sync_detail_if_needed(
         category_keywords=runtime_config.category_keywords,
         exclusion_keywords=runtime_config.exclusion_keywords,
         legal_risk_rules=runtime_config.legal_risk_rules,
+        owner_profile=runtime_config.owner_profile,
+        dimension_weights=runtime_config.dimension_weights,
     )
     return detail_sync_count + 1
+
+
+async def _recalculate_record_with_cached_inputs(
+    session: AsyncSession,
+    record: AuctionLotRecord,
+    *,
+    runtime_config: object,
+) -> None:
+    detail_cache = await session.scalar(select(AuctionLotDetailCache).where(AuctionLotDetailCache.lot_record_id == record.id))
+    work_item = await session.scalar(select(AuctionLotWorkItem).where(AuctionLotWorkItem.lot_record_id == record.id))
+    recalculate_record_rating(
+        record,
+        detail_cache,
+        work_item,
+        category_keywords=runtime_config.category_keywords,
+        exclusion_keywords=runtime_config.exclusion_keywords,
+        legal_risk_rules=runtime_config.legal_risk_rules,
+        owner_profile=runtime_config.owner_profile,
+        dimension_weights=runtime_config.dimension_weights,
+    )
 
 
 async def _find_lot_record(
@@ -312,6 +358,57 @@ def _prepare_snapshot(item: AuctionListItem, source_title: str) -> PreparedLotSn
         normalized_item=normalized_item,
         content_hash=content_hash,
     )
+
+
+def _rating_payload(row: dict) -> dict:
+    rating = row.get("rating")
+    return rating if isinstance(rating, dict) else {}
+
+
+def _rating_scoring_version(row: dict) -> str:
+    value = _rating_payload(row).get("scoring_version")
+    return value if isinstance(value, str) and value else "unscored"
+
+
+def _rating_input_hash(row: dict) -> str | None:
+    value = _rating_payload(row).get("input_hash")
+    return value if isinstance(value, str) and value else None
+
+
+def _rating_breakdown(row: dict) -> dict:
+    value = _rating_payload(row).get("breakdown")
+    return value if isinstance(value, dict) else {}
+
+
+def _rating_scored_at(row: dict) -> datetime | None:
+    value = _rating_payload(row).get("scored_at")
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _record_scoring_payload(record: AuctionLotRecord) -> dict:
+    return {
+        "rating_score": record.rating_score,
+        "rating_level": record.rating_level,
+        "scoring_version": record.scoring_version,
+        "scored_at": record.scored_at,
+        "score_input_hash": record.score_input_hash,
+        "score_breakdown": record.score_breakdown,
+        "rating": _rating_payload(record.datagrid_row),
+    }
+
+
+def _apply_record_scoring(record: AuctionLotRecord, payload: dict) -> None:
+    record.rating_score = payload["rating_score"]
+    record.rating_level = payload["rating_level"]
+    record.scoring_version = payload["scoring_version"]
+    record.scored_at = payload["scored_at"]
+    record.score_input_hash = payload["score_input_hash"]
+    record.score_breakdown = payload["score_breakdown"]
 
 
 def _with_freshness(

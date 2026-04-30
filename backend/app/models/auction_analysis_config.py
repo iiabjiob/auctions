@@ -16,6 +16,8 @@ class AuctionAnalysisConfigModel(Base):
     category_rules: Mapped[list[dict]] = mapped_column(JSONB, nullable=False, default=list)
     exclusion_keywords: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     legal_risk_rules: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    owner_profile: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    dimension_weights: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False

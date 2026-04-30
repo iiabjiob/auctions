@@ -47,6 +47,10 @@ class AuctionLotRecord(Base):
     is_new: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
     rating_score: Mapped[int] = mapped_column(Integer, nullable=False, default=0, index=True)
     rating_level: Mapped[str] = mapped_column(String(32), nullable=False, default="low")
+    scoring_version: Mapped[str] = mapped_column(String(64), nullable=False, default="unscored", index=True)
+    scored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    score_input_hash: Mapped[str | None] = mapped_column(String(64), index=True)
+    score_breakdown: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     datagrid_row: Mapped[dict] = mapped_column(JSONB, nullable=False)
     normalized_item: Mapped[dict] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
@@ -56,6 +60,7 @@ class AuctionLotRecord(Base):
 
     source_state: Mapped[AuctionSourceState] = relationship(back_populates="lots")
     observations: Mapped[list["AuctionLotObservation"]] = relationship(back_populates="lot")
+    ai_analyses: Mapped[list["AuctionLotAiAnalysis"]] = relationship(back_populates="lot")
 
 
 class AuctionLotObservation(Base):
@@ -134,3 +139,31 @@ class AuctionLotWorkItem(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
+
+
+class AuctionLotAiAnalysis(Base):
+    __tablename__ = "auction_lot_ai_analyses"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    lot_record_id: Mapped[int] = mapped_column(ForeignKey("auction_lot_records.id"), nullable=False, index=True)
+    deterministic_scoring_version: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    deterministic_score: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    deterministic_rank: Mapped[int | None] = mapped_column(Integer)
+    ai_score: Mapped[int | None] = mapped_column(Integer, index=True)
+    ai_rank: Mapped[int | None] = mapped_column(Integer)
+    model_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    explanation: Mapped[str | None] = mapped_column(Text)
+    confidence: Mapped[Decimal | None] = mapped_column(Numeric(5, 4))
+    input_payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    output_payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    operator_feedback_status: Mapped[str | None] = mapped_column(String(32), index=True)
+    operator_feedback_comment: Mapped[str | None] = mapped_column(Text)
+    operator_feedback_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    operator_feedback_by: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    lot: Mapped[AuctionLotRecord] = relationship(back_populates="ai_analyses")

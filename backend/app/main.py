@@ -28,11 +28,11 @@ async def check_database_connection(max_attempts: int = 10, base_delay: float = 
         try:
             async with engine.begin() as conn:
                 await conn.execute(text("SELECT 1"))
-                logger.info("✅ Connected to the database!")
+                logger.info("Connected to the database")
                 return
         except Exception as e:
             logger.error(
-                "💥 Database connection failed (attempt %s/%s): %s",
+                "Database connection failed (attempt %s/%s): %s",
                 attempt,
                 max_attempts,
                 e,
@@ -44,7 +44,7 @@ async def check_database_connection(max_attempts: int = 10, base_delay: float = 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("🚀 Starting FastAPI application...")
+    logger.info("Starting FastAPI application")
 
     # Healthchecks
     # await check_database_connection()
@@ -52,7 +52,7 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        logger.info("🛑 Shutting down FastAPI application...")
+        logger.info("Shutting down FastAPI application")
 
 
 app = FastAPI(
@@ -74,12 +74,12 @@ if allowed_origins:
     )
 
 # Routers
-logger.info("🔗 Registering REST API routers...")
+logger.info("Registering REST API routers")
 app.include_router(health_router)
 app.include_router(auth_router)
 app.include_router(filter_presets_router)
 app.include_router(auctions_router)
 
-logger.info("✅ REST API routers registered")
+logger.info("REST API routers registered")
 
-logger.info(f"✅ FastAPI application is up and running at version {settings.app_version}")
+logger.info("FastAPI application is up and running at version %s", settings.app_version)

@@ -50,7 +50,7 @@ Current filters:
 
 ## Rating
 
-The current rating is a deterministic draft in `calculate_lot_rating`. It intentionally returns both `score` and `reasons` so the user can understand why a lot is highlighted.
+The current rating is a deterministic draft in `auction_scoring`. List-only rows use the lightweight scoring path, while persisted/detail-enriched records use `recalculate_record_rating`. Both paths return `score` and `reasons` so the user can understand why a lot is highlighted.
 
 Future rating inputs:
 

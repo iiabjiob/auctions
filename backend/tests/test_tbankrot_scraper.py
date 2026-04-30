@@ -4,7 +4,8 @@ import inspect
 import unittest
 from unittest.mock import patch
 
-from app.services.tbankrot_scraper import fetch_lot_detail
+from app.services import tbankrot_scraper
+from app.services.tbankrot_scraper import TBankrotCooldownError, fetch_lot_detail
 
 
 MINIMAL_DETAIL_HTML = """
@@ -42,6 +43,16 @@ class TBankrotScraperTests(unittest.TestCase):
             fetch_lot_detail("123")
 
         fetch_schedule.assert_called_once()
+
+    def test_blocked_cooldown_skips_requests_fast(self) -> None:
+        previous_blocked_until = tbankrot_scraper._BLOCKED_UNTIL
+        try:
+            tbankrot_scraper._start_blocked_cooldown(403, "https://tbankrot.ru/")
+
+            with self.assertRaises(TBankrotCooldownError):
+                tbankrot_scraper._wait_for_polite_request_slot("https://tbankrot.ru/")
+        finally:
+            tbankrot_scraper._BLOCKED_UNTIL = previous_blocked_until
 
 
 if __name__ == "__main__":

@@ -126,6 +126,7 @@ type ApiLotRow = {
     score: number
     level: string
     reasons: string[]
+    breakdown?: RatingBreakdown | null
   }
   analysis: {
     status: string
@@ -316,6 +317,11 @@ type LotWorkspaceResponse = {
   changes: LotChangeSummary
 }
 
+type LotWorkspaceRefreshResponse = {
+  status: string
+  queued: boolean
+}
+
 type AuctionDetailResponse = {
   source: string
   url: string
@@ -448,12 +454,32 @@ type GridLotRow = {
   ratingScore: number
   ratingLevel: string
   ratingReasons: string[]
+  ratingBreakdown: RatingBreakdown | null
   workDecisionStatus: string
   lotUrl: string
   auctionUrl: string
   images: ApiLotImage[]
   primaryImageUrl: string
   imageCount: number
+}
+
+type RatingDimensionBreakdown = {
+  key?: string
+  label?: string
+  score?: number
+  reasons?: string[]
+}
+
+type RatingCapBreakdown = {
+  key?: string
+  label?: string
+  max_score?: number
+  reason?: string
+}
+
+type RatingBreakdown = {
+  dimensions?: Record<string, RatingDimensionBreakdown>
+  caps?: RatingCapBreakdown[]
 }
 type GridApi = NonNullable<ReturnType<DataGridExposed<GridLotRow>['getApi']>>
 type GridSelectionSnapshot = ReturnType<GridApi['selection']['getSnapshot']>
@@ -497,11 +523,39 @@ type AnalysisConfigLegalRiskRules = {
   medium_categories: string[]
 }
 
+type OwnerScoringProfile = {
+  target_regions: string[]
+  target_categories: string[]
+  min_budget: string | number | null
+  max_budget: string | number | null
+  minimum_roi: string | number | null
+  minimum_market_discount: string | number | null
+  excluded_terms: string[]
+  discouraged_terms: string[]
+  max_delivery_distance_km: string | number | null
+  allow_dismantling: boolean
+  legal_risk_tolerance: 'low' | 'medium' | 'high'
+  require_documents: boolean
+  require_photos: boolean
+}
+
+type ScoringDimensionWeights = {
+  economics: string | number
+  risk: string | number
+  urgency: string | number
+  data_quality: string | number
+  operational_readiness: string | number
+  owner_fit: string | number
+  manual_intent: string | number
+}
+
 type AnalysisConfigResponse = {
   id: string
   category_rules: AnalysisConfigCategoryRule[]
   exclusion_keywords: string[]
   legal_risk_rules: AnalysisConfigLegalRiskRules
+  owner_profile: OwnerScoringProfile
+  dimension_weights: ScoringDimensionWeights
   created_at: string
   updated_at: string
 }
@@ -558,6 +612,8 @@ const selectedLotDetails = ref<LotDetailResponse | null>(null)
 const selectedAuctionDetails = ref<AuctionDetailResponse | null>(null)
 const selectedWorkspace = ref<LotWorkspaceResponse | null>(null)
 const detailLoading = ref(false)
+const detailLiveRefreshing = ref(false)
+const detailStatus = ref('')
 const projectedRowsForSummary = ref<GridLotRow[]>([])
 const gridSummaryReady = ref(false)
 const catalogViewportDimmed = ref(false)
@@ -572,6 +628,16 @@ const DETAIL_PANE_MAX_WIDTH = 980
 const LOTS_RELOAD_DELAY_MS = 1200
 const SYNC_PROGRESS_RELOAD_INTERVAL_MS = 30_000
 const SERVER_ROW_MODEL_INITIAL_FETCH_SIZE = 128
+const GRID_SUMMARY_MAX_READ_ROWS = 1000
+const DETAIL_FETCH_TIMEOUT_MS = 15_000
+const DETAIL_LIVE_REFRESH_ENQUEUE_TIMEOUT_MS = 5_000
+const DETAIL_LIVE_REFRESH_RESULT_TIMEOUT_MS = 30_000
+const DETAIL_RENDER_RAW_FIELDS_LIMIT = 120
+const DETAIL_RENDER_DOCUMENTS_LIMIT = 120
+const DETAIL_RENDER_IMAGES_LIMIT = 80
+const DETAIL_RENDER_PRICE_SCHEDULE_LIMIT = 120
+const DETAIL_RENDER_CHANGE_FIELDS_LIMIT = 40
+const DETAIL_RENDER_TEXT_LIMIT = 2_000
 const LOADING_SKELETON_MIN_ROWS = 16
 const LOADING_SKELETON_TOOLBAR_HEIGHT = 42
 const LOADING_SKELETON_HEADER_HEIGHT = 34
@@ -587,7 +653,9 @@ let gridSavedViewApplying = false
 let resizeStartX = 0
 let resizeStartWidth = 0
 let detailRequestId = 0
+let detailAbortController: AbortController | null = null
 let detailGridFocusAnchor: GridFocusAnchor | null = null
+let detailLiveRefreshTimeout: ReturnType<typeof window.setTimeout> | null = null
 const queuedRowUpdates = new Map<string, ApiLotRow>()
 const catalogDataSourceListeners = new Set<DataGridDataSourcePushListener<GridLotRow>>()
 let rowUpdateFrame: number | null = null
@@ -1697,7 +1765,7 @@ const priceScheduleSteps = computed(() => {
 })
 
 const priceScheduleFields = computed(() =>
-  priceScheduleSteps.value.map((step, index) => ({
+  priceScheduleSteps.value.slice(0, DETAIL_RENDER_PRICE_SCHEDULE_LIMIT).map((step, index) => ({
     label: `${index + 1}. ${step.starts_at}`,
     value: step.price,
   })),
@@ -1765,7 +1833,14 @@ const analysisReasonItems = computed(() =>
 )
 const detailCachedAt = computed(() => formatDateTime(selectedWorkspace.value?.detail_cached_at ?? null))
 const ratingReasonItems = computed(() => selectedLot.value?.ratingReasons ?? [])
-const changeFields = computed(() => selectedWorkspace.value?.changes.fields ?? [])
+const ratingBreakdown = computed(() => selectedLot.value?.ratingBreakdown ?? null)
+const changeFields = computed(() =>
+  (selectedWorkspace.value?.changes.fields ?? []).slice(0, DETAIL_RENDER_CHANGE_FIELDS_LIMIT).map((field) => ({
+    ...field,
+    previous: field.previous ? truncateDetailText(field.previous) : field.previous,
+    current: field.current ? truncateDetailText(field.current) : field.current,
+  })),
+)
 const changeSummaryFields = computed(() =>
   makeFields([
     ['Наблюдений списка', selectedWorkspace.value?.changes.observations_count?.toString()],
@@ -1796,7 +1871,7 @@ const detailImages = computed<DetailImage[]>(() => {
   const documentImages = detailDocuments.value
     .filter((document) => belongsToSelectedLotMedia(document) && isImageDocument(document) && document.url)
     .map((document) => ({ url: document.url || '', thumbnailUrl: document.url || '', name: document.name }))
-  const fallbackImages = selectedLot.value?.source === 'tbankrot' ? selectedRowImages : [...selectedRowImages, ...liveDetailImages]
+  const fallbackImages = selectedLot.value?.source === 'tbankrot' ? [] : [...selectedRowImages, ...liveDetailImages]
   const images = documentImages.length ? documentImages : fallbackImages
   return uniqueDetailImages(images).filter((image) => isRelevantDetailImage(image.url) && !isLockedTbankrotImageUrl(image.url))
 })
@@ -1829,7 +1904,7 @@ watch(() => selectedLot.value?.id, () => {
 
 function makeFields(entries: Array<[string, unknown]>): DetailField[] {
   return entries
-    .map(([label, value]) => ({ label, value: normalizeTextValue(value) }))
+    .map(([label, value]) => ({ label, value: truncateDetailText(normalizeTextValue(value)) }))
     .filter((field) => field.value && field.value !== 'Не задано')
 }
 
@@ -1842,9 +1917,10 @@ function normalizeTextValue(value: unknown) {
 function normalizeRawFields(fields: ApiField[]): DetailField[] {
   const seen = new Set<string>()
   return fields
+    .slice(0, DETAIL_RENDER_RAW_FIELDS_LIMIT)
     .map((field) => ({
       label: field.name.trim(),
-      value: field.value.trim(),
+      value: truncateDetailText(field.value.trim()),
     }))
     .filter((field) => {
       if (!field.label || !field.value) return false
@@ -1860,7 +1936,7 @@ function normalizeRawFields(fields: ApiField[]): DetailField[] {
 
 function uniqueDocuments(documents: ApiDocument[]) {
   const seen = new Set<string>()
-  return documents.filter((document) => {
+  return documents.slice(0, DETAIL_RENDER_DOCUMENTS_LIMIT).filter((document) => {
     const key = document.external_id || document.url || `${document.name || ''}\n${document.received_at || ''}`
     if (!key.trim() || seen.has(key)) return false
     seen.add(key)
@@ -1871,6 +1947,7 @@ function uniqueDocuments(documents: ApiDocument[]) {
 function uniqueDetailImages(images: Array<ApiLotImage | DetailImage>): DetailImage[] {
   const seen = new Set<string>()
   return images
+    .slice(0, DETAIL_RENDER_IMAGES_LIMIT)
     .map((image) => {
       const url = image.url
       const thumbnailUrl = 'thumbnailUrl' in image ? image.thumbnailUrl : image.thumbnail_url || image.url
@@ -1882,6 +1959,10 @@ function uniqueDetailImages(images: Array<ApiLotImage | DetailImage>): DetailIma
       seen.add(image.url)
       return true
     })
+}
+
+function truncateDetailText(value: string, limit = DETAIL_RENDER_TEXT_LIMIT) {
+  return value.length > limit ? `${value.slice(0, limit).trim()}...` : value
 }
 
 function isNoPhotoReason(reason: string) {
@@ -2811,6 +2892,7 @@ function mapApiRow(row: ApiLotRow, rowRevision = gridRowRevision.value): GridLot
     ratingScore: row.rating.score,
     ratingLevel: row.rating.level,
     ratingReasons: row.rating.reasons,
+    ratingBreakdown: row.rating.breakdown ?? null,
     workDecisionStatus: row.work_decision_status ?? '',
     lotUrl: row.lot_url ?? '',
     auctionUrl: row.auction_url ?? '',
@@ -2820,11 +2902,11 @@ function mapApiRow(row: ApiLotRow, rowRevision = gridRowRevision.value): GridLot
   })
 }
 
-function applyWorkspaceRow(row: ApiLotRow) {
-  applyWorkspaceRows([row])
+function applyWorkspaceRow(row: ApiLotRow, options: { clearOptimistic?: boolean; refreshSummary?: boolean } = {}) {
+  applyWorkspaceRows([row], options)
 }
 
-function applyWorkspaceRows(rows: ApiLotRow[], options: { clearOptimistic?: boolean } = {}) {
+function applyWorkspaceRows(rows: ApiLotRow[], options: { clearOptimistic?: boolean; refreshSummary?: boolean } = {}) {
   if (!rows.length) return
   const mappedUpdates: GridLotRow[] = []
 
@@ -2851,7 +2933,9 @@ function applyWorkspaceRows(rows: ApiLotRow[], options: { clearOptimistic?: bool
 
   if (!mappedUpdates.length) return
   patchGridRowsInDataGrid(mappedUpdates)
-  scheduleGridSummaryRefresh()
+  if (options.refreshSummary !== false) {
+    scheduleGridSummaryRefresh()
+  }
 
   for (const mapped of mappedUpdates) {
     if (options.clearOptimistic) {
@@ -2897,8 +2981,10 @@ function readProjectedRowsFromGrid() {
 
   const count = api.rows.getCount()
   if (count <= 0) return []
+  const readableCount = Math.min(count, allRows.value.length || rows.value.length, GRID_SUMMARY_MAX_READ_ROWS)
+  if (readableCount <= 0) return rows.value
 
-  return api.rows.getRange({ start: 0, end: count - 1 }).flatMap((node) => {
+  return api.rows.getRange({ start: 0, end: readableCount - 1 }).flatMap((node) => {
     const row = node.data as GridLotRow | undefined
     return row && typeof row.id === 'string' ? [row] : []
   })
@@ -3332,6 +3418,8 @@ function buildAnalysisConfigPayload() {
       medium_keywords: splitAnalysisConfigLines(analysisConfigDraft.mediumRiskKeywordsText),
       medium_categories: splitAnalysisConfigLines(analysisConfigDraft.mediumRiskCategoriesText),
     },
+    owner_profile: analysisConfig.value?.owner_profile,
+    dimension_weights: analysisConfig.value?.dimension_weights,
   }
 }
 
@@ -3659,7 +3747,92 @@ async function restoreDetailGridFocus() {
   await restoreGridFocus(anchor)
 }
 
+function buildLotWorkspacePath(row: GridLotRow, suffix = '', options: { includeDetail?: boolean } = {}) {
+  const params = new URLSearchParams()
+  if (row.auctionId) params.set('auction_id', row.auctionId)
+  if (typeof options.includeDetail === 'boolean') params.set('include_detail', String(options.includeDetail))
+  const query = params.toString()
+  return `/api/v1/auctions/${row.source}/lots/${encodeURIComponent(row.lotId)}/workspace${suffix}${query ? `?${query}` : ''}`
+}
+
+function applyDetailWorkspace(workspace: LotWorkspaceResponse, options: { updateGrid?: boolean } = {}) {
+  selectedWorkspace.value = workspace
+  selectedLotDetails.value = workspace.lot_detail
+  selectedAuctionDetails.value = workspace.auction_detail
+  if (options.updateGrid !== false) {
+    applyWorkspaceRow(workspace.row, { refreshSummary: false })
+  }
+  hydrateWorkDraft(workspace.work_item)
+}
+
+function clearDetailLiveRefreshTimeout() {
+  if (detailLiveRefreshTimeout !== null) {
+    window.clearTimeout(detailLiveRefreshTimeout)
+    detailLiveRefreshTimeout = null
+  }
+}
+
+function finishDetailLiveRefresh(message: string) {
+  clearDetailLiveRefreshTimeout()
+  detailLiveRefreshing.value = false
+  detailStatus.value = message
+}
+
+function isSelectedLotEvent(payload: Record<string, unknown>) {
+  const row = selectedLot.value
+  if (!row) return false
+  if (payload.source && payload.source !== row.source) return false
+  if (payload.lot_id && payload.lot_id !== row.lotId) return false
+  if (payload.auction_id && payload.auction_id !== row.auctionId) return false
+  return true
+}
+
+async function refreshLiveLotDetails(row: GridLotRow, requestId: number) {
+  if (!row.lotId) return
+
+  clearDetailLiveRefreshTimeout()
+  detailLiveRefreshing.value = true
+  detailStatus.value = 'Ставлю live refresh в очередь'
+  detailLiveRefreshTimeout = window.setTimeout(() => {
+    if (requestId !== detailRequestId) return
+    finishDetailLiveRefresh('Live refresh не ответил за отведенное время')
+  }, DETAIL_LIVE_REFRESH_RESULT_TIMEOUT_MS)
+
+  const controller = new AbortController()
+  const enqueueTimeout = window.setTimeout(() => controller.abort(), DETAIL_LIVE_REFRESH_ENQUEUE_TIMEOUT_MS)
+  try {
+    const refresh = await fetchJson<LotWorkspaceRefreshResponse>(buildLotWorkspacePath(row, '/refresh'), {
+      method: 'POST',
+      signal: controller.signal,
+    })
+    if (requestId !== detailRequestId) return
+
+    detailStatus.value = refresh.queued
+      ? 'Live refresh выполняется на backend'
+      : 'Live refresh уже выполняется на backend'
+  } catch (error) {
+    if (requestId !== detailRequestId) return
+    finishDetailLiveRefresh(error instanceof Error ? `Live refresh не запущен: ${error.message}` : 'Live refresh не запущен')
+  } finally {
+    window.clearTimeout(enqueueTimeout)
+  }
+}
+
+function refreshSelectedLotLiveDetails() {
+  const row = selectedLot.value
+  if (!row?.lotId || detailLiveRefreshing.value) return
+  void refreshLiveLotDetails(row, detailRequestId)
+}
+
 async function openLotDetails(row: GridLotRow) {
+  const startedAt = performance.now()
+  const logDetailPhase = (phase: string) => {
+    console.info('[auction-detail]', phase, {
+      lotId: row.lotId,
+      elapsedMs: Math.round(performance.now() - startedAt),
+    })
+  }
+  const requestId = ++detailRequestId
   captureDetailGridFocusAnchor(row)
   selectedLot.value = row
   selectedLotDetails.value = null
@@ -3667,41 +3840,65 @@ async function openLotDetails(row: GridLotRow) {
   selectedWorkspace.value = null
   resetWorkDraft()
   errorMessage.value = ''
+  detailLiveRefreshing.value = false
+  detailStatus.value = 'Открыта карточка из каталога'
 
   if (!row.lotId) return
 
+  detailAbortController?.abort()
+  detailAbortController = new AbortController()
   detailLoading.value = true
-  const requestId = ++detailRequestId
+  detailStatus.value = 'Загружаю рабочую карточку из локальной БД'
+  const timeoutId = window.setTimeout(() => {
+    if (requestId !== detailRequestId) return
+    detailStatus.value = 'Локальная карточка не ответила вовремя, каталог остается доступным'
+    detailAbortController?.abort()
+  }, DETAIL_FETCH_TIMEOUT_MS)
   try {
-    const params = new URLSearchParams()
-    if (row.auctionId) params.set('auction_id', row.auctionId)
-    const workspace = await fetchJson<LotWorkspaceResponse>(
-      `/api/v1/auctions/${row.source}/lots/${encodeURIComponent(row.lotId)}/workspace?${params.toString()}`,
-    )
+    logDetailPhase('request:start')
+    const workspace = await fetchJson<LotWorkspaceResponse>(buildLotWorkspacePath(row, '', { includeDetail: false }), {
+      signal: detailAbortController.signal,
+    })
+    logDetailPhase('request:done')
 
     if (requestId !== detailRequestId) return
 
-    selectedWorkspace.value = workspace
-    selectedLotDetails.value = workspace.lot_detail
-    selectedAuctionDetails.value = workspace.auction_detail
-    applyWorkspaceRow(workspace.row)
-    hydrateWorkDraft(workspace.work_item)
+    detailLoading.value = false
+    detailStatus.value = workspace.detail_cached_at
+      ? 'Показана карточка из локальной БД'
+      : 'Показана карточка из каталога'
+    await nextTick()
+    applyDetailWorkspace(workspace, { updateGrid: false })
+    logDetailPhase('render:done')
   } catch (error) {
+    if (isAbortLikeError(error)) {
+      logDetailPhase('request:aborted')
+      return
+    }
+    detailStatus.value = 'Рабочая карточка не загрузилась, карточка из каталога доступна'
     errorMessage.value = error instanceof Error ? error.message : 'Не удалось загрузить рабочую карточку лота'
   } finally {
+    window.clearTimeout(timeoutId)
     if (requestId === detailRequestId) {
       detailLoading.value = false
+      detailAbortController = null
     }
   }
 }
 
 function closeLotDetails() {
   detailRequestId += 1
+  detailAbortController?.abort()
+  detailAbortController = null
+  clearDetailLiveRefreshTimeout()
   selectedLot.value = null
   selectedLotDetails.value = null
   selectedAuctionDetails.value = null
   selectedWorkspace.value = null
   resetWorkDraft()
+  detailLoading.value = false
+  detailLiveRefreshing.value = false
+  detailStatus.value = ''
   void restoreDetailGridFocus()
 }
 
@@ -3719,9 +3916,12 @@ function resetCatalogState() {
   selectedLotDetails.value = null
   selectedAuctionDetails.value = null
   selectedWorkspace.value = null
+  detailStatus.value = ''
   errorMessage.value = ''
   lastLoadedAt.value = null
   detailLoading.value = false
+  clearDetailLiveRefreshTimeout()
+  detailLiveRefreshing.value = false
   backgroundStatus.value = 'Ожидаем фоновое обновление'
   resetWorkDraft()
 }
@@ -3852,6 +4052,30 @@ function subscribeToAuctionEvents() {
     }
   })
 
+  events.addEventListener('lot.detail_refresh_completed', (event) => {
+    const data = JSON.parse((event as MessageEvent).data)
+    const payload = data.payload ?? {}
+    backgroundStatus.value = `Live refresh обновлен: ${payload.source ?? 'source'}`
+    if (isSelectedLotEvent(payload)) {
+      if (selectedWorkspace.value) {
+        selectedWorkspace.value = {
+          ...selectedWorkspace.value,
+          detail_cached_at: payload.detail_cached_at ?? selectedWorkspace.value.detail_cached_at,
+        }
+      }
+      finishDetailLiveRefresh('Live-данные обновлены на backend')
+    }
+  })
+
+  events.addEventListener('lot.detail_refresh_failed', (event) => {
+    const data = JSON.parse((event as MessageEvent).data)
+    const payload = data.payload ?? {}
+    backgroundStatus.value = `Live refresh не удался: ${payload.source ?? 'source'}`
+    if (isSelectedLotEvent(payload)) {
+      finishDetailLiveRefresh(typeof payload.message === 'string' ? payload.message : 'Live-данные не удалось прочитать')
+    }
+  })
+
   events.addEventListener('sync.failed', (event) => {
     const data = JSON.parse((event as MessageEvent).data)
     backgroundStatus.value = `Ошибка фонового обновления: ${data.payload.source}`
@@ -3908,6 +4132,9 @@ onMounted(() => {
   document.addEventListener('keydown', handleGlobalKeydown, true)
 })
 onUnmounted(() => {
+  detailAbortController?.abort()
+  detailAbortController = null
+  clearDetailLiveRefreshTimeout()
   catalogRowModel.value?.dispose()
   catalogRowModel.value = null
   clearCatalogViewportDim()
@@ -4074,7 +4301,11 @@ onUnmounted(() => {
         <div class="detail-pane__score">
           <strong>{{ selectedLot.ratingScore }}</strong>
           <span>{{ selectedLot.ratingLevel }}</span>
-          <RatingInfoTooltip :reasons="ratingReasonItems" />
+          <RatingInfoTooltip
+            :reasons="ratingReasonItems"
+            :dimensions="ratingBreakdown?.dimensions ?? null"
+            :caps="ratingBreakdown?.caps ?? null"
+          />
           <span :class="['analysis-pill', `analysis-pill--${selectedLot.analysisColor || 'yellow'}`]">
             {{ selectedLot.analysisLabel }}
           </span>
@@ -4148,9 +4379,9 @@ onUnmounted(() => {
           </ul>
         </section>
 
-        <div v-if="detailLoading" class="detail-live-status" role="status" aria-live="polite">
-          <span class="detail-live-status__spinner" aria-hidden="true"></span>
-          <span>Подгружаю live-данные с площадки</span>
+        <div v-if="detailLoading || detailLiveRefreshing || detailStatus" class="detail-live-status" role="status" aria-live="polite">
+          <span v-if="detailLoading || detailLiveRefreshing" class="detail-live-status__spinner" aria-hidden="true"></span>
+          <span>{{ detailStatus || 'Подгружаю live-данные с площадки' }}</span>
         </div>
 
         <section v-if="economyFields.length" class="detail-section">
@@ -4321,6 +4552,15 @@ onUnmounted(() => {
       </div>
 
       <footer class="side-pane__footer">
+        <button
+          v-if="selectedLot.lotId"
+          class="secondary-button"
+          type="button"
+          :disabled="detailLiveRefreshing"
+          @click="refreshSelectedLotLiveDetails"
+        >
+          {{ detailLiveRefreshing ? 'Обновление' : 'Live' }}
+        </button>
         <a v-if="detailLotUrl" class="secondary-button" :href="detailLotUrl" target="_blank" rel="noreferrer">
           Лот
         </a>

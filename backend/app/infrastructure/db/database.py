@@ -5,7 +5,7 @@ from app.core.config import get_settings
 settings = get_settings()
 
 # Асинхронный движок для SQLAlchemy
-engine = create_async_engine(settings.database_url, future=True, echo=True)
+engine = create_async_engine(settings.database_url, future=True, echo=settings.sqlalchemy_echo)
 
 # Сессия для работы с БД
 AsyncSessionLocal = sessionmaker(

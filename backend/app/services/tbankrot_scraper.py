@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import os
+import random
 import re
 import socket
+import threading
 import time
 from http.cookiejar import CookieJar
 from html import unescape
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urljoin
 from urllib.request import HTTPCookieProcessor, Request, build_opener
 
@@ -31,14 +33,24 @@ USER_AGENT = (
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
 DEFAULT_REQUEST_TIMEOUT = 45
-REQUEST_RETRY_ATTEMPTS = 3
+REQUEST_RETRY_ATTEMPTS = 1
 REQUEST_RETRY_BACKOFF_SECONDS = 1.5
+REQUEST_MIN_DELAY_SECONDS = float(os.getenv("TBANKROT_REQUEST_MIN_DELAY_SECONDS", "2.5"))
+REQUEST_MAX_DELAY_SECONDS = float(os.getenv("TBANKROT_REQUEST_MAX_DELAY_SECONDS", "7.0"))
+BLOCKED_COOLDOWN_SECONDS = int(os.getenv("TBANKROT_BLOCKED_COOLDOWN_SECONDS", str(60 * 60 * 6)))
 _COOKIE_JAR = CookieJar()
 _OPENER = build_opener(HTTPCookieProcessor(_COOKIE_JAR))
 _AUTHENTICATED = False
+_REQUEST_LOCK = threading.Lock()
+_NEXT_ALLOWED_REQUEST_AT = 0.0
+_BLOCKED_UNTIL = 0.0
 
 
 class TBankrotAuthError(RuntimeError):
+    pass
+
+
+class TBankrotCooldownError(URLError):
     pass
 
 
@@ -94,9 +106,14 @@ def _read_response_text(request: Request, *, timeout: int) -> str:
     last_error: Exception | None = None
     for attempt in range(1, REQUEST_RETRY_ATTEMPTS + 1):
         try:
+            _wait_for_polite_request_slot(request.full_url)
             with _OPENER.open(request, timeout=timeout) as response:
                 encoding = response.headers.get_content_charset() or "utf-8"
                 return response.read().decode(encoding, errors="replace")
+        except HTTPError as error:
+            if error.code in {403, 429}:
+                _start_blocked_cooldown(error.code, request.full_url)
+            raise
         except URLError as error:
             if not _is_timeout_error(error):
                 raise
@@ -111,6 +128,26 @@ def _read_response_text(request: Request, *, timeout: int) -> str:
 
     assert last_error is not None
     raise URLError(f"TBankrot request timed out after {REQUEST_RETRY_ATTEMPTS} attempts: {request.full_url}") from last_error
+
+
+def _wait_for_polite_request_slot(url: str) -> None:
+    global _NEXT_ALLOWED_REQUEST_AT
+    now = time.monotonic()
+    with _REQUEST_LOCK:
+        if now < _BLOCKED_UNTIL:
+            remaining = int(_BLOCKED_UNTIL - now)
+            raise TBankrotCooldownError(f"TBankrot cooldown is active for {remaining}s after 403/429; skipped {url}")
+        wait_seconds = max(0.0, _NEXT_ALLOWED_REQUEST_AT - now)
+        next_delay = random.uniform(REQUEST_MIN_DELAY_SECONDS, max(REQUEST_MIN_DELAY_SECONDS, REQUEST_MAX_DELAY_SECONDS))
+        _NEXT_ALLOWED_REQUEST_AT = max(now, _NEXT_ALLOWED_REQUEST_AT) + next_delay
+    if wait_seconds > 0:
+        time.sleep(wait_seconds)
+
+
+def _start_blocked_cooldown(status_code: int, url: str) -> None:
+    global _BLOCKED_UNTIL
+    with _REQUEST_LOCK:
+        _BLOCKED_UNTIL = max(_BLOCKED_UNTIL, time.monotonic() + max(0, BLOCKED_COOLDOWN_SECONDS))
 
 
 def _is_timeout_error(error: URLError) -> bool:
