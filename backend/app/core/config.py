@@ -1,6 +1,7 @@
 from pathlib import Path
 import os
 from urllib.parse import quote
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -61,6 +62,13 @@ class Settings(BaseSettings):
     auction_analysis_commit_chunk_size: int = 25
     auction_analysis_event_chunk_size: int = 25
     auction_analysis_event_pause_seconds: float = 0.05
+
+    @field_validator("debug", mode="before")
+    @classmethod
+    def parse_debug_flag(cls, value):
+        if isinstance(value, str) and value.strip().lower() in {"release", "prod", "production"}:
+            return False
+        return value
 
     # ---- TBankrot ----
     tbankrot_auth_enabled: bool = False

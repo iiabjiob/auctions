@@ -535,6 +535,8 @@ type ServerQuickFiltersState = {
   minRating: number
 }
 
+type GridColumnWidthsState = Record<string, number | null>
+
 const allRows = ref<GridLotRow[]>([])
 const catalogTotal = ref(0)
 const sources = ref<ApiSource[]>([])
@@ -561,6 +563,7 @@ const gridSummaryReady = ref(false)
 const catalogViewportDimmed = ref(false)
 const DETAIL_PANE_WIDTH_STORAGE_KEY = 'auction-detail-pane-width'
 const GRID_SAVED_VIEW_STORAGE_KEY = 'auction-grid-saved-view-v2'
+const GRID_COLUMN_WIDTHS_STORAGE_KEY = 'auction-grid-column-widths-v1'
 const SERVER_FILTERS_STORAGE_KEY = 'auction-server-filters'
 const LOTS_DATASET_SIZE = 10_000
 const DETAIL_PANE_DEFAULT_WIDTH = 720
@@ -576,6 +579,7 @@ const LOADING_SKELETON_ROW_HEIGHT = 26
 const detailPaneWidth = ref(readStoredDetailPaneWidth())
 const gridRef = ref<DataGridExposed<GridLotRow> | null>(null)
 const gridSurfaceRef = ref<HTMLElement | null>(null)
+const gridColumnWidths = ref<GridColumnWidthsState>({})
 const gridSavedViewRestored = ref(false)
 const gridRowRevision = ref(0)
 const loadingSkeletonVisibleRows = ref(LOADING_SKELETON_MIN_ROWS)
@@ -1984,6 +1988,37 @@ function persistServerFilters() {
   window.localStorage.setItem(SERVER_FILTERS_STORAGE_KEY, JSON.stringify(sanitizeServerFilters(filters)))
 }
 
+function sanitizeGridColumnWidths(value: unknown): GridColumnWidthsState {
+  if (!value || typeof value !== 'object') return {}
+
+  const widths: GridColumnWidthsState = {}
+  for (const [key, width] of Object.entries(value as Record<string, unknown>)) {
+    if (!key.trim()) continue
+    widths[key] = Number.isFinite(width) ? Math.max(0, Math.trunc(width as number)) : null
+  }
+  return widths
+}
+
+function readStoredGridColumnWidths(): GridColumnWidthsState {
+  const stored = window.localStorage.getItem(GRID_COLUMN_WIDTHS_STORAGE_KEY)
+  if (!stored) return {}
+
+  try {
+    return sanitizeGridColumnWidths(JSON.parse(stored))
+  } catch {
+    return {}
+  }
+}
+
+function setGridColumnWidths(widths: unknown, options: { persist?: boolean } = {}) {
+  const nextWidths = sanitizeGridColumnWidths(widths)
+  gridColumnWidths.value = nextWidths
+  if (options.persist !== false) {
+    window.localStorage.setItem(GRID_COLUMN_WIDTHS_STORAGE_KEY, JSON.stringify(nextWidths))
+  }
+  return nextWidths
+}
+
 function sanitizeGridSavedView<TRow extends Record<string, unknown>>(
   savedView: DataGridSavedViewSnapshot<TRow>,
   options: { dropSort?: boolean } = {},
@@ -2010,6 +2045,27 @@ function sanitizeGridSavedView<TRow extends Record<string, unknown>>(
             startIndex: rowCount > 0 ? 0 : -1,
             endIndex: rowCount > 0 ? rowCount - 1 : -1,
           },
+        },
+      },
+    },
+  }
+}
+
+function mergeStoredGridColumnWidths<TRow extends Record<string, unknown>>(
+  savedView: DataGridSavedViewSnapshot<TRow>,
+): DataGridSavedViewSnapshot<TRow> {
+  const storedWidths = readStoredGridColumnWidths()
+  if (Object.keys(storedWidths).length === 0) return savedView
+
+  return {
+    ...savedView,
+    state: {
+      ...savedView.state,
+      columns: {
+        ...savedView.state.columns,
+        widths: {
+          ...savedView.state.columns.widths,
+          ...storedWidths,
         },
       },
     },
@@ -2054,6 +2110,11 @@ function ensureCatalogServerViewport(preferredRange?: { start: number; end: numb
   return currentRange.start !== appliedRange.start || currentRange.end !== appliedRange.end
 }
 
+function buildCatalogServerViewportRange(preferredRange?: { start: number; end: number } | null) {
+  const size = resolveCatalogServerViewportSize(preferredRange)
+  return { start: 0, end: size - 1 }
+}
+
 function expandCollapsedCatalogServerViewport() {
   const range = catalogRowModel.value?.getSnapshot().viewportRange
   if (resolveViewportRangeSize(range) > 1) return false
@@ -2069,7 +2130,18 @@ function resetCatalogServerViewportOnQueryChange<TRow extends Record<string, unk
 
   lastGridServerQuerySignature = nextSignature
   if (options.onlyWhenCollapsed && resolveViewportRangeSize(catalogRowModel.value?.getSnapshot().viewportRange) > 1) return
-  ensureCatalogServerViewport(savedView.state.rows.snapshot.viewportRange)
+  const targetRange = buildCatalogServerViewportRange(savedView.state.rows.snapshot.viewportRange)
+  const viewportChanged = ensureCatalogServerViewport(savedView.state.rows.snapshot.viewportRange)
+  const appliedSize = resolveViewportRangeSize(catalogRowModel.value?.getSnapshot().viewportRange)
+  if (!viewportChanged || appliedSize < resolveViewportRangeSize(targetRange)) {
+    void softRefreshCatalogRows({
+      dimViewport: true,
+      range: targetRange,
+      expandViewportAfter: true,
+      sortModel: savedView.state.rows.snapshot.sortModel,
+      filterModel: savedView.state.rows.snapshot.filterModel ?? null,
+    })
+  }
 }
 
 function hasSavedViewServerQueryState<TRow extends Record<string, unknown>>(savedView: DataGridSavedViewSnapshot<TRow>) {
@@ -2082,28 +2154,6 @@ function hasSavedViewServerQueryState<TRow extends Record<string, unknown>>(save
     Boolean(savedView.state.rows.aggregationModel) ||
     Boolean(rowSnapshot.groupExpansion?.toggledGroupKeys?.length)
   )
-}
-
-function applyGridSavedColumns<TRow extends Record<string, unknown>>(savedView: DataGridSavedViewSnapshot<TRow>) {
-  const api = gridRef.value?.getApi()
-  if (!api) return false
-
-  const { order, visibility, widths, pins } = savedView.state.columns
-  if (order.length > 0) {
-    api.columns.setOrder(order)
-  }
-  for (const [key, visible] of Object.entries(visibility)) {
-    api.columns.setVisibility(key, Boolean(visible))
-  }
-  for (const [key, width] of Object.entries(widths)) {
-    api.columns.setWidth(key, Number.isFinite(width) ? Math.max(0, Math.trunc(width as number)) : null)
-  }
-  for (const [key, pin] of Object.entries(pins)) {
-    if (pin === 'left' || pin === 'right' || pin === 'none') {
-      api.columns.setPin(key, pin)
-    }
-  }
-  return true
 }
 
 function applyGridSavedViewWithoutIntermediatePulls(
@@ -2121,11 +2171,15 @@ function applyGridSavedViewWithoutIntermediatePulls(
     resetCatalogServerViewportOnQueryChange(savedView, { force: options.forceViewportReset })
     return applied
   } finally {
-    gridSavedViewApplying = wasApplying
-    if (paused) {
-      rowModel?.resumeBackpressure()
-      void rowModel?.flushBackpressure()
-    }
+    void nextTick().then(() => {
+      window.requestAnimationFrame(() => {
+        gridSavedViewApplying = wasApplying
+        if (paused) {
+          rowModel?.resumeBackpressure()
+          void rowModel?.flushBackpressure()
+        }
+      })
+    })
   }
 }
 
@@ -2135,7 +2189,7 @@ function readStoredGridSavedView() {
   const savedView = readDataGridSavedViewFromStorage(window.localStorage, GRID_SAVED_VIEW_STORAGE_KEY, (state, options) =>
     gridRef.value?.migrateState(state, options) ?? null,
   )
-  return savedView ? sanitizeGridSavedView(savedView, { dropSort: true }) : null
+  return savedView ? mergeStoredGridColumnWidths(sanitizeGridSavedView(savedView, { dropSort: true })) : null
 }
 
 function restoreGridSavedView() {
@@ -2145,21 +2199,16 @@ function restoreGridSavedView() {
   const savedView = readStoredGridSavedView()
   if (savedView) {
     try {
-      if (hasSavedViewServerQueryState(savedView)) {
-        applyGridSavedViewWithoutIntermediatePulls(savedView, { forceViewportReset: true })
-      } else {
-        const wasApplying = gridSavedViewApplying
-        gridSavedViewApplying = true
-        try {
-          applyGridSavedColumns(savedView)
-        } finally {
-          gridSavedViewApplying = wasApplying
-        }
-        lastGridServerQuerySignature = buildGridServerQuerySignature(savedView)
-      }
+      setGridColumnWidths(savedView.state.columns.widths, { persist: false })
+      applyGridSavedViewWithoutIntermediatePulls(savedView, { forceViewportReset: hasSavedViewServerQueryState(savedView) })
       writeDataGridSavedViewToStorage(window.localStorage, GRID_SAVED_VIEW_STORAGE_KEY, savedView)
     } catch {
       window.localStorage.removeItem(GRID_SAVED_VIEW_STORAGE_KEY)
+    }
+  } else {
+    const storedWidths = readStoredGridColumnWidths()
+    if (Object.keys(storedWidths).length > 0) {
+      setGridColumnWidths(storedWidths, { persist: false })
     }
   }
   scheduleGridSummaryRefresh()
@@ -2173,15 +2222,22 @@ function persistGridSavedView() {
   if (!savedView) return
 
   const stableView = sanitizeGridSavedView(savedView)
-  resetCatalogServerViewportOnQueryChange(stableView, { onlyWhenCollapsed: true })
+  setGridColumnWidths(stableView.state.columns.widths)
+  resetCatalogServerViewportOnQueryChange(stableView)
   writeDataGridSavedViewToStorage(window.localStorage, GRID_SAVED_VIEW_STORAGE_KEY, stableView)
   scheduleGridSummaryRefresh()
+}
+
+function persistGridColumnWidths(widths: Readonly<Record<string, number | null>> | null) {
+  if (!gridSavedViewRestored.value || gridSavedViewApplying) return
+  setGridColumnWidths(widths)
 }
 
 function writeGridSavedView(view: unknown | null) {
   if (!gridRef.value || !view) return
   const migratedView = view as NonNullable<ReturnType<NonNullable<typeof gridRef.value>['getSavedView']>>
   const stableView = sanitizeGridSavedView(migratedView)
+  setGridColumnWidths(stableView.state.columns.widths)
   applyGridSavedViewWithoutIntermediatePulls(stableView, { forceViewportReset: true })
   writeDataGridSavedViewToStorage(window.localStorage, GRID_SAVED_VIEW_STORAGE_KEY, stableView)
   scheduleGridSummaryRefresh()
@@ -2204,7 +2260,7 @@ function authHeaders() {
   })
 }
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? 'http://localhost:8000' : '')).replace(/\/$/, '')
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
 
 function apiUrl(path: string) {
   if (/^https?:\/\//i.test(path)) return path
@@ -2591,23 +2647,32 @@ function resolveCatalogReloadRange() {
   }
 }
 
-async function softRefreshCatalogRows(options: { dimViewport?: boolean } = {}) {
+async function softRefreshCatalogRows(options: {
+  dimViewport?: boolean
+  range?: { start: number; end: number }
+  expandViewportAfter?: boolean
+  sortModel?: readonly DataGridSortState[]
+  filterModel?: DataGridFilterSnapshot | null
+} = {}) {
   if (!isAuthenticated.value || !catalogRowModel.value) return
 
   const reloadSeq = catalogSoftReloadSeq + 1
   catalogSoftReloadSeq = reloadSeq
   const snapshot = catalogRowModel.value.getSnapshot()
-  const range = resolveCatalogReloadRange()
+  const range = options.range ?? resolveCatalogReloadRange()
   const dimActive = options.dimViewport === true && beginCatalogViewportDim()
   try {
     const result = await fetchLotsRange({
       start: range.start,
       end: range.end,
-      sortModel: snapshot.sortModel,
-      filterModel: snapshot.filterModel,
+      sortModel: options.sortModel ?? snapshot.sortModel,
+      filterModel: typeof options.filterModel === 'undefined' ? snapshot.filterModel : options.filterModel,
     })
     if (reloadSeq !== catalogSoftReloadSeq) return
     emitCatalogRowsUpsert(result.rows, result.total, range.start)
+    if (options.expandViewportAfter === true) {
+      ensureCatalogServerViewport(range)
+    }
     errorMessage.value = ''
   } catch (error) {
     if (!isAbortLikeError(error) && reloadSeq === catalogSoftReloadSeq) {
@@ -2885,10 +2950,22 @@ function scheduleLotsReload(
     deferredLotsReloadShouldResetViewport = false
     lastLotsReloadStartedAt = Date.now()
     catalogNextViewportPullShouldDim = shouldResetViewport
-    const viewportChanged = shouldResetViewport ? ensureCatalogServerViewport() : expandCollapsedCatalogServerViewport()
+    const resetRange = shouldResetViewport ? buildCatalogServerViewportRange() : null
+    const viewportChanged = resetRange ? ensureCatalogServerViewport(resetRange) : expandCollapsedCatalogServerViewport()
+    if (resetRange) {
+      catalogNextViewportPullShouldDim = false
+      void softRefreshCatalogRows({
+        dimViewport: true,
+        range: resetRange,
+        expandViewportAfter: true,
+      })
+      return
+    }
     if (!viewportChanged) {
       catalogNextViewportPullShouldDim = false
-      void softRefreshCatalogRows({ dimViewport: shouldResetViewport })
+      void softRefreshCatalogRows({
+        dimViewport: false,
+      })
     }
   }, delayMs)
 }
@@ -3952,8 +4029,10 @@ onUnmounted(() => {
       <DataGrid
         v-else-if="catalogRowModel"
         ref="gridRef"
+        :rows="allRows"
         :row-model="catalogRowModel"
         :columns="columns"
+        :column-widths="gridColumnWidths"
         :base-row-height="26"
         :toolbar-modules="toolbarModules"
         :theme="workspaceDataGridTheme"
@@ -3966,6 +4045,7 @@ onUnmounted(() => {
         :chrome="{ toolbarPlacement: 'integrated', density: 'compact', toolbarGap: 0, workspaceGap: 8 }"
         :history="{ controls: false }"
         @cell-change="handleGridCellChange"
+        @update:column-widths="persistGridColumnWidths"
         @update:state="persistGridSavedView"
       />
     </section>

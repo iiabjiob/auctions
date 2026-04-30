@@ -54,7 +54,7 @@ class AuctionCatalogSqlTests(unittest.TestCase):
         sql = str(compiled)
 
         self.assertIn("ORDER BY", sql)
-        self.assertIn("source_position", compiled.params.values())
+        self.assertIn("auction_lot_records.first_seen_at DESC", sql)
 
     def test_grid_sort_is_applied_at_sql_level(self) -> None:
         statement = _apply_record_sort(
@@ -101,6 +101,23 @@ class AuctionCatalogSqlTests(unittest.TestCase):
         self.assertIn("current_price_value", compiled.params.values())
         self.assertIn("%квартира%", compiled.params.values())
         self.assertNotIn("LIMIT", sql)
+
+    def test_grid_value_set_string_filter_is_case_insensitive(self) -> None:
+        predicate = _grid_filter_predicate(
+            {
+                "columnFilters": {
+                    "location": {"kind": "valueSet", "tokens": ["string:москва"]},
+                },
+                "advancedFilters": {},
+            }
+        )
+        self.assertIsNotNone(predicate)
+        compiled = predicate.compile(dialect=postgresql.dialect())
+        sql = str(compiled)
+
+        self.assertIn("lower", sql.lower())
+        self.assertIn("location", compiled.params.values())
+        self.assertIn("москва", compiled.params.values())
 
     def test_grid_advanced_expression_supports_or_groups(self) -> None:
         predicate = _grid_filter_predicate(

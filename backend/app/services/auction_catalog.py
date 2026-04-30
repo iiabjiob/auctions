@@ -571,7 +571,9 @@ def _value_set_token_predicate(expression, token: str):
     if token == "null":
         return expression.is_(None)
     if token.startswith("string:"):
-        return cast(expression, String) == token.removeprefix("string:")
+        # The column menu normalizes string tokens to lower case before applying
+        # value-set filters, so the server must use the same lookup semantics.
+        return func.lower(cast(expression, String)) == token.removeprefix("string:").lower()
     if token.startswith("number:"):
         try:
             return expression == Decimal(token.removeprefix("number:"))
