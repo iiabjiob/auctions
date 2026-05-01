@@ -17,6 +17,8 @@ from app.schemas.analysis_config import AuctionAnalysisConfigResponse, AuctionAn
 from app.schemas.auctions import (
     AuctionDetailResponse,
     AuctionSourceInfo,
+    LotWorkspaceBatchCommitRequest,
+    LotWorkspaceBatchCommitResponse,
     LotDatagridResponse,
     LotDatagridHistogramEntry,
     LotDatagridHistogramRequest,
@@ -28,7 +30,13 @@ from app.schemas.auctions import (
 from app.services.auction_catalog import list_lots_for_datagrid, list_persisted_lots_for_datagrid, list_persisted_lot_column_histogram
 from app.services.auction_analysis_config import auction_analysis_config_service
 from app.services.auction_sources import get_source_provider, list_source_infos
-from app.services.auction_workspace import find_lot_record, get_lot_workspace, refresh_lot_workspace_live, update_lot_work_item
+from app.services.auction_workspace import (
+    batch_update_lot_work_items,
+    find_lot_record,
+    get_lot_workspace,
+    refresh_lot_workspace_live,
+    update_lot_work_item,
+)
 from app.infrastructure.redis.streams import publish_auction_event, read_auction_events
 
 
@@ -387,6 +395,15 @@ async def patch_source_lot_workspace(
         raise HTTPException(status_code=400, detail=str(error)) from error
     except LookupError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@router.patch("/lots/workspace/batch", response_model=LotWorkspaceBatchCommitResponse)
+async def patch_source_lot_workspace_batch(
+    payload: LotWorkspaceBatchCommitRequest,
+    session: AsyncSession = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
+) -> LotWorkspaceBatchCommitResponse:
+    return await batch_update_lot_work_items(session, updates=payload.edits)
 
 
 @router.get("/{source}/{auction_id}", response_model=AuctionDetailResponse)

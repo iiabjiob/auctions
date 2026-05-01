@@ -405,6 +405,36 @@ class LotWorkspaceResponse(BaseModel):
     changes: LotChangeSummary
 
 
+class LotWorkspaceBatchCommitItem(BaseModel):
+    source: str
+    lot_id: str
+    auction_id: str | None = None
+    payload: LotWorkItemUpdate
+
+
+class LotWorkspaceBatchCommitRequest(BaseModel):
+    edits: list[LotWorkspaceBatchCommitItem] = Field(default_factory=list)
+
+
+class LotWorkspaceBatchCommittedItem(BaseModel):
+    source: str
+    lot_id: str
+    auction_id: str | None = None
+    workspace: LotWorkspaceResponse
+
+
+class LotWorkspaceBatchRejectedItem(BaseModel):
+    source: str
+    lot_id: str
+    auction_id: str | None = None
+    error: str
+
+
+class LotWorkspaceBatchCommitResponse(BaseModel):
+    committed: list[LotWorkspaceBatchCommittedItem] = Field(default_factory=list)
+    rejected: list[LotWorkspaceBatchRejectedItem] = Field(default_factory=list)
+
+
 class LotWorkspaceRefreshResponse(BaseModel):
     status: str
     queued: bool

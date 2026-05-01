@@ -26,6 +26,10 @@ from app.schemas.auctions import (
     LotChangeSummary,
     LotDetailResponse,
     LotFieldChange,
+    LotWorkspaceBatchCommitItem,
+    LotWorkspaceBatchCommitResponse,
+    LotWorkspaceBatchCommittedItem,
+    LotWorkspaceBatchRejectedItem,
     LotWorkItemResponse,
     LotWorkItemUpdate,
     LotWorkspaceResponse,
@@ -217,6 +221,66 @@ async def update_lot_work_item(
     await session.refresh(work_item)
     await _publish_row_updated(record)
     return await build_workspace_response(session, record, detail_cache, work_item)
+
+
+async def batch_update_lot_work_items(
+    session: AsyncSession,
+    *,
+    updates: list[LotWorkspaceBatchCommitItem],
+) -> LotWorkspaceBatchCommitResponse:
+    committed: list[LotWorkspaceBatchCommittedItem] = []
+    rejected: list[LotWorkspaceBatchRejectedItem] = []
+
+    for item in updates:
+        try:
+            workspace = await update_lot_work_item(
+                session,
+                source=item.source,
+                lot_id=item.lot_id,
+                auction_id=item.auction_id,
+                payload=item.payload,
+            )
+        except (LookupError, ValueError) as error:
+            await session.rollback()
+            rejected.append(
+                LotWorkspaceBatchRejectedItem(
+                    source=item.source,
+                    lot_id=item.lot_id,
+                    auction_id=item.auction_id,
+                    error=str(error),
+                )
+            )
+            continue
+        except Exception as error:
+            await session.rollback()
+            logger.exception(
+                "Batch lot workspace update failed",
+                extra={
+                    "source_code": item.source,
+                    "lot_id": item.lot_id,
+                    "auction_id": item.auction_id,
+                },
+            )
+            rejected.append(
+                LotWorkspaceBatchRejectedItem(
+                    source=item.source,
+                    lot_id=item.lot_id,
+                    auction_id=item.auction_id,
+                    error=str(error) or "Unexpected workspace update error",
+                )
+            )
+            continue
+
+        committed.append(
+            LotWorkspaceBatchCommittedItem(
+                source=item.source,
+                lot_id=item.lot_id,
+                auction_id=item.auction_id,
+                workspace=workspace,
+            )
+        )
+
+    return LotWorkspaceBatchCommitResponse(committed=committed, rejected=rejected)
 
 
 async def find_lot_record(

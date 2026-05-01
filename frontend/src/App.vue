@@ -13,8 +13,6 @@ import {
 } from '@affino/datagrid-vue-app'
 import {
   createDataSourceBackedRowModel,
-  type DataGridClientRowPatch,
-  type DataGridClientRowPatchOptions,
   type DataGridColumnHistogram,
   type DataGridDataSource,
   type DataGridFilterSnapshot,
@@ -378,10 +376,6 @@ type LotsResponse = {
 
 type CatalogColumnHistogramRequest = Parameters<NonNullable<DataGridDataSource<GridLotRow>['getColumnHistogram']>>[0]
 
-type PatchableCatalogRowModel = DataSourceBackedRowModel<GridLotRow> & {
-  patchRows: (updates: readonly DataGridClientRowPatch<GridLotRow>[], options?: DataGridClientRowPatchOptions) => void
-}
-
 type LotHistogramPayload = {
   column_id: string
   options: Record<string, unknown>
@@ -493,6 +487,50 @@ type GridFocusAnchor = {
   columnIndex: number | null
   columnKey: string | null
   element: HTMLElement | null
+}
+
+type CatalogCommitEditsRequest = {
+  edits: readonly {
+    rowId: string | number
+    data: Partial<GridLotRow>
+  }[]
+  signal?: AbortSignal
+  revision?: string | number | null
+}
+type CatalogCommitEditsResult = {
+  committed?: Array<{ rowId: string | number; revision?: string | number | null }>
+  rejected?: Array<{ rowId: string | number; reason?: string }>
+}
+
+type CatalogWorkspaceBatchEdit = {
+  source: string
+  lot_id: string
+  auction_id: string | null
+  payload: ReturnType<typeof buildGridWorkPayload>
+}
+
+type CatalogWorkspaceBatchCommitResponse = {
+  committed?: Array<{
+    source: string
+    lot_id: string
+    auction_id: string | null
+    workspace: LotWorkspaceResponse
+  }>
+  rejected?: Array<{
+    source: string
+    lot_id: string
+    auction_id: string | null
+    error: string
+  }>
+}
+
+type CatalogDataSource = DataGridDataSource<GridLotRow> & {
+  commitEdits?(request: CatalogCommitEditsRequest): Promise<CatalogCommitEditsResult>
+}
+
+type CatalogRowModel = DataSourceBackedRowModel<GridLotRow> & {
+  patchRows?: (updates: readonly { rowId: string | number; data: Partial<GridLotRow> }[]) => void | Promise<void>
+  dataSource: CatalogDataSource
 }
 
 type FilterOption = {
@@ -669,10 +707,14 @@ const detailPaneWidth = ref(readStoredDetailPaneWidth())
 const gridRef = ref<DataGridExposed<GridLotRow> | null>(null)
 const gridSurfaceRef = ref<HTMLElement | null>(null)
 const gridColumnWidths = ref<GridColumnWidthsState>({})
+const gridRowsById = shallowRef(new Map<string, GridLotRow>())
+const loadedStatusValues = shallowRef<string[]>([])
 const gridSavedViewRestored = ref(false)
 const gridRowRevision = ref(0)
 const loadingSkeletonVisibleRows = ref(LOADING_SKELETON_MIN_ROWS)
 let gridSavedViewApplying = false
+let suppressGridCellChangeDepth = 0
+let suppressGridCommitEditsDepth = 0
 let resizeStartX = 0
 let resizeStartWidth = 0
 let detailRequestId = 0
@@ -694,6 +736,7 @@ let catalogViewportDimShowTimer: ReturnType<typeof window.setTimeout> | null = n
 let catalogViewportDimHideTimer: ReturnType<typeof window.setTimeout> | null = null
 let catalogViewportDimVisibleAt = 0
 let catalogNextViewportPullShouldDim = false
+let keepCatalogEditErrorOnNextPull = false
 const catalogFetchRequests = new Map<string, Promise<LotsResponse>>()
 let gridSurfaceResizeObserver: ResizeObserver | null = null
 
@@ -1504,7 +1547,7 @@ function resolveClientGridRowId(row: Pick<GridLotRow, 'id'>) {
   return row.id
 }
 
-const catalogRowModel = shallowRef<PatchableCatalogRowModel | null>(null)
+const catalogRowModel = shallowRef<CatalogRowModel | null>(null)
 const isGridCellEditable = ({ column }: { column: { key: string } }) => EDITABLE_GRID_COLUMN_KEYS.has(column.key)
 const columnLayoutOptions = {
   buttonLabel: 'Колонки',
@@ -1680,14 +1723,11 @@ const analysisConfigUpdatedAt = computed(() => formatDateTime(analysisConfig.val
 const statusOptions = computed(() => {
   return [
     { label: 'Любой', value: '' },
-    ...[...new Set(allRows.value.map((row) => row.status).filter(Boolean))]
-      .sort((left, right) => left.localeCompare(right, 'ru'))
-      .map((status) => ({ label: status, value: status })),
+    ...loadedStatusValues.value.map((status) => ({ label: status, value: status })),
   ]
 })
 
-const rows = computed(() => allRows.value.filter(matchesQuickFilters))
-const summaryRows = computed(() => (gridSummaryReady.value ? projectedRowsForSummary.value : rows.value))
+const summaryRows = computed(() => projectedRowsForSummary.value)
 const totalRows = computed(() => catalogTotal.value || summaryRows.value.length)
 const loadedRowsCount = computed(() => allRows.value.length)
 const openApplicationsCount = computed(() =>
@@ -2466,12 +2506,43 @@ async function fetchCatalogJson(url: string, signal?: AbortSignal) {
 }
 
 function rememberLoadedRows(rows: GridLotRow[]) {
-  const byId = new Map(allRows.value.map((row) => [row.id, row]))
+  const byId = gridRowsById.value
   for (const row of rows) {
+    rememberLoadedStatus(row.status)
+    const existing = byId.get(row.id)
+    if (existing) {
+      Object.assign(existing, row, { rowRevision: existing.rowRevision })
+      rememberGridWorkSnapshot(existing)
+      continue
+    }
     byId.set(row.id, row)
+    allRows.value.push(row)
     rememberGridWorkSnapshot(row)
   }
-  allRows.value = Array.from(byId.values())
+}
+
+function rememberLoadedStatus(status: string) {
+  const normalized = status.trim()
+  if (!normalized) return
+  if (loadedStatusValues.value.includes(normalized)) return
+  loadedStatusValues.value = [...loadedStatusValues.value, normalized].sort((left, right) => left.localeCompare(right, 'ru'))
+}
+
+const UI_PERF_WARN_THRESHOLD_MS = 32
+
+function startUiPerfTrace(name: string, context: Record<string, unknown> = {}) {
+  const startedAt = performance.now()
+  return {
+    end(extra: Record<string, unknown> = {}) {
+      const elapsedMs = performance.now() - startedAt
+      if (elapsedMs < UI_PERF_WARN_THRESHOLD_MS) return
+      console.warn('[ui-perf]', name, {
+        elapsedMs: Math.round(elapsedMs),
+        ...context,
+        ...extra,
+      })
+    },
+  }
 }
 
 async function requestLotsWindow(request: {
@@ -2639,7 +2710,7 @@ function shouldDimCatalogPull(reason: string) {
   return false
 }
 
-function createCatalogDataSource(): DataGridDataSource<GridLotRow> {
+function createCatalogDataSource(): CatalogDataSource {
   return {
     subscribe(listener) {
       catalogDataSourceListeners.add(listener)
@@ -2657,7 +2728,11 @@ function createCatalogDataSource(): DataGridDataSource<GridLotRow> {
       }
       const dimActive = dimViewport && beginCatalogViewportDim()
       if (!isBackgroundPrefetch) {
-        errorMessage.value = ''
+        if (keepCatalogEditErrorOnNextPull) {
+          keepCatalogEditErrorOnNextPull = false
+        } else {
+          errorMessage.value = ''
+        }
       }
       try {
         const result = await fetchLotsRange({
@@ -2685,69 +2760,40 @@ function createCatalogDataSource(): DataGridDataSource<GridLotRow> {
           loading.value = false
         }
         endCatalogViewportDim(dimActive)
-        scheduleGridSummaryRefresh()
+        if (!isBackgroundPrefetch) {
+          scheduleGridSummaryRefresh()
+        }
       }
     },
     getColumnHistogram(request) {
       return fetchColumnHistogram(request)
     },
+    async commitEdits(request) {
+      return commitCatalogEdits(request)
+    },
   }
 }
 
-function findCachedCatalogRow(rowModel: DataSourceBackedRowModel<GridLotRow>, rowId: string | number) {
-  const snapshot = rowModel.getSnapshot()
-  if (snapshot.rowCount <= 0) return null
-
-  const viewportRange = {
-    start: Math.max(0, snapshot.viewportRange.start),
-    end: Math.min(snapshot.rowCount - 1, snapshot.viewportRange.end),
-  }
-  for (let rowIndex = viewportRange.start; rowIndex <= viewportRange.end; rowIndex += 1) {
-    const rowNode = rowModel.getRow(rowIndex)
-    if (rowNode?.rowId !== rowId) continue
-    if (Number.isFinite(rowNode.originalIndex)) return { index: rowNode.originalIndex, row: rowNode.data }
-    if (Number.isFinite(rowNode.displayIndex)) return { index: rowNode.displayIndex, row: rowNode.data }
-    return { index: rowIndex, row: rowNode.data }
-  }
-  return null
-}
-
-function attachCatalogPatchRows(rowModel: DataSourceBackedRowModel<GridLotRow>): PatchableCatalogRowModel {
-  const patchableRowModel = rowModel as PatchableCatalogRowModel
-  patchableRowModel.patchRows = (updates) => {
-    const snapshot = rowModel.getSnapshot()
-    const patchedRows: Array<{ row: GridLotRow; index: number }> = []
-    for (const update of updates) {
-      const cachedRow = findCachedCatalogRow(rowModel, update.rowId)
-      if (!cachedRow) continue
-
-      const currentRow = cachedRow.row ?? getLatestGridRow(String(update.rowId))
-      if (!currentRow) continue
-
-      patchedRows.push({
-        index: cachedRow.index,
-        row: {
-          ...currentRow,
-          ...normalizeGridRowPatch(update.data),
-        },
-      })
-    }
-
-    for (const patchedRow of patchedRows) {
-      emitCatalogRowsUpsert([patchedRow.row], snapshot.rowCount, patchedRow.index)
-    }
-  }
-  return patchableRowModel
-}
-
-function createCatalogRowModel(): PatchableCatalogRowModel {
-  return attachCatalogPatchRows(createDataSourceBackedRowModel({
+function createCatalogRowModel(): CatalogRowModel {
+  const rowModel = createDataSourceBackedRowModel({
     dataSource: createCatalogDataSource(),
     resolveRowId: resolveClientGridRowId,
     initialTotal: Math.min(CATALOG_TOTAL_ROW_LIMIT, Math.max(catalogTotal.value || 0, SERVER_ROW_MODEL_INITIAL_FETCH_SIZE)),
     rowCacheLimit: CATALOG_ROW_CACHE_LIMIT,
     prefetch: catalogRowModelPrefetchOptions,
-  }))
+  }) as CatalogRowModel
+  if (typeof rowModel.patchRows !== 'function') {
+    rowModel.patchRows = async (updates) => {
+      if (!updates.length) return
+      const commitEdits = rowModel.dataSource.commitEdits
+      if (typeof commitEdits !== 'function') return
+      await commitEdits({
+        edits: updates,
+      })
+      await rowModel.refresh('manual')
+    }
+  }
+  return rowModel
 }
 
 function emitCatalogRowsUpsert(rows: readonly GridLotRow[], total: number, startIndex: number) {
@@ -2823,6 +2869,8 @@ function resetCatalogRowModel() {
   catalogDataSourceListeners.clear()
   clearCatalogViewportDim()
   allRows.value = []
+  gridRowsById.value.clear()
+  loadedStatusValues.value = []
   projectedRowsForSummary.value = []
   gridSummaryReady.value = false
   gridSavedViewRestored.value = false
@@ -2959,14 +3007,21 @@ function applyWorkspaceRow(row: ApiLotRow, options: { clearOptimistic?: boolean;
   applyWorkspaceRows([row], options)
 }
 
-function applyWorkspaceRows(rows: ApiLotRow[], options: { clearOptimistic?: boolean; refreshSummary?: boolean } = {}) {
+function applyWorkspaceRows(
+  rows: ApiLotRow[],
+  options: { clearOptimistic?: boolean; refreshSummary?: boolean; patchGrid?: boolean } = {},
+) {
   if (!rows.length) return
+  const trace = startUiPerfTrace('applyWorkspaceRows', {
+    rowCount: rows.length,
+    refreshSummary: options.refreshSummary !== false,
+    clearOptimistic: options.clearOptimistic === true,
+  })
   const mappedUpdates: GridLotRow[] = []
+  const byId = gridRowsById.value
 
   for (const update of rows) {
-    if (!options.clearOptimistic && optimisticGridRows.has(update.row_id)) continue
-
-    const existing = allRows.value.find((row) => row.id === update.row_id)
+    const existing = byId.get(update.row_id)
     const nextRevision = existing?.rowRevision ?? gridRowRevision.value + 1
     if (!existing) {
       gridRowRevision.value = Math.max(gridRowRevision.value, nextRevision)
@@ -2979,21 +3034,26 @@ function applyWorkspaceRows(rows: ApiLotRow[], options: { clearOptimistic?: bool
       Object.assign(existing, mapped, { rowRevision: existing.rowRevision })
       mappedUpdates.push(existing)
     } else {
+      byId.set(mapped.id, mapped)
       allRows.value.push(mapped)
       mappedUpdates.push(mapped)
     }
   }
 
   if (!mappedUpdates.length) return
-  patchGridRowsInDataGrid(mappedUpdates)
+  if (options.clearOptimistic) {
+    for (const mapped of mappedUpdates) {
+      optimisticGridRows.delete(mapped.id)
+    }
+  }
+  if (options.patchGrid !== false) {
+    patchGridRowsInDataGrid(mappedUpdates)
+  }
   if (options.refreshSummary !== false) {
     scheduleGridSummaryRefresh()
   }
 
   for (const mapped of mappedUpdates) {
-    if (options.clearOptimistic) {
-      optimisticGridRows.delete(mapped.id)
-    }
     if (selectedLot.value?.id === mapped.id) {
       selectedLot.value = mapped
     }
@@ -3009,33 +3069,41 @@ function applyWorkspaceRows(rows: ApiLotRow[], options: { clearOptimistic?: bool
       }
     }
   }
+  trace.end({ updatedCount: mappedUpdates.length })
 }
 
 function getLatestGridRow(rowId: string) {
-  return optimisticGridRows.get(rowId) ?? allRows.value.find((row) => row.id === rowId) ?? null
+  return gridRowsById.value.get(rowId) ?? optimisticGridRows.get(rowId) ?? null
 }
 
 function patchGridRowsInDataGrid(rows: readonly GridLotRow[]) {
   const api = gridRef.value?.getApi()
   if (!api?.rows.hasPatchSupport() || !rows.length) return
 
-  api.rows.applyEdits(
-    rows.map((row) => ({
-      rowId: resolveClientGridRowId(row),
-      data: row,
-    })),
-    { emit: false, reapply: false },
-  )
+  suppressGridCellChangeDepth += 1
+  suppressGridCommitEditsDepth += 1
+  try {
+    api.rows.applyEdits(
+      rows.map((row) => ({
+        rowId: resolveClientGridRowId(row),
+        data: row,
+      })),
+      { emit: false, reapply: false },
+    )
+  } finally {
+    suppressGridCellChangeDepth = Math.max(0, suppressGridCellChangeDepth - 1)
+    suppressGridCommitEditsDepth = Math.max(0, suppressGridCommitEditsDepth - 1)
+  }
 }
 
 function readProjectedRowsFromGrid() {
   const api = gridRef.value?.getApi()
-  if (!api) return rows.value
+  if (!api) return []
 
   const count = api.rows.getCount()
   if (count <= 0) return []
-  const readableCount = Math.min(count, allRows.value.length || rows.value.length, GRID_SUMMARY_MAX_READ_ROWS)
-  if (readableCount <= 0) return rows.value
+  const readableCount = Math.min(count, allRows.value.length, GRID_SUMMARY_MAX_READ_ROWS)
+  if (readableCount <= 0) return []
 
   return api.rows.getRange({ start: 0, end: readableCount - 1 }).flatMap((node) => {
     const row = node.data as GridLotRow | undefined
@@ -3193,42 +3261,223 @@ function normalizeGridRowPatch(row: Partial<GridLotRow>) {
   return normalized
 }
 
-function extractActiveGridRowPatch(focusAnchor: GridFocusAnchor | null) {
-  const api = gridRef.value?.getApi()
-  const activeCell = focusAnchor?.activeCell ?? getActiveGridCellFromSnapshot(api?.selection.getSnapshot() ?? null)
-  if (!api || !activeCell) return null
-
-  const node = api.rows.get(activeCell.rowIndex)
-  const row = normalizeGridRowPatch(node?.data as Partial<GridLotRow>)
-  return typeof row.id === 'string' ? row : null
-}
-
-function handleGridCellChange() {
-  const focusAnchor = captureGridFocusAnchor(null, true)
-  const rowPatch = extractActiveGridRowPatch(focusAnchor)
-  if (!rowPatch?.id) return
-
-  const existingRow = getLatestGridRow(rowPatch.id)
-  if (!existingRow) return
-
-  const previousSnapshot = savedGridWorkSnapshots.get(existingRow.id)
-  const nextRow = recomputeGridEconomyFields({
-    ...existingRow,
-    ...rowPatch,
-    rowRevision: existingRow.rowRevision,
-  })
-  const snapshot = serializeGridWorkState(nextRow)
-
-  optimisticGridRows.set(nextRow.id, nextRow)
-  patchGridRowsInDataGrid([nextRow])
-
-  if (selectedLot.value?.id === nextRow.id) {
-    selectedLot.value = nextRow
+async function commitCatalogEdits(request: CatalogCommitEditsRequest): Promise<CatalogCommitEditsResult> {
+  if (suppressGridCommitEditsDepth > 0) {
+    return {
+      committed: request.edits.map((edit) => ({
+        rowId: edit.rowId,
+      })),
+    }
   }
 
-  if (previousSnapshot !== snapshot) {
-    queueGridRowSave(nextRow.id)
-    void restoreGridFocus(focusAnchor)
+  const committed: NonNullable<CatalogCommitEditsResult['committed']> = []
+  const rejected: NonNullable<CatalogCommitEditsResult['rejected']> = []
+  const rejectedMessages: string[] = []
+  const rowContexts = new Map<string, {
+    rowId: string | number
+    currentRow: GridLotRow
+    nextRow: GridLotRow
+    requestSnapshot: string
+    payload: ReturnType<typeof buildGridWorkPayload>
+  }>()
+
+  for (const edit of request.edits) {
+    const rowId = String(edit.rowId)
+    const existing = rowContexts.get(rowId)
+    const currentRow = getLatestGridRow(rowId)
+    if (!currentRow?.lotId) {
+      rejected.push({
+        rowId: edit.rowId,
+        reason: 'row not loaded',
+      })
+      rejectedMessages.push(`${rowId}: row not loaded`)
+      continue
+    }
+
+    const nextRow = recomputeGridEconomyFields({
+      ...currentRow,
+      ...normalizeGridRowPatch(edit.data),
+      rowRevision: currentRow.rowRevision,
+    })
+    const requestSnapshot = serializeGridWorkState(nextRow)
+    const previousSnapshot = savedGridWorkSnapshots.get(currentRow.id)
+    if (previousSnapshot === requestSnapshot) {
+      committed.push({ rowId: edit.rowId })
+      continue
+    }
+
+    if (existing) {
+      existing.nextRow = nextRow
+      existing.requestSnapshot = requestSnapshot
+      existing.payload = buildGridWorkPayload(nextRow)
+      continue
+    }
+
+    rowContexts.set(rowId, {
+      rowId: edit.rowId,
+      currentRow,
+      nextRow,
+      requestSnapshot,
+      payload: buildGridWorkPayload(nextRow),
+    })
+  }
+
+    if (rowContexts.size === 0) {
+    if (rejected.length > 0) {
+      errorMessage.value = `Не удалось сохранить изменения из таблицы: ${rejectedMessages.join(', ')}`
+      backgroundStatus.value = 'Ошибка сохранения экономики лотов'
+      keepCatalogEditErrorOnNextPull = true
+    } else {
+      errorMessage.value = ''
+    }
+    return {
+      committed,
+      rejected,
+    }
+  }
+
+  if (rowContexts.size === 1 && request.edits.length === 1) {
+    const context = rowContexts.values().next().value
+    if (!context) {
+      return {
+        committed,
+        rejected,
+      }
+    }
+    try {
+      backgroundStatus.value = `Сохраняю экономику лота ${context.nextRow.lotNumber || context.nextRow.id}`
+      const params = new URLSearchParams()
+      if (context.nextRow.auctionId) params.set('auction_id', context.nextRow.auctionId)
+      const workspace = await fetchJson<LotWorkspaceResponse>(
+        `/api/v1/auctions/${context.nextRow.source}/lots/${encodeURIComponent(context.nextRow.lotId)}/workspace?${params.toString()}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(context.payload),
+          signal: request.signal,
+        },
+      )
+      if (selectedLot.value?.id === context.currentRow.id) {
+        selectedWorkspace.value = workspace
+        hydrateWorkDraft(workspace.work_item)
+      }
+      applyWorkspaceRows([workspace.row], { clearOptimistic: true, refreshSummary: false, patchGrid: false })
+      committed.push({ rowId: context.rowId })
+      backgroundStatus.value = `Экономика обновлена: ${context.nextRow.lotNumber || context.nextRow.id}`
+      errorMessage.value = ''
+    } catch (error) {
+      rejected.push({
+        rowId: context.rowId,
+        reason: error instanceof Error ? error.message : String(error),
+      })
+      errorMessage.value = error instanceof Error ? error.message : 'Не удалось сохранить изменения из таблицы'
+      backgroundStatus.value = `Ошибка сохранения экономики лота ${context.nextRow.lotNumber || context.nextRow.id}`
+      keepCatalogEditErrorOnNextPull = true
+    }
+    return {
+      committed,
+      rejected,
+    }
+  }
+
+  const batchEdits: CatalogWorkspaceBatchEdit[] = Array.from(rowContexts.values(), (context) => ({
+    source: context.currentRow.source,
+    lot_id: context.currentRow.lotId as string,
+    auction_id: context.currentRow.auctionId,
+    payload: context.payload,
+  }))
+
+  try {
+    backgroundStatus.value = `Сохраняю ${batchEdits.length} лотов`
+    const response = await fetchJson<CatalogWorkspaceBatchCommitResponse>('/api/v1/auctions/lots/workspace/batch', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ edits: batchEdits }),
+      signal: request.signal,
+    })
+
+    const contextByKey = new Map(
+      Array.from(rowContexts.values(), (context) => [`${context.currentRow.source}::${context.currentRow.lotId}`, context] as const),
+    )
+    const committedByKey = new Map(
+      (response.committed ?? []).map((entry) => [`${entry.source}::${entry.lot_id}`, entry.workspace] as const),
+    )
+    for (const [rowId, context] of rowContexts) {
+      const workspace = committedByKey.get(`${context.currentRow.source}::${context.currentRow.lotId}`)
+      if (!workspace) continue
+      if (selectedLot.value?.id === context.currentRow.id) {
+        selectedWorkspace.value = workspace
+        hydrateWorkDraft(workspace.work_item)
+      }
+      applyWorkspaceRows([workspace.row], { clearOptimistic: true, refreshSummary: false, patchGrid: false })
+      committed.push({ rowId: context.rowId })
+    }
+
+    const rejectedEntries = response.rejected ?? []
+    if (rejectedEntries.length > 0 || rejected.length > 0) {
+      for (const entry of rejectedEntries) {
+        const context = contextByKey.get(`${entry.source}::${entry.lot_id}`)
+        if (!context) {
+          rejectedMessages.push(entry.error)
+          continue
+        }
+        rejected.push({
+          rowId: context.rowId,
+          reason: entry.error,
+        })
+        const backendRow = gridRowsById.value.get(context.currentRow.id) ?? null
+        if (backendRow) {
+          optimisticGridRows.delete(context.currentRow.id)
+          patchGridRowsInDataGrid([backendRow])
+          rememberGridWorkSnapshot(backendRow)
+          if (selectedLot.value?.id === context.currentRow.id) {
+            selectedLot.value = backendRow
+          }
+        }
+        rejectedMessages.push(`${context.currentRow.lotNumber || context.currentRow.id}: ${entry.error}`)
+      }
+      for (const entry of rejected) {
+        const context = Array.from(rowContexts.values()).find((candidate) => candidate.rowId === entry.rowId)
+        if (!context) continue
+        const backendRow = gridRowsById.value.get(context.currentRow.id) ?? null
+        if (backendRow) {
+          optimisticGridRows.delete(context.currentRow.id)
+          patchGridRowsInDataGrid([backendRow])
+          rememberGridWorkSnapshot(backendRow)
+        }
+      }
+      if (rejectedMessages.length > 0) {
+        errorMessage.value = `Не удалось сохранить ${rejectedMessages.length} строк: ${rejectedMessages.join(', ')}`
+        backgroundStatus.value = `Частично сохранено: ${committed.length} из ${rowContexts.size}`
+        keepCatalogEditErrorOnNextPull = true
+      }
+    } else {
+      errorMessage.value = ''
+      backgroundStatus.value = `Сохранено ${committed.length} лотов`
+    }
+  } catch (error) {
+    for (const context of rowContexts.values()) {
+      const backendRow = gridRowsById.value.get(context.currentRow.id) ?? null
+      if (backendRow) {
+        optimisticGridRows.delete(context.currentRow.id)
+        patchGridRowsInDataGrid([backendRow])
+        rememberGridWorkSnapshot(backendRow)
+      }
+    }
+    rejected.push(
+      ...Array.from(rowContexts.values(), (context) => ({
+        rowId: context.rowId,
+        reason: error instanceof Error ? error.message : String(error),
+      })),
+    )
+    errorMessage.value = error instanceof Error ? error.message : 'Не удалось сохранить изменения из таблицы'
+    backgroundStatus.value = `Ошибка сохранения экономики ${rowContexts.size} лотов`
+    keepCatalogEditErrorOnNextPull = true
+  }
+
+  return {
+    committed,
+    rejected,
   }
 }
 
@@ -3245,10 +3494,17 @@ function queueGridRowSave(rowId: string) {
 }
 
 async function saveGridRow(rowId: string) {
+  const trace = startUiPerfTrace('saveGridRow', { rowId })
   const row = getLatestGridRow(rowId)
-  if (!row?.lotId) return
+  if (!row?.lotId) {
+    trace.end({ stage: 'no-row-or-lot-id' })
+    return
+  }
   const requestSnapshot = serializeGridWorkState(row)
-  const saveStartFocusAnchor = captureGridFocusAnchor(row.id, document.activeElement === document.body)
+  const shouldRestoreGridFocus = !catalogRowModel.value
+  const saveStartFocusAnchor = shouldRestoreGridFocus
+    ? captureGridFocusAnchor(row.id, document.activeElement === document.body)
+    : null
   try {
     backgroundStatus.value = `Сохраняю экономику лота ${row.lotNumber || row.id}`
     const params = new URLSearchParams()
@@ -3265,18 +3521,40 @@ async function saveGridRow(rowId: string) {
       selectedWorkspace.value = workspace
       hydrateWorkDraft(workspace.work_item)
     }
-    const focusAnchor = captureGridFocusAnchor(null, document.activeElement === document.body) ?? saveStartFocusAnchor
+    const focusAnchor = shouldRestoreGridFocus
+      ? captureGridFocusAnchor(null, document.activeElement === document.body) ?? saveStartFocusAnchor
+      : null
     const currentOptimisticRow = optimisticGridRows.get(rowId)
     const hasNewerOptimisticEdit = Boolean(
       currentOptimisticRow && serializeGridWorkState(currentOptimisticRow) !== requestSnapshot,
     )
     if (!hasNewerOptimisticEdit) {
-      applyWorkspaceRows([workspace.row], { clearOptimistic: true })
-      void restoreGridFocus(focusAnchor)
+      applyWorkspaceRows([workspace.row], { clearOptimistic: true, refreshSummary: false })
+      if (shouldRestoreGridFocus) {
+        void restoreGridFocus(focusAnchor)
+      }
     }
     backgroundStatus.value = `Экономика обновлена: ${row.lotNumber || row.id}`
+    trace.end({ hasNewerOptimisticEdit, stage: 'saved' })
   } catch (error) {
+    const currentOptimisticRow = optimisticGridRows.get(rowId)
+    const hasNewerOptimisticEdit = Boolean(
+      currentOptimisticRow && serializeGridWorkState(currentOptimisticRow) !== requestSnapshot,
+    )
+    if (!hasNewerOptimisticEdit) {
+      optimisticGridRows.delete(rowId)
+      const backendRow = gridRowsById.value.get(rowId) ?? null
+      if (backendRow) {
+        patchGridRowsInDataGrid([backendRow])
+        rememberGridWorkSnapshot(backendRow)
+        if (selectedLot.value?.id === rowId) {
+          selectedLot.value = backendRow
+        }
+      }
+    }
     errorMessage.value = error instanceof Error ? error.message : 'Не удалось сохранить изменения из таблицы'
+    backgroundStatus.value = `Ошибка сохранения экономики лота ${row.lotNumber || row.id}`
+    trace.end({ stage: 'error', message: error instanceof Error ? error.message : String(error) })
   }
 }
 
@@ -3661,12 +3939,12 @@ function getActiveGridCellFromSnapshot(selectionSnapshot: GridSelectionSnapshot)
 function resolveLogicalGridRowId(runtimeRowId: string | number | null) {
   if (runtimeRowId === null) return null
   const runtimeKey = String(runtimeRowId)
-  return allRows.value.find((row) => resolveClientGridRowId(row) === runtimeKey)?.id ?? null
+  return gridRowsById.value.has(runtimeKey) ? runtimeKey : null
 }
 
 function resolveCurrentRuntimeGridRowId(logicalRowId: string | null) {
   if (!logicalRowId) return null
-  const row = allRows.value.find((item) => item.id === logicalRowId)
+  const row = gridRowsById.value.get(logicalRowId)
   return row ? resolveClientGridRowId(row) : null
 }
 
@@ -3773,6 +4051,15 @@ async function restoreGridFocus(anchor: GridFocusAnchor | null) {
   if (!anchor) return
 
   await nextTick()
+  if (catalogRowModel.value) {
+    window.requestAnimationFrame(() => {
+      const gridRoot = getGridRootElement()
+      if (gridRoot) {
+        focusGridElement(gridRoot)
+      }
+    })
+    return
+  }
   window.requestAnimationFrame(() => {
     const api = gridRef.value?.getApi()
     const selectionSnapshot = remapGridSelectionSnapshot(anchor)
@@ -3878,6 +4165,7 @@ function refreshSelectedLotLiveDetails() {
 }
 
 async function openLotDetails(row: GridLotRow) {
+  const trace = startUiPerfTrace('openLotDetails', { rowId: row.id, lotId: row.lotId })
   const startedAt = performance.now()
   const logDetailPhase = (phase: string) => {
     console.info('[auction-detail]', phase, {
@@ -3923,13 +4211,16 @@ async function openLotDetails(row: GridLotRow) {
     await nextTick()
     applyDetailWorkspace(workspace, { updateGrid: false })
     logDetailPhase('render:done')
+    trace.end({ stage: 'rendered' })
   } catch (error) {
     if (isAbortLikeError(error)) {
       logDetailPhase('request:aborted')
+      trace.end({ stage: 'aborted' })
       return
     }
     detailStatus.value = 'Рабочая карточка не загрузилась, карточка из каталога доступна'
     errorMessage.value = error instanceof Error ? error.message : 'Не удалось загрузить рабочую карточку лота'
+    trace.end({ stage: 'error', message: error instanceof Error ? error.message : String(error) })
   } finally {
     window.clearTimeout(timeoutId)
     if (requestId === detailRequestId) {
@@ -3940,6 +4231,7 @@ async function openLotDetails(row: GridLotRow) {
 }
 
 function closeLotDetails() {
+  const trace = startUiPerfTrace('closeLotDetails', { rowId: selectedLot.value?.id ?? null })
   detailRequestId += 1
   detailAbortController?.abort()
   detailAbortController = null
@@ -3953,6 +4245,7 @@ function closeLotDetails() {
   detailLiveRefreshing.value = false
   detailStatus.value = ''
   void restoreDetailGridFocus()
+  trace.end({ stage: 'closed' })
 }
 
 function resetCatalogState() {
@@ -3960,6 +4253,8 @@ function resetCatalogState() {
   catalogRowModel.value = null
   clearCatalogViewportDim()
   allRows.value = []
+  gridRowsById.value.clear()
+  loadedStatusValues.value = []
   catalogTotal.value = 0
   projectedRowsForSummary.value = []
   gridSummaryReady.value = false
@@ -4320,11 +4615,13 @@ onUnmounted(() => {
         :virtualization="catalogVirtualizationOptions"
         :advanced-filter="advancedFilterOptions"
         :column-layout="columnLayoutOptions"
+        fill-handle
+        range-move
         layout-mode="fill"
         :row-selection="false"
+        :cell-menu="true"
         :chrome="{ toolbarPlacement: 'integrated', density: 'compact', toolbarGap: 0, workspaceGap: 8 }"
-        :history="{ controls: false }"
-        @cell-change="handleGridCellChange"
+        :history="{ enabled: true, shortcuts: 'grid', controls: 'external-only' }"
         @update:column-widths="persistGridColumnWidths"
         @update:state="persistGridSavedView"
       />
