@@ -18,6 +18,9 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
     && npm install -g pnpm@9.15.0
 
+# Open AI Codex 
+RUN npm i -g @openai/codex
+
 # Install uv
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
     && mv /root/.local/bin/uv /usr/local/bin/uv
