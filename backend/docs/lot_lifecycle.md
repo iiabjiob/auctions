@@ -47,3 +47,12 @@ The next step is candidate selection only: a query can list lots with `enrichmen
 There is now a dry-run execution path that loads those candidates, evaluates local evidence, and returns processing metadata. It still does not fetch external detail data or mutate lots beyond the scheduling marker that was already written at source sync time.
 
 The real execution path now routes through the existing `ensure_lot_detail_cache(...)` service. The worker does not implement its own detail fetcher; it only consumes the existing cache-refresh boundary, keeps the candidate limit small, and clears the request marker only when the refreshed local evidence is sufficient.
+
+Failed or still-incomplete attempts now set a conservative retry schedule on the lot record:
+
+- `last_enrichment_attempt_at`
+- `enrichment_attempt_count`
+- `next_enrichment_attempt_at`
+- `last_enrichment_error`
+
+Candidate selection ignores lots whose next retry is still in the future, so the worker does not hammer the same lots repeatedly.

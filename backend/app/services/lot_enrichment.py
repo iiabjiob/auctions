@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from collections.abc import Sequence
 
 from sqlalchemy import func, or_, select
@@ -51,6 +51,8 @@ TERMINAL_LOT_STATUS_MARKERS: tuple[str, ...] = (
     "отмен",
 )
 DEFAULT_ENRICHMENT_CANDIDATE_LIMIT = 50
+ENRICHMENT_BACKOFF_BASE_SECONDS = 30 * 60
+ENRICHMENT_BACKOFF_MAX_SECONDS = 24 * 60 * 60
 
 
 def evaluate_lot_enrichment_requirements(evidence: LotEvidence) -> LotEnrichmentRequirementEvaluation:
@@ -82,12 +84,20 @@ def classify_lot_enrichment(
 def build_lot_enrichment_candidate_statement(
     *,
     source_code: str | None = None,
+    current_time: datetime | None = None,
     limit: int | None = 50,
 ):
+    current_time = current_time or datetime.now(UTC)
     statement = (
         select(AuctionLotRecord)
         .join(AuctionSourceState, AuctionSourceState.code == AuctionLotRecord.source_code)
         .where(AuctionLotRecord.enrichment_requested_at.is_not(None))
+        .where(
+            or_(
+                AuctionLotRecord.next_enrichment_attempt_at.is_(None),
+                AuctionLotRecord.next_enrichment_attempt_at <= current_time,
+            )
+        )
         .where(AuctionSourceState.enabled.is_(True))
         .where(~_terminal_status_predicate())
         .order_by(AuctionLotRecord.enrichment_requested_at.asc(), AuctionLotRecord.id.asc())
@@ -103,19 +113,23 @@ async def list_lot_enrichment_candidates(
     session: AsyncSession,
     *,
     source_code: str | None = None,
+    current_time: datetime | None = None,
     limit: int = DEFAULT_ENRICHMENT_CANDIDATE_LIMIT,
 ) -> list[AuctionLotRecord]:
-    statement = build_lot_enrichment_candidate_statement(source_code=source_code, limit=limit)
+    current_time = current_time or datetime.now(UTC)
+    statement = build_lot_enrichment_candidate_statement(source_code=source_code, current_time=current_time, limit=limit)
     records = (await session.scalars(statement)).all()
-    return collect_lot_enrichment_candidates(records, limit=limit)
+    return collect_lot_enrichment_candidates(records, current_time=current_time, limit=limit)
 
 
 def collect_lot_enrichment_candidates(
     records: Sequence[AuctionLotRecord],
     *,
+    current_time: datetime | None = None,
     limit: int | None = DEFAULT_ENRICHMENT_CANDIDATE_LIMIT,
 ) -> list[AuctionLotRecord]:
-    eligible = [record for record in records if _is_enrichment_candidate(record)]
+    current_time = current_time or datetime.now(UTC)
+    eligible = [record for record in records if _is_enrichment_candidate(record, current_time=current_time)]
     eligible.sort(key=_candidate_sort_key)
     if limit is None:
         return eligible
@@ -137,9 +151,11 @@ def schedule_lot_enrichment(
             return False
         record.enrichment_requested_at = next_requested_at
         return True
-    if record.enrichment_requested_at is None:
+    if record.enrichment_requested_at is None and record.next_enrichment_attempt_at is None and not record.last_enrichment_error:
         return False
     record.enrichment_requested_at = None
+    record.next_enrichment_attempt_at = None
+    record.last_enrichment_error = None
     return True
 
 
@@ -149,7 +165,8 @@ async def dry_run_lot_enrichment_candidates(
     source_code: str | None = None,
     limit: int = DEFAULT_ENRICHMENT_CANDIDATE_LIMIT,
 ) -> LotEnrichmentDryRunResult:
-    candidates = await list_lot_enrichment_candidates(session, source_code=source_code, limit=limit)
+    now = datetime.now(UTC)
+    candidates = await list_lot_enrichment_candidates(session, source_code=source_code, current_time=now, limit=limit)
     evaluations = [classify_lot_enrichment(record) for record in candidates]
     needs_enrichment_count = sum(1 for evaluation in evaluations if evaluation.needs_enrichment)
     candidate_record_ids = [record.id for record in candidates if record.id is not None]
@@ -170,7 +187,8 @@ async def execute_lot_enrichment_candidates(
     source_code: str | None = None,
     limit: int = DEFAULT_ENRICHMENT_CANDIDATE_LIMIT,
 ) -> LotEnrichmentExecutionResult:
-    candidates = await list_lot_enrichment_candidates(session, source_code=source_code, limit=limit)
+    now = datetime.now(UTC)
+    candidates = await list_lot_enrichment_candidates(session, source_code=source_code, current_time=now, limit=limit)
     processed_count = 0
     fetched_count = 0
     cleared_count = 0
@@ -192,11 +210,21 @@ async def execute_lot_enrichment_candidates(
                 skipped_count += 1
             continue
 
+        attempt_marked = _mark_enrichment_attempt(record, now=now)
+        detail_cache_before = await session.scalar(
+            select(AuctionLotDetailCache).where(AuctionLotDetailCache.lot_record_id == record.id)
+        )
+        fetched_at_before = detail_cache_before.fetched_at if detail_cache_before is not None else None
         detail_cache = await ensure_lot_detail_cache(session, record, refresh=True)
         fetched_count += 1
         evaluation_after = evaluate_lot_enrichment_requirements(build_lot_evidence(record, detail_cache))
         if evaluation_after.needs_enrichment:
-            if not schedule_lot_enrichment(record, evaluation_after):
+            _schedule_lot_retry(
+                record,
+                now=now,
+                reason=_enrichment_failure_reason(evaluation_after, detail_cache, fetched_at_before=fetched_at_before),
+            )
+            if not attempt_marked:
                 skipped_count += 1
             still_missing_count += 1
             continue
@@ -215,8 +243,14 @@ async def execute_lot_enrichment_candidates(
     )
 
 
-def _is_enrichment_candidate(record: AuctionLotRecord) -> bool:
-    return record.enrichment_requested_at is not None and not _is_terminal_status(record.status)
+def _is_enrichment_candidate(record: AuctionLotRecord, *, current_time: datetime | None = None) -> bool:
+    current_time = current_time or datetime.now(UTC)
+    next_retry = getattr(record, "next_enrichment_attempt_at", None)
+    return (
+        record.enrichment_requested_at is not None
+        and (next_retry is None or next_retry <= current_time)
+        and not _is_terminal_status(record.status)
+    )
 
 
 def _candidate_sort_key(record: AuctionLotRecord) -> tuple[datetime, int]:
@@ -236,6 +270,39 @@ def _is_terminal_status(status: str | None) -> bool:
     if not normalized:
         return False
     return any(marker in normalized for marker in TERMINAL_LOT_STATUS_MARKERS)
+
+
+def _mark_enrichment_attempt(record: AuctionLotRecord, *, now: datetime) -> bool:
+    record.last_enrichment_attempt_at = now
+    record.enrichment_attempt_count = int(getattr(record, "enrichment_attempt_count", 0) or 0) + 1
+    return True
+
+
+def _schedule_lot_retry(record: AuctionLotRecord, *, now: datetime, reason: str | None) -> None:
+    attempt_count = int(getattr(record, "enrichment_attempt_count", 0) or 0)
+    record.last_enrichment_error = reason
+    record.next_enrichment_attempt_at = _next_enrichment_attempt_at(now, attempt_count=attempt_count)
+    record.enrichment_requested_at = record.enrichment_requested_at or now
+
+
+def _enrichment_failure_reason(
+    evaluation: LotEnrichmentRequirementEvaluation,
+    detail_cache: AuctionLotDetailCache | None,
+    *,
+    fetched_at_before: datetime | None,
+) -> str:
+    if detail_cache is None:
+        return "detail_refresh_failed"
+    if fetched_at_before is not None and detail_cache.fetched_at == fetched_at_before:
+        return "detail_refresh_failed"
+    missing = ",".join(evaluation.missing_fields)
+    return f"missing_first_pass_evidence:{missing}" if missing else "missing_first_pass_evidence"
+
+
+def _next_enrichment_attempt_at(now: datetime, *, attempt_count: int) -> datetime:
+    exponent = max(0, attempt_count - 1)
+    delay_seconds = min(ENRICHMENT_BACKOFF_BASE_SECONDS * (2**exponent), ENRICHMENT_BACKOFF_MAX_SECONDS)
+    return now + timedelta(seconds=delay_seconds)
 
 
 def _has_price_facts(evidence: LotEvidence) -> bool:
