@@ -5,7 +5,7 @@ from decimal import Decimal
 
 from app.models.auction import AuctionLotDetailCache, AuctionLotRecord
 from app.schemas.auctions import LotDatagridRow, LotFreshness, LotImage, LotRating
-from app.schemas.lot_evidence import build_lot_evidence_hash
+from app.schemas.lot_evidence import build_lot_evidence_hash, build_lot_score_input_hash
 from app.services.lot_evidence import build_lot_evidence, lot_evidence_hash
 
 
@@ -146,6 +146,39 @@ class LotEvidenceTests(unittest.TestCase):
         self.assertEqual(evidence_a.canonical_payload(), evidence_b.canonical_payload())
         self.assertEqual(build_lot_evidence_hash(evidence_a), build_lot_evidence_hash(evidence_b))
         self.assertEqual(lot_evidence_hash(record, detail_cache_a), lot_evidence_hash(record, detail_cache_b))
+
+    def test_score_input_hash_uses_evidence_and_scoring_version(self) -> None:
+        record = make_record()
+        detail_cache = make_detail_cache()
+        evidence = build_lot_evidence(record, detail_cache)
+
+        first_hash = build_lot_score_input_hash(evidence, scoring_version="deterministic-v2")
+        second_hash = build_lot_score_input_hash(evidence, scoring_version="deterministic-v2")
+        changed_version_hash = build_lot_score_input_hash(evidence, scoring_version="deterministic-v3")
+        changed_profile_hash = build_lot_score_input_hash(
+            evidence,
+            scoring_version="deterministic-v2",
+            profile_identifier="profile-1",
+        )
+
+        self.assertEqual(first_hash, second_hash)
+        self.assertNotEqual(first_hash, changed_version_hash)
+        self.assertNotEqual(first_hash, changed_profile_hash)
+
+    def test_score_input_hash_changes_when_evidence_changes(self) -> None:
+        record = make_record()
+        detail_cache = make_detail_cache()
+        evidence = build_lot_evidence(record, detail_cache)
+        changed_record = make_record()
+        changed_record.datagrid_row["current_price"] = "850 000 руб."
+        changed_record.datagrid_row["current_price_value"] = "850000"
+        changed_record.normalized_item["lot"]["current_price"] = "850 000 руб."
+        changed_evidence = build_lot_evidence(changed_record, detail_cache)
+
+        first_hash = build_lot_score_input_hash(evidence, scoring_version="deterministic-v2")
+        second_hash = build_lot_score_input_hash(changed_evidence, scoring_version="deterministic-v2")
+
+        self.assertNotEqual(first_hash, second_hash)
 
 
 if __name__ == "__main__":

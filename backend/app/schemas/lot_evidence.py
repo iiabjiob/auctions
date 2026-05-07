@@ -99,3 +99,17 @@ class LotEvidence(BaseModel):
 def build_lot_evidence_hash(evidence: LotEvidence) -> str:
     payload = evidence.canonical_payload()
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def build_lot_score_input_hash(
+    evidence: LotEvidence,
+    *,
+    scoring_version: str,
+    profile_identifier: str | None = None,
+) -> str:
+    payload = {
+        "evidence_hash": build_lot_evidence_hash(evidence),
+        "profile_identifier": profile_identifier.strip() if isinstance(profile_identifier, str) and profile_identifier.strip() else None,
+        "scoring_version": scoring_version.strip(),
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
