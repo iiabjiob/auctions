@@ -20,7 +20,9 @@ from app.services.lot_enrichment import (
     classify_lot_enrichment,
     collect_lot_enrichment_candidates,
     evaluate_lot_enrichment_requirements,
+    evaluate_lot_ttl_refresh,
     schedule_lot_enrichment,
+    schedule_lot_ttl_refresh,
 )
 
 
@@ -94,8 +96,8 @@ def make_record() -> AuctionLotRecord:
     )
 
 
-def make_detail_cache() -> AuctionLotDetailCache:
-    return AuctionLotDetailCache(
+def make_detail_cache(*, fetched_at: datetime | None = None) -> AuctionLotDetailCache:
+    cache = AuctionLotDetailCache(
         lot_record_id=1,
         content_hash="detail-hash",
         lot_detail={
@@ -119,6 +121,9 @@ def make_detail_cache() -> AuctionLotDetailCache:
             {"name": "Документы.pdf", "url": "https://example.test/doc.pdf"},
         ],
     )
+    if fetched_at is not None:
+        cache.fetched_at = fetched_at
+    return cache
 
 
 def make_list_only_record(*, missing_price: bool = False, missing_location: bool = False, missing_category: bool = False, missing_deadline: bool = False) -> AuctionLotRecord:
@@ -277,6 +282,75 @@ class LotEnrichmentRequirementTests(unittest.TestCase):
 
         self.assertFalse(evaluation.needs_enrichment)
         self.assertEqual(evaluation.missing_fields, [])
+
+    def test_ttl_refresh_schedules_for_stale_high_score_detail_cache(self) -> None:
+        record = make_record()
+        record.rating_score = 88
+        detail_cache = make_detail_cache(fetched_at=datetime(2026, 4, 29, tzinfo=UTC))
+
+        evaluation = evaluate_lot_ttl_refresh(
+            record,
+            detail_cache,
+            current_time=datetime(2026, 5, 7, tzinfo=UTC),
+        )
+
+        changed = schedule_lot_ttl_refresh(record, evaluation, requested_at=datetime(2026, 5, 7, tzinfo=UTC))
+
+        self.assertTrue(evaluation.needs_refresh)
+        self.assertEqual(evaluation.reason_category, "ttl_expired")
+        self.assertTrue(changed)
+        self.assertIsNotNone(record.enrichment_requested_at)
+
+    def test_ttl_refresh_does_not_schedule_for_fresh_detail_cache(self) -> None:
+        record = make_record()
+        record.rating_score = 88
+        detail_cache = make_detail_cache(fetched_at=datetime(2026, 5, 6, tzinfo=UTC))
+
+        evaluation = evaluate_lot_ttl_refresh(
+            record,
+            detail_cache,
+            current_time=datetime(2026, 5, 7, tzinfo=UTC),
+        )
+
+        changed = schedule_lot_ttl_refresh(record, evaluation, requested_at=datetime(2026, 5, 7, tzinfo=UTC))
+
+        self.assertFalse(evaluation.needs_refresh)
+        self.assertEqual(evaluation.reason_category, "ttl_not_expired")
+        self.assertFalse(changed)
+        self.assertIsNone(record.enrichment_requested_at)
+
+    def test_ttl_refresh_does_not_aggressively_refresh_low_priority_old_cache(self) -> None:
+        record = make_record()
+        record.rating_score = 10
+        detail_cache = make_detail_cache(fetched_at=datetime(2026, 4, 29, tzinfo=UTC))
+        detail_cache.lot_detail["raw_fields"] = [
+            {"name": "Прием заявок", "value": "с 10.05.2026 09:00 до 10.05.2026 18:00"},
+        ]
+        record.datagrid_row["application_deadline"] = "10.05.2026 18:00"
+        record.normalized_item.setdefault("auction", {})["application_deadline"] = "10.05.2026 18:00"
+
+        evaluation = evaluate_lot_ttl_refresh(
+            record,
+            detail_cache,
+            current_time=datetime(2026, 5, 7, tzinfo=UTC),
+        )
+
+        self.assertFalse(evaluation.needs_refresh)
+        self.assertEqual(evaluation.reason_category, "not_priority_enough")
+
+    def test_ttl_refresh_ignores_terminal_lots(self) -> None:
+        record = make_record()
+        record.status = "Архив"
+        detail_cache = make_detail_cache(fetched_at=datetime(2026, 4, 29, tzinfo=UTC))
+
+        evaluation = evaluate_lot_ttl_refresh(
+            record,
+            detail_cache,
+            current_time=datetime(2026, 5, 7, tzinfo=UTC),
+        )
+
+        self.assertFalse(evaluation.needs_refresh)
+        self.assertEqual(evaluation.reason_category, "terminal")
 
     def test_classify_lot_enrichment_marks_complete_list_record_locally_scorable(self) -> None:
         evaluation = classify_lot_enrichment(make_list_only_record())

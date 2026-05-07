@@ -5,12 +5,13 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from app.models.auction import AuctionLotRecord, AuctionSourceState
+from app.models.auction import AuctionLotDetailCache, AuctionLotRecord, AuctionSourceState
 from app.schemas.auctions import AuctionListItem, AuctionSummary, LotSummary, OrganizerInfo
 from app.services.auction_scoring import invalidate_lot_score
 from app.services.lot_enrichment import classify_lot_enrichment
 from app.services.lot_enrichment import schedule_lot_enrichment
-from app.services.auction_sync import _prepare_snapshot, sync_source_lots
+from app.services.lot_enrichment import schedule_lot_ttl_refresh
+from app.services.auction_sync import _prepare_snapshot, _sync_detail_if_needed, sync_source_lots
 
 
 def make_list_item(
@@ -272,6 +273,48 @@ class AuctionSyncInvalidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(classify_enrichment.call_count, 1)
         self.assertEqual(schedule_enrichment.call_count, 1)
         self.assertEqual(record.enrichment_requested_at, first_requested_at)
+
+    async def test_stale_high_value_detail_cache_schedules_ttl_refresh_via_detail_sync(self) -> None:
+        item = make_list_item()
+        snapshot = _prepare_snapshot(item, "TBankrot")
+        record = make_record(snapshot, content_hash=snapshot.content_hash)
+        record.rating_score = 90
+        detail_cache = AuctionLotDetailCache(
+            lot_record_id=record.id,
+            fetched_at=datetime(2026, 4, 29, tzinfo=UTC),
+            content_hash="detail-hash",
+            lot_detail={"lot": {}},
+            auction_detail={"auction": {}},
+            documents=[],
+        )
+        runtime_config = SimpleNamespace(
+            category_keywords={},
+            exclusion_keywords=(),
+            legal_risk_rules=SimpleNamespace(),
+            owner_profile=SimpleNamespace(),
+            dimension_weights=SimpleNamespace(),
+        )
+
+        with (
+            patch("app.services.auction_sync.settings.auction_detail_sync_enabled", True),
+            patch("app.services.auction_sync.settings.auction_detail_sync_limit", 10),
+            patch("app.services.auction_sync.ensure_lot_detail_cache", AsyncMock(return_value=detail_cache)),
+            patch("app.services.auction_sync.ensure_work_item", AsyncMock(return_value=SimpleNamespace())),
+            patch("app.services.auction_sync.recalculate_record_rating"),
+            patch("app.services.auction_sync.schedule_lot_ttl_refresh", wraps=schedule_lot_ttl_refresh) as schedule_ttl,
+        ):
+            await _sync_detail_if_needed(
+                AsyncMock(),
+                record,
+                detail_sync_count=0,
+                refresh=False,
+                observed_at=datetime(2026, 5, 7, tzinfo=UTC),
+                runtime_config=runtime_config,
+            )
+
+        schedule_ttl.assert_called_once()
+        self.assertIsNotNone(record.enrichment_requested_at)
+
 
 
 if __name__ == "__main__":

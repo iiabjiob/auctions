@@ -44,6 +44,14 @@ class LotEnrichmentExecutionResult(BaseModel):
     candidate_record_ids: list[int] = Field(default_factory=list)
 
 
+class LotTtlRefreshEvaluation(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    needs_refresh: bool
+    reason_category: str = "fresh_enough"
+    stale_for_hours: int | None = None
+
+
 TERMINAL_LOT_STATUS_MARKERS: tuple[str, ...] = (
     "архив",
     "archived",
@@ -62,6 +70,9 @@ DEFAULT_ENRICHMENT_CLAIM_SECONDS = 15 * 60
 ENRICHMENT_BACKOFF_BASE_SECONDS = 30 * 60
 ENRICHMENT_BACKOFF_MAX_SECONDS = 24 * 60 * 60
 ENRICHMENT_WORKER_ID = "auction-enrichment-worker"
+TTL_REFRESH_HOURS = 7 * 24
+TTL_REFRESH_HIGH_SCORE_THRESHOLD = 75
+TTL_REFRESH_NEAR_DEADLINE_HOURS = 48
 
 
 def evaluate_lot_enrichment_requirements(evidence: LotEvidence) -> LotEnrichmentRequirementEvaluation:
@@ -88,6 +99,62 @@ def classify_lot_enrichment(
     detail_cache: AuctionLotDetailCache | None = None,
 ) -> LotEnrichmentRequirementEvaluation:
     return evaluate_lot_enrichment_requirements(build_lot_evidence(record, detail_cache))
+
+
+def evaluate_lot_ttl_refresh(
+    record: AuctionLotRecord,
+    detail_cache: AuctionLotDetailCache | None = None,
+    *,
+    current_time: datetime | None = None,
+    ttl_hours: int = TTL_REFRESH_HOURS,
+    high_score_threshold: int = TTL_REFRESH_HIGH_SCORE_THRESHOLD,
+    near_deadline_hours: int = TTL_REFRESH_NEAR_DEADLINE_HOURS,
+) -> LotTtlRefreshEvaluation:
+    current_time = current_time or datetime.now(UTC)
+    if detail_cache is None or detail_cache.fetched_at is None:
+        return LotTtlRefreshEvaluation(needs_refresh=False, reason_category="no_detail_cache")
+    if _is_terminal_status(record.status):
+        return LotTtlRefreshEvaluation(needs_refresh=False, reason_category="terminal")
+
+    evidence = build_lot_evidence(record, detail_cache)
+    hours_to_deadline = evidence.deadlines.hours_to_deadline
+    stale_for_hours = int((current_time - detail_cache.fetched_at).total_seconds() // 3600)
+    if stale_for_hours < ttl_hours:
+        return LotTtlRefreshEvaluation(
+            needs_refresh=False,
+            reason_category="ttl_not_expired",
+            stale_for_hours=stale_for_hours,
+        )
+
+    high_value = int(getattr(record, "rating_score", 0) or 0) >= high_score_threshold
+    time_sensitive = hours_to_deadline is not None and hours_to_deadline <= near_deadline_hours
+    if not high_value and not time_sensitive:
+        return LotTtlRefreshEvaluation(
+            needs_refresh=False,
+            reason_category="not_priority_enough",
+            stale_for_hours=stale_for_hours,
+        )
+
+    return LotTtlRefreshEvaluation(
+        needs_refresh=True,
+        reason_category="ttl_expired",
+        stale_for_hours=stale_for_hours,
+    )
+
+
+def schedule_lot_ttl_refresh(
+    record: AuctionLotRecord,
+    evaluation: LotTtlRefreshEvaluation,
+    *,
+    requested_at: datetime | None = None,
+    force: bool = False,
+) -> bool:
+    if not evaluation.needs_refresh:
+        return False
+    if record.enrichment_requested_at is not None and not force:
+        return False
+    record.enrichment_requested_at = requested_at or datetime.now(UTC)
+    return True
 
 
 def build_lot_enrichment_candidate_statement(

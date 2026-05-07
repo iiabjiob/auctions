@@ -57,6 +57,15 @@ There is now a dry-run execution path that loads those candidates, evaluates loc
 
 The real execution path now routes through the existing `ensure_lot_detail_cache(...)` service. The worker does not implement its own detail fetcher; it only consumes the existing cache-refresh boundary, keeps the candidate limit small, and clears the request marker only when the refreshed local evidence is sufficient.
 
+There is also a conservative TTL refresh policy for active, high-value lots. If a detail cache is older than the configured TTL and the lot still looks important locally, source sync can mark it for enrichment again using the same `enrichment_requested_at` marker. The policy is intentionally narrow:
+
+- only non-terminal lots
+- only when the cached detail is stale
+- only when the lot is high-scoring or near its deadline
+- no aggressive refresh of low-priority lots
+
+This is still scheduling only. The worker continues to use the same existing detail-cache service when it eventually refreshes the lot.
+
 Failed or still-incomplete attempts now set a conservative retry schedule on the lot record:
 
 - `last_enrichment_attempt_at`

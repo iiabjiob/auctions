@@ -24,7 +24,12 @@ from app.services.auction_analysis_config import auction_analysis_config_service
 from app.services.auction_catalog import build_datagrid_row
 from app.services.auction_grid_state import bump_auction_lot_dataset_version
 from app.services.auction_sources import get_source_provider
-from app.services.lot_enrichment import classify_lot_enrichment, schedule_lot_enrichment
+from app.services.lot_enrichment import (
+    classify_lot_enrichment,
+    evaluate_lot_ttl_refresh,
+    schedule_lot_enrichment,
+    schedule_lot_ttl_refresh,
+)
 from app.services.auction_scoring import recalculate_record_rating
 from app.services.auction_scoring_invalidation import SOURCE_CONTENT_CHANGED
 from app.services.auction_scoring import invalidate_lot_score
@@ -323,6 +328,8 @@ async def _sync_detail_if_needed(
         owner_profile=runtime_config.owner_profile,
         dimension_weights=runtime_config.dimension_weights,
     )
+    ttl_evaluation = evaluate_lot_ttl_refresh(record, detail_cache, current_time=observed_at)
+    schedule_lot_ttl_refresh(record, ttl_evaluation, requested_at=observed_at)
     return detail_sync_count + 1
 
 
