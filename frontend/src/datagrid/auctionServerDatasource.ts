@@ -1,0 +1,198 @@
+import type {
+  DataGridColumnHistogram,
+  DataGridDataSource,
+  DataGridDataSourceColumnHistogramRequest,
+  DataGridDataSourcePullRequest,
+  DataGridDataSourcePullResult,
+  DataGridDataSourceRowEntry,
+  DataGridFilterSnapshot,
+  DataGridRowId,
+  DataGridSortState,
+} from '@affino/datagrid-vue'
+
+export type AuctionServerGridFilters = {
+  period: string
+  source: string | null
+  q: string | null
+  status: string | null
+  analysis_color: string | null
+  min_price: number | null
+  max_price: number | null
+  only_new: boolean
+  shortlist: boolean
+  min_rating: number | null
+}
+
+export type AuctionServerPullWindowRequest = {
+  start: number
+  end: number
+  signal?: AbortSignal
+  sortModel?: readonly DataGridSortState[]
+  filterModel?: DataGridFilterSnapshot | null
+  reason?: string
+  priority?: string
+}
+
+export type AuctionServerPullWindowResult<TRow> = {
+  rows: TRow[]
+  entries: DataGridDataSourceRowEntry<TRow>[]
+  total: number
+  datasetVersion: number
+  start: number
+  end: number
+}
+
+export type AuctionServerDatasource<TApiRow, TRow> = DataGridDataSource<TRow> & {
+  pullWindow(request: AuctionServerPullWindowRequest): Promise<AuctionServerPullWindowResult<TRow>>
+}
+
+type AuctionServerPullResponse<TApiRow> = {
+  rows: Array<{
+    id: string
+    index: number
+    row: TApiRow
+  }>
+  total: number
+  datasetVersion: number
+}
+
+type AuctionServerHistogramResponse = {
+  columnId?: string
+  entries: DataGridColumnHistogram
+}
+
+type PostJson = <TResponse>(path: string, payload: unknown, signal?: AbortSignal) => Promise<TResponse>
+
+export type CreateAuctionServerDatasourceOptions<TApiRow, TRow> = {
+  postJson: PostJson
+  getFilters: () => AuctionServerGridFilters
+  hasFilterModel: (filterModel: DataGridFilterSnapshot | null | undefined) => boolean
+  mapRow: (row: TApiRow, rowRevision: number) => TRow
+  allocateRowRevision: () => number
+  onPullCompleted?: (result: {
+    rows: TRow[]
+    total: number
+    datasetVersion: number
+    rowRevision: number
+  }) => void
+  debug?: boolean
+}
+
+export function createAuctionServerDatasource<TApiRow, TRow>(
+  options: CreateAuctionServerDatasourceOptions<TApiRow, TRow>,
+): AuctionServerDatasource<TApiRow, TRow> {
+  async function pullWindow(request: AuctionServerPullWindowRequest): Promise<AuctionServerPullWindowResult<TRow>> {
+    if (request.signal?.aborted) {
+      throw new DOMException('Request aborted', 'AbortError')
+    }
+
+    const start = Math.max(0, Math.trunc(request.start))
+    const inclusiveEnd = Math.max(start, Math.trunc(request.end))
+    const endExclusive = inclusiveEnd + 1
+    const filterModel = normalizeFilterModel(request.filterModel, options.hasFilterModel)
+    const sortModel = request.sortModel ?? []
+
+    if (options.debug) {
+      console.debug('[auction-grid] pull', {
+        startRow: start,
+        endRow: endExclusive,
+        reason: request.reason,
+        priority: request.priority,
+        sortModel,
+        hasFilterModel: filterModel !== null,
+      })
+    }
+
+    const data = await options.postJson<AuctionServerPullResponse<TApiRow>>(
+      '/api/auction-lots/pull',
+      {
+        ...options.getFilters(),
+        startRow: start,
+        endRow: endExclusive,
+        sortModel,
+        filterModel,
+      },
+      request.signal,
+    )
+
+    if (request.signal?.aborted) {
+      throw new DOMException('Request aborted', 'AbortError')
+    }
+
+    if (options.debug) {
+      console.debug('[auction-grid] datasetVersion', data.datasetVersion)
+    }
+
+    const rowRevision = options.allocateRowRevision()
+    const rows = data.rows.map((entry) => options.mapRow(entry.row, rowRevision))
+    const entries = rows.map((row, index) => ({
+      index: start + index,
+      row,
+      rowId: data.rows[index]?.id as DataGridRowId,
+    }))
+
+    options.onPullCompleted?.({
+      rows,
+      total: data.total,
+      datasetVersion: data.datasetVersion,
+      rowRevision,
+    })
+
+    return {
+      rows,
+      entries,
+      total: data.total,
+      datasetVersion: data.datasetVersion,
+      start,
+      end: inclusiveEnd,
+    }
+  }
+
+  async function pull(request: DataGridDataSourcePullRequest): Promise<DataGridDataSourcePullResult<TRow>> {
+    const result = await pullWindow({
+      start: request.range.start,
+      end: request.range.end,
+      signal: request.signal,
+      sortModel: request.sortModel,
+      filterModel: request.filterModel,
+      reason: request.reason,
+      priority: request.priority,
+    })
+    return {
+      rows: result.entries,
+      total: result.total,
+      datasetVersion: result.datasetVersion,
+    }
+  }
+
+  async function getColumnHistogram(request: DataGridDataSourceColumnHistogramRequest): Promise<DataGridColumnHistogram> {
+    const response = await options.postJson<AuctionServerHistogramResponse | DataGridColumnHistogram>(
+      '/api/auction-lots/histogram',
+      {
+        ...options.getFilters(),
+        columnId: request.columnId,
+        options: request.options as Record<string, unknown>,
+        sortModel: request.sortModel ?? [],
+        filterModel: normalizeFilterModel(request.filterModel, options.hasFilterModel),
+      },
+      request.signal,
+    )
+    if (Array.isArray(response)) {
+      return response
+    }
+    return (response as AuctionServerHistogramResponse).entries
+  }
+
+  return {
+    pull,
+    pullWindow,
+    getColumnHistogram,
+  }
+}
+
+function normalizeFilterModel(
+  filterModel: DataGridFilterSnapshot | null | undefined,
+  hasFilterModel: (filterModel: DataGridFilterSnapshot | null | undefined) => boolean,
+) {
+  return hasFilterModel(filterModel) ? filterModel ?? null : null
+}

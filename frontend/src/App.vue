@@ -26,6 +26,11 @@ import AnalysisSignalTooltip from './components/AnalysisSignalTooltip.vue'
 import AffinoCombobox from './components/AffinoCombobox.vue'
 import LotNameCell from './components/LotNameCell.vue'
 import RatingInfoTooltip from './components/RatingInfoTooltip.vue'
+import {
+  createAuctionServerDatasource,
+  type AuctionServerDatasource,
+  type AuctionServerGridFilters,
+} from './datagrid/auctionServerDatasource'
 import { useAuthStore } from './stores/auth'
 import { workspaceDataGridTheme } from './theme/dataGridTheme'
 
@@ -527,6 +532,7 @@ type CatalogWorkspaceBatchCommitResponse = {
 type CatalogDataSource = DataGridDataSource<GridLotRow> & {
   commitEdits?(request: CatalogCommitEditsRequest): Promise<CatalogCommitEditsResult>
 }
+type CatalogAuctionServerDataSource = AuctionServerDatasource<ApiLotRow, GridLotRow>
 
 type CatalogRowModel = DataSourceBackedRowModel<GridLotRow> & {
   patchRows?: (updates: readonly { rowId: string | number; data: Partial<GridLotRow> }[]) => void | Promise<void>
@@ -659,6 +665,7 @@ const DETAIL_PANE_WIDTH_STORAGE_KEY = 'auction-detail-pane-width'
 const GRID_SAVED_VIEW_STORAGE_KEY = 'auction-grid-saved-view-v2'
 const GRID_COLUMN_WIDTHS_STORAGE_KEY = 'auction-grid-column-widths-v1'
 const SERVER_FILTERS_STORAGE_KEY = 'auction-server-filters'
+const USE_AUCTION_SERVER_GRID = import.meta.env.VITE_AUCTION_SERVER_GRID !== 'false'
 const CATALOG_TOTAL_ROW_LIMIT = 1_000_000
 const CATALOG_SERVER_FETCH_LIMIT = 10_000
 const CATALOG_ROW_CACHE_LIMIT = 20_000
@@ -738,6 +745,7 @@ let catalogViewportDimVisibleAt = 0
 let catalogNextViewportPullShouldDim = false
 let keepCatalogEditErrorOnNextPull = false
 const catalogFetchRequests = new Map<string, Promise<LotsResponse>>()
+let sourcesLoadRequest: Promise<void> | null = null
 let gridSurfaceResizeObserver: ResizeObserver | null = null
 
 const DEFAULT_SERVER_FILTERS: ServerQuickFiltersState = {
@@ -2505,6 +2513,72 @@ async function fetchCatalogJson(url: string, signal?: AbortSignal) {
   }
 }
 
+async function ensureAuctionSourcesLoaded() {
+  if (sources.value.length > 0) return
+  if (sourcesLoadRequest) {
+    await sourcesLoadRequest
+    return
+  }
+
+  sourcesLoadRequest = fetchJson<ApiSource[]>('/api/v1/auctions/sources')
+    .then((nextSources) => {
+      sources.value = nextSources
+    })
+    .finally(() => {
+      sourcesLoadRequest = null
+    })
+  await sourcesLoadRequest
+}
+
+function buildAuctionServerGridFilters(): AuctionServerGridFilters {
+  const minPrice = parseFilterNumber(filters.minPrice)
+  const maxPrice = parseFilterNumber(filters.maxPrice)
+  return {
+    period: filters.period,
+    source: filters.source || null,
+    q: filters.query.trim() || null,
+    status: filters.status || null,
+    analysis_color: filters.analysisColor || null,
+    min_price: minPrice,
+    max_price: maxPrice,
+    only_new: filters.onlyNew,
+    shortlist: filters.shortlist,
+    min_rating: filters.minRating > 0 ? filters.minRating : null,
+  }
+}
+
+async function postAuctionServerGridJson<TResponse>(path: string, payload: unknown, signal?: AbortSignal) {
+  return fetchJson<TResponse>(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    signal,
+  })
+}
+
+function createAuctionServerCatalogDataSource(): CatalogAuctionServerDataSource {
+  return createAuctionServerDatasource<ApiLotRow, GridLotRow>({
+    postJson: postAuctionServerGridJson,
+    getFilters: buildAuctionServerGridFilters,
+    hasFilterModel: hasGridFilterModel,
+    mapRow: mapApiRow,
+    allocateRowRevision() {
+      const nextRevision = gridRowRevision.value + 1
+      gridRowRevision.value = nextRevision
+      return nextRevision
+    },
+    onPullCompleted({ rows, total }) {
+      catalogTotal.value = total
+      rememberLoadedRows(rows)
+      lastLoadedAt.value = new Date().toLocaleString('ru-RU')
+      void ensureAuctionSourcesLoaded().catch((error) => {
+        console.warn('[auction-grid] failed to load source options', error)
+      })
+    },
+    debug: true,
+  })
+}
+
 function rememberLoadedRows(rows: GridLotRow[]) {
   const byId = gridRowsById.value
   for (const row of rows) {
@@ -2545,7 +2619,7 @@ function startUiPerfTrace(name: string, context: Record<string, unknown> = {}) {
   }
 }
 
-async function requestLotsWindow(request: {
+async function requestLegacyLotsWindow(request: {
   start: number
   end: number
   signal?: AbortSignal
@@ -2586,6 +2660,25 @@ async function requestLotsWindow(request: {
   }
 }
 
+async function requestAuctionServerLotsWindow(request: {
+  start: number
+  end: number
+  signal?: AbortSignal
+  sortModel?: readonly DataGridSortState[]
+  filterModel?: DataGridFilterSnapshot | null
+}) {
+  const adapter = createAuctionServerCatalogDataSource()
+  return adapter.pullWindow({
+    start: Math.max(0, request.start),
+    end: Math.max(Math.max(0, request.start), request.end),
+    signal: request.signal,
+    sortModel: request.sortModel,
+    filterModel: request.filterModel,
+    reason: 'manual-window',
+    priority: 'normal',
+  })
+}
+
 async function fetchLotsRange(request: {
   start: number
   end: number
@@ -2596,7 +2689,16 @@ async function fetchLotsRange(request: {
   if (request.signal?.aborted) {
     throw new DOMException('Request aborted', 'AbortError')
   }
-  return requestLotsWindow({
+  if (USE_AUCTION_SERVER_GRID) {
+    return requestAuctionServerLotsWindow({
+      start: Math.max(0, request.start),
+      end: Math.max(Math.max(0, request.start), request.end),
+      signal: request.signal,
+      sortModel: request.sortModel,
+      filterModel: request.filterModel,
+    })
+  }
+  return requestLegacyLotsWindow({
     start: Math.max(0, request.start),
     end: Math.max(Math.max(0, request.start), request.end),
     signal: request.signal,
@@ -2711,6 +2813,7 @@ function shouldDimCatalogPull(reason: string) {
 }
 
 function createCatalogDataSource(): CatalogDataSource {
+  const auctionServerDataSource = USE_AUCTION_SERVER_GRID ? createAuctionServerCatalogDataSource() : null
   return {
     subscribe(listener) {
       catalogDataSourceListeners.add(listener)
@@ -2735,6 +2838,10 @@ function createCatalogDataSource(): CatalogDataSource {
         }
       }
       try {
+        if (auctionServerDataSource) {
+          return await auctionServerDataSource.pull(request)
+        }
+
         const result = await fetchLotsRange({
           start: request.range.start,
           end: request.range.end,
@@ -2766,6 +2873,9 @@ function createCatalogDataSource(): CatalogDataSource {
       }
     },
     getColumnHistogram(request) {
+      if (auctionServerDataSource) {
+        return auctionServerDataSource.getColumnHistogram?.(request) ?? Promise.resolve([])
+      }
       return fetchColumnHistogram(request)
     },
     async commitEdits(request) {
@@ -2880,6 +2990,11 @@ function resetCatalogRowModel() {
 
 async function loadLots() {
   if (!isAuthenticated.value) return
+  if (USE_AUCTION_SERVER_GRID) {
+    void ensureAuctionSourcesLoaded().catch((error) => {
+      console.warn('[auction-grid] failed to load source options', error)
+    })
+  }
   resetCatalogRowModel()
   savedGridWorkSnapshots.clear()
   await ensureGridSavedViewRestored()
