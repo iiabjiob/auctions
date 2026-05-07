@@ -22,7 +22,12 @@ from app.services.auction_datagrid_payload import validate_datagrid_row_payload
 from app.services.auction_grid_state import AUCTION_LOTS_TABLE_ID, DEFAULT_GRID_WORKSPACE_ID, auction_lot_grid_row_id
 from app.services.auction_scoring import recalculate_record_rating, sync_record_from_detail_cache
 from app.services.auction_workspace import ensure_work_item
-from app.services.grid_state import bump_dataset_version, get_or_create_grid_revision, record_grid_operation
+from app.services.grid_state import (
+    bump_dataset_version,
+    clear_redo_grid_operations,
+    get_or_create_grid_revision,
+    record_grid_operation,
+)
 
 
 class AuctionGridEditConflictError(Exception):
@@ -168,6 +173,13 @@ async def commit_auction_lot_grid_edits(
             )
         )
 
+    await clear_redo_grid_operations(
+        session,
+        workspace_id=workspace_id,
+        table_id=AUCTION_LOTS_TABLE_ID,
+        user_id=user_id,
+        session_id=session_id,
+    )
     await record_grid_operation(
         session,
         workspace_id=workspace_id,

@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 from fastapi import HTTPException
 
@@ -116,6 +116,7 @@ class AuctionGridEditsTests(unittest.IsolatedAsyncioTestCase):
             ),
             patch("app.services.auction_grid_edits.recalculate_record_rating", side_effect=apply_recalculated_row),
             patch("app.services.auction_grid_edits.bump_dataset_version", AsyncMock(return_value=6)),
+            patch("app.services.auction_grid_edits.clear_redo_grid_operations", AsyncMock(return_value=1)),
             patch("app.services.auction_grid_edits.record_grid_operation", record_operation),
         ):
             response = await commit_auction_lot_grid_edits(session, request, user_id="user-1", session_id="session-1")
@@ -139,6 +140,46 @@ class AuctionGridEditsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(operation_kwargs["user_id"], "user-1")
         self.assertEqual(operation_kwargs["session_id"], "session-1")
         self.assertEqual(operation_kwargs["undo_payload"]["edits"][0]["value"], "10")
+
+    async def test_commit_edits_clears_redo_branch_for_scope(self) -> None:
+        record = make_record()
+        work_item = AuctionLotWorkItem(lot_record_id=record.id, analogs=[])
+        request = AuctionLotsGridEditRequest.model_validate(
+            {"baseVersion": 5, "edits": [{"rowId": "tbankrot:auction-1:lot-1", "columnId": "marketValue", "value": 1}]}
+        )
+        clear_redo = AsyncMock(return_value=2)
+
+        with (
+            patch(
+                "app.services.auction_grid_edits.get_or_create_grid_revision",
+                AsyncMock(return_value=SimpleNamespace(dataset_version=5)),
+            ),
+            patch("app.services.auction_grid_edits._find_record_by_row_id", AsyncMock(return_value=record)),
+            patch("app.services.auction_grid_edits.ensure_work_item", AsyncMock(return_value=work_item)),
+            patch(
+                "app.services.auction_grid_edits.auction_analysis_config_service.get_runtime_config",
+                AsyncMock(return_value=runtime_config()),
+            ),
+            patch("app.services.auction_grid_edits.recalculate_record_rating", side_effect=apply_recalculated_row),
+            patch("app.services.auction_grid_edits.bump_dataset_version", AsyncMock(return_value=6)),
+            patch("app.services.auction_grid_edits.clear_redo_grid_operations", clear_redo),
+            patch("app.services.auction_grid_edits.record_grid_operation", AsyncMock()),
+        ):
+            await commit_auction_lot_grid_edits(
+                FakeSession(),
+                request,
+                workspace_id="default",
+                user_id="user-1",
+                session_id="session-1",
+            )
+
+        clear_redo.assert_awaited_once_with(
+            ANY,
+            workspace_id="default",
+            table_id="auction-lots",
+            user_id="user-1",
+            session_id="session-1",
+        )
 
     async def test_conflict_stops_before_loading_rows(self) -> None:
         request = AuctionLotsGridEditRequest.model_validate(

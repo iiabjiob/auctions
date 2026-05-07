@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -111,3 +111,29 @@ async def record_grid_operation(
     session.add(operation)
     await session.flush()
     return operation
+
+
+async def clear_redo_grid_operations(
+    session: AsyncSession,
+    *,
+    workspace_id: str,
+    table_id: str,
+    user_id: str | None = None,
+    session_id: str | None = None,
+) -> int:
+    statement = delete(GridOperationModel).where(
+        GridOperationModel.workspace_id == _require_scope_value(workspace_id, "workspace_id"),
+        GridOperationModel.table_id == _require_scope_value(table_id, "table_id"),
+        GridOperationModel.undone_at.is_not(None),
+    )
+    if user_id is None:
+        statement = statement.where(GridOperationModel.user_id.is_(None))
+    else:
+        statement = statement.where(GridOperationModel.user_id == user_id)
+    if session_id is None:
+        statement = statement.where(GridOperationModel.session_id.is_(None))
+    else:
+        statement = statement.where(GridOperationModel.session_id == session_id)
+
+    result = await session.execute(statement)
+    return int(result.rowcount or 0)
