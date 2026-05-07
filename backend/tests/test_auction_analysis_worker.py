@@ -21,8 +21,9 @@ class FakeScalarResult:
 
 
 class FakeAnalysisSession:
-    def __init__(self, *, scalar_batches: list[list[object]] | None = None) -> None:
+    def __init__(self, *, scalar_batches: list[list[object]] | None = None, scalar_result: object | None = None) -> None:
         self.scalar_batches = list(scalar_batches or [])
+        self.scalar_result = scalar_result
         self.scalars_calls: list[object] = []
         self.scalar_calls: list[object] = []
         self.commit_count = 0
@@ -35,7 +36,7 @@ class FakeAnalysisSession:
 
     async def scalar(self, statement):  # noqa: ANN001
         self.scalar_calls.append(statement)
-        return None
+        return self.scalar_result
 
     async def commit(self) -> None:
         self.commit_count += 1
@@ -81,7 +82,16 @@ def make_record() -> AuctionLotRecord:
         initial_price="1 000 000 руб.",
         content_hash="hash",
         datagrid_row=row.model_dump(mode="json"),
-        normalized_item={"auction": {"application_deadline": "05.05.2026 18:00"}, "lot": {"category": "Спецтехника"}},
+        normalized_item={
+            "auction": {"application_deadline": "05.05.2026 18:00"},
+            "lot": {
+                "category": "Спецтехника",
+                "region": "Московская область",
+                "city": "Химки",
+                "address": "ул. Ленина, 1",
+                "coordinates": "55.89, 37.45",
+            },
+        },
     )
 
 
@@ -125,7 +135,7 @@ class AuctionAnalysisWorkerProfileTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_analyze_all_lots_uses_active_profile_when_enabled(self) -> None:
         record = make_record()
-        session_one = FakeAnalysisSession(scalar_batches=[[record.id]])
+        session_one = FakeAnalysisSession(scalar_batches=[[record.id]], scalar_result=None)
         session_two = FakeAnalysisSession(scalar_batches=[[record], [], []])
         runtime_config = make_runtime_config()
         active_profile = LotScoringProfile(profile_identifier="profile-1", target_regions=["Москва"])
@@ -161,7 +171,7 @@ class AuctionAnalysisWorkerProfileTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_analyze_all_lots_falls_back_when_active_profile_missing(self) -> None:
         record = make_record()
-        session_one = FakeAnalysisSession(scalar_batches=[[record.id]])
+        session_one = FakeAnalysisSession(scalar_batches=[[record.id]], scalar_result=None)
         session_two = FakeAnalysisSession(scalar_batches=[[record], [], []])
         runtime_config = make_runtime_config()
         captured_hash_kwargs: list[dict[str, object]] = []
@@ -190,6 +200,76 @@ class AuctionAnalysisWorkerProfileTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fake_recalculate.call_count, 1)
         self.assertNotIn("scoring_profile", fake_recalculate.call_args.kwargs)
         self.assertNotIn("profile_hash", fake_recalculate.call_args.kwargs)
+
+    async def test_analyze_all_lots_applies_real_active_persisted_profile_row(self) -> None:
+        record = make_record()
+        detail_cache = None
+        work_item = None
+        session_one = FakeAnalysisSession(scalar_batches=[[record.id]])
+        session_two = FakeAnalysisSession(scalar_batches=[[record], [], []])
+        runtime_config = make_runtime_config()
+        profile_store_session = SimpleNamespace(
+            added=[],
+            commits=0,
+            refreshed=[],
+        )
+
+        async def add_profile(obj) -> None:  # noqa: ANN001
+            profile_store_session.added.append(obj)
+
+        async def commit_profile() -> None:
+            profile_store_session.commits += 1
+
+        async def refresh_profile(obj) -> None:  # noqa: ANN001
+            profile_store_session.refreshed.append(obj)
+
+        profile_store_session.add = lambda obj: profile_store_session.added.append(obj)
+        profile_store_session.commit = commit_profile
+        profile_store_session.refresh = refresh_profile
+
+        active_profile_row = await auction_analysis_worker.scoring_profile_store_service.save_profile(
+            profile_store_session,
+            "Active scoring profile",
+            {
+                "profile_identifier": "active-profile",
+                "target_regions": ["Московская область"],
+                "target_categories": ["Спецтехника"],
+                "strategy": "balanced",
+            },
+            is_active=True,
+        )
+        self.assertEqual(profile_store_session.added[0], active_profile_row)
+        self.assertEqual(profile_store_session.commits, 1)
+        self.assertEqual(len(profile_store_session.refreshed), 1)
+        session_one.scalar_result = active_profile_row
+        normalized_active_profile = LotScoringProfile.model_validate(active_profile_row.profile_payload)
+        baseline_hash = auction_analysis_worker.build_record_score_input_hash(record, detail_cache, work_item)
+        real_recalculate = auction_analysis_worker.recalculate_record_rating
+        captured_profile_kwargs: dict[str, object] = {}
+
+        def capture_recalculate(*args, **kwargs):  # noqa: ANN001
+            captured_profile_kwargs["scoring_profile"] = kwargs.get("scoring_profile")
+            captured_profile_kwargs["profile_hash"] = kwargs.get("profile_hash")
+            return real_recalculate(*args, **kwargs)
+
+        with (
+            patch.object(auction_analysis_worker.settings, "auction_analysis_use_active_scoring_profile", True),
+            patch("app.worker.auction_analysis_worker.AsyncSessionLocal", side_effect=[FakeSessionContext(session_one), FakeSessionContext(session_two)]),
+            patch("app.worker.auction_analysis_worker.auction_analysis_config_service.get_runtime_config", AsyncMock(return_value=runtime_config)),
+            patch("app.worker.auction_analysis_worker.record_score_is_current", return_value=False),
+            patch("app.worker.auction_analysis_worker.recalculate_record_rating", side_effect=capture_recalculate),
+            patch("app.worker.auction_analysis_worker.bump_auction_lot_dataset_version", AsyncMock()) as bump_dataset_version,
+        ):
+            result = await auction_analysis_worker.analyze_all_lots(limit=1)
+
+        self.assertEqual(result["processed"], 1)
+        self.assertEqual(len(session_one.scalar_calls), 1)
+        self.assertEqual(session_one.scalar_result, active_profile_row)
+        self.assertEqual(captured_profile_kwargs["scoring_profile"], normalized_active_profile)
+        self.assertEqual(captured_profile_kwargs["profile_hash"], active_profile_row.profile_hash)
+        self.assertEqual(record.score_breakdown["dimensions"]["profile_fit"]["score"], 4)
+        self.assertNotEqual(record.score_input_hash, baseline_hash)
+        bump_dataset_version.assert_awaited()
 
 
 if __name__ == "__main__":
