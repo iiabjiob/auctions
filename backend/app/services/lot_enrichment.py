@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from collections.abc import Sequence
 
+from sqlalchemy import func, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models.auction import AuctionLotDetailCache, AuctionLotRecord
+from app.models.auction import AuctionLotDetailCache, AuctionLotRecord, AuctionSourceState
 from app.schemas.lot_evidence import LotEvidence
 from app.services.lot_evidence import build_lot_evidence
 
@@ -15,6 +18,14 @@ class LotEnrichmentRequirementEvaluation(BaseModel):
     needs_enrichment: bool
     missing_fields: list[str] = Field(default_factory=list)
     reason_category: str = "ready_for_scoring"
+
+
+TERMINAL_LOT_STATUS_MARKERS: tuple[str, ...] = (
+    "архив",
+    "archived",
+    "заверш",
+    "отмен",
+)
 
 
 def evaluate_lot_enrichment_requirements(evidence: LotEvidence) -> LotEnrichmentRequirementEvaluation:
@@ -43,6 +54,51 @@ def classify_lot_enrichment(
     return evaluate_lot_enrichment_requirements(build_lot_evidence(record, detail_cache))
 
 
+def build_lot_enrichment_candidate_statement(
+    *,
+    source_code: str | None = None,
+    limit: int | None = 50,
+):
+    statement = (
+        select(AuctionLotRecord)
+        .join(AuctionSourceState, AuctionSourceState.code == AuctionLotRecord.source_code)
+        .where(AuctionLotRecord.enrichment_requested_at.is_not(None))
+        .where(AuctionSourceState.enabled.is_(True))
+        .where(~_terminal_status_predicate())
+        .order_by(AuctionLotRecord.enrichment_requested_at.asc(), AuctionLotRecord.id.asc())
+    )
+    if source_code:
+        statement = statement.where(AuctionLotRecord.source_code == source_code)
+    if limit is not None:
+        statement = statement.limit(max(0, limit))
+    return statement
+
+
+async def list_lot_enrichment_candidates(
+    session: AsyncSession,
+    *,
+    source_code: str | None = None,
+    limit: int = 50,
+) -> list[AuctionLotRecord]:
+    statement = build_lot_enrichment_candidate_statement(source_code=source_code, limit=limit)
+    records = (await session.scalars(statement)).all()
+    return collect_lot_enrichment_candidates(records, limit=limit)
+
+
+def collect_lot_enrichment_candidates(
+    records: Sequence[AuctionLotRecord],
+    *,
+    limit: int | None = 50,
+) -> list[AuctionLotRecord]:
+    eligible = [record for record in records if _is_enrichment_candidate(record)]
+    eligible.sort(key=_candidate_sort_key)
+    if limit is None:
+        return eligible
+    if limit <= 0:
+        return []
+    return eligible[:limit]
+
+
 def schedule_lot_enrichment(
     record: AuctionLotRecord,
     evaluation: LotEnrichmentRequirementEvaluation,
@@ -60,6 +116,29 @@ def schedule_lot_enrichment(
         return False
     record.enrichment_requested_at = None
     return True
+
+
+def _is_enrichment_candidate(record: AuctionLotRecord) -> bool:
+    return record.enrichment_requested_at is not None and not _is_terminal_status(record.status)
+
+
+def _candidate_sort_key(record: AuctionLotRecord) -> tuple[datetime, int]:
+    requested_at = record.enrichment_requested_at or datetime.min.replace(tzinfo=UTC)
+    return requested_at, record.id or 0
+
+
+def _terminal_status_predicate():
+    status_text = func.lower(func.coalesce(AuctionLotRecord.status, ""))
+    return or_(*(status_text.contains(marker) for marker in TERMINAL_LOT_STATUS_MARKERS))
+
+
+def _is_terminal_status(status: str | None) -> bool:
+    if not isinstance(status, str):
+        return False
+    normalized = status.strip().lower()
+    if not normalized:
+        return False
+    return any(marker in normalized for marker in TERMINAL_LOT_STATUS_MARKERS)
 
 
 def _has_price_facts(evidence: LotEvidence) -> bool:

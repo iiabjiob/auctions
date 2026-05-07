@@ -4,11 +4,18 @@ import unittest
 from datetime import UTC, datetime
 from decimal import Decimal
 
+from sqlalchemy.dialects import postgresql
+
 from app.models.auction import AuctionLotDetailCache, AuctionLotRecord
 from app.schemas.auctions import LotDatagridRow, LotFreshness, LotImage, LotRating
 from app.services.lot_evidence import build_lot_evidence
-from app.services.lot_enrichment import evaluate_lot_enrichment_requirements
-from app.services.lot_enrichment import classify_lot_enrichment, schedule_lot_enrichment
+from app.services.lot_enrichment import (
+    build_lot_enrichment_candidate_statement,
+    classify_lot_enrichment,
+    collect_lot_enrichment_candidates,
+    evaluate_lot_enrichment_requirements,
+    schedule_lot_enrichment,
+)
 
 
 def make_record() -> AuctionLotRecord:
@@ -175,6 +182,19 @@ def make_list_only_record(*, missing_price: bool = False, missing_location: bool
     )
 
 
+def make_candidate_record(
+    *,
+    record_id: int,
+    requested_at: datetime | None,
+    status: str = "Идет прием заявок",
+) -> AuctionLotRecord:
+    record = make_list_only_record()
+    record.id = record_id
+    record.status = status
+    record.enrichment_requested_at = requested_at
+    return record
+
+
 class LotEnrichmentRequirementTests(unittest.TestCase):
     def test_complete_local_evidence_does_not_need_enrichment(self) -> None:
         evidence = build_lot_evidence(make_record(), make_detail_cache())
@@ -264,6 +284,42 @@ class LotEnrichmentRequirementTests(unittest.TestCase):
 
         self.assertTrue(changed)
         self.assertIsNone(record.enrichment_requested_at)
+
+    def test_requested_records_are_selected_in_requested_order(self) -> None:
+        later = make_candidate_record(record_id=3, requested_at=datetime(2026, 5, 7, 10, tzinfo=UTC))
+        earlier = make_candidate_record(record_id=2, requested_at=datetime(2026, 5, 7, 9, tzinfo=UTC))
+        unrequested = make_candidate_record(record_id=1, requested_at=None)
+
+        selected = collect_lot_enrichment_candidates([later, unrequested, earlier], limit=10)
+
+        self.assertEqual([record.id for record in selected], [2, 3])
+
+    def test_limit_caps_enrichment_candidates(self) -> None:
+        first = make_candidate_record(record_id=1, requested_at=datetime(2026, 5, 7, 8, tzinfo=UTC))
+        second = make_candidate_record(record_id=2, requested_at=datetime(2026, 5, 7, 9, tzinfo=UTC))
+        third = make_candidate_record(record_id=3, requested_at=datetime(2026, 5, 7, 10, tzinfo=UTC))
+
+        selected = collect_lot_enrichment_candidates([first, second, third], limit=2)
+
+        self.assertEqual([record.id for record in selected], [1, 2])
+
+    def test_terminal_status_records_are_not_selected(self) -> None:
+        active = make_candidate_record(record_id=1, requested_at=datetime(2026, 5, 7, 8, tzinfo=UTC))
+        archived = make_candidate_record(record_id=2, requested_at=datetime(2026, 5, 7, 9, tzinfo=UTC), status="Архив")
+
+        selected = collect_lot_enrichment_candidates([archived, active], limit=10)
+
+        self.assertEqual([record.id for record in selected], [1])
+
+    def test_candidate_statement_filters_requested_active_records(self) -> None:
+        statement = build_lot_enrichment_candidate_statement(source_code="tbankrot", limit=5)
+        sql = str(statement.compile(dialect=postgresql.dialect()))
+
+        self.assertIn("enrichment_requested_at IS NOT NULL", sql)
+        self.assertIn("auction_source_states.enabled IS true", sql)
+        self.assertIn("auction_lot_records.source_code = %(source_code_1)s", sql)
+        self.assertIn("ORDER BY auction_lot_records.enrichment_requested_at ASC", sql)
+        self.assertIn("LIMIT %(param_1)s", sql)
 
 
 if __name__ == "__main__":

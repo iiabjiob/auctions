@@ -41,3 +41,5 @@ This slice classifies lots as locally scorable or needing enrichment. When a sou
 - it is cleared when the lot is locally scorable again
 - it is not a queue, job table, or background fetcher
 - it does not open the UI detail card or call external sources
+
+The next step is candidate selection only: a query can list lots with `enrichment_requested_at` set, ordered by the request time, so a future worker can consume them without inventing a new scheduling system. This slice still does not fetch detail data.
