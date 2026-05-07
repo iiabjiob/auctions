@@ -80,6 +80,14 @@ These counters are local DB snapshots only. They are meant for lightweight diagn
 
 Scoring is also moving through a transition layer. The public runtime scoring path now builds an explicit scoring input adapter from `LotEvidence` plus manual/work-item fields and the active scoring version, then routes the existing calculation through that adapter. The scorer still maps the adapter back onto the same normalized legacy inputs where needed, so score values remain stable while the system moves toward a LotEvidence-first scoring model.
 
+The remaining legacy fallback surface is now intentionally small and mainly limited to:
+
+- status text when the adapter does not provide a value
+- a few `build_lot_analysis(...)` fallback reads that still rely on the legacy row/detail payload shape
+- `row.location_coordinates` as a last resort for the delivery-distance penalty
+
+Those areas are kept for compatibility until a later slice removes them one by one.
+
 Failed or still-incomplete attempts now set a conservative retry schedule on the lot record:
 
 - `last_enrichment_attempt_at`

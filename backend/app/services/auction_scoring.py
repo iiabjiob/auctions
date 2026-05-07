@@ -278,6 +278,8 @@ def recalculate_record_rating_from_runtime_input(
         model_category=runtime_input.record_model_category,
         has_documents=runtime_input.record_has_documents,
         has_photos=runtime_input.record_has_photos,
+        analysis_legal_risk=runtime_input.record_legal_risk,
+        analysis_is_excluded=runtime_input.record_is_excluded,
         owner_profile=owner_profile,
         dimension_weights=dimension_weights,
     )
@@ -539,6 +541,8 @@ def _calculate_record_rating(
     model_category: str | None,
     has_documents: bool | None,
     has_photos: bool | None,
+    analysis_legal_risk: str | None,
+    analysis_is_excluded: bool | None,
     owner_profile: OwnerScoringProfile | None,
     dimension_weights: ScoringDimensionWeights | None,
 ) -> ScoreComputation:
@@ -658,12 +662,20 @@ def _calculate_record_rating(
         location_coordinates=location_coordinates,
         category=category,
         model_category=model_category,
+        analysis_legal_risk=analysis_legal_risk,
         profile=owner_profile or OwnerScoringProfile(),
         dimensions=dimensions,
     )
 
     raw_score = base_score + _weighted_dimension_total(dimensions, dimension_weights or ScoringDimensionWeights())
-    caps = _build_record_score_caps(row=row, status=status, work_item=work_item, economy=economy)
+    caps = _build_record_score_caps(
+        row=row,
+        status=status,
+        work_item=work_item,
+        economy=economy,
+        analysis_legal_risk=analysis_legal_risk,
+        analysis_is_excluded=analysis_is_excluded,
+    )
     score = _apply_score_caps(raw_score, caps)
     reasons.extend(cap.reason for cap in caps if cap.reason not in reasons)
     if score >= 70:
@@ -694,6 +706,7 @@ def _apply_owner_profile_dimension(
     location_coordinates: str | None,
     category: str | None,
     model_category: str | None,
+    analysis_legal_risk: str | None,
     profile: OwnerScoringProfile,
     dimensions: dict[str, ScoreDimension],
 ) -> None:
@@ -754,9 +767,9 @@ def _apply_owner_profile_dimension(
     if discouraged_term:
         dimension.add(-8, f"Нежелательный термин по профилю: {discouraged_term}")
 
-    if profile.legal_risk_tolerance == "low" and row.analysis.legal_risk != "low":
+    if profile.legal_risk_tolerance == "low" and (analysis_legal_risk or row.analysis.legal_risk) != "low":
         dimension.add(-12, "Юридический риск выше допуска профиля")
-    elif profile.legal_risk_tolerance == "medium" and row.analysis.legal_risk == "high":
+    elif profile.legal_risk_tolerance == "medium" and (analysis_legal_risk or row.analysis.legal_risk) == "high":
         dimension.add(-12, "Юридический риск выше допуска профиля")
 
     if profile.require_documents:
@@ -858,6 +871,8 @@ def _build_record_score_caps(
     status: str,
     work_item: AuctionLotWorkItem | None,
     economy: LotEconomyResponse,
+    analysis_legal_risk: str | None,
+    analysis_is_excluded: bool | None,
 ) -> list[ScoreCap]:
     caps: list[ScoreCap] = []
     decision = (work_item.decision_status or "").strip().lower() if work_item else ""
@@ -866,9 +881,9 @@ def _build_record_score_caps(
 
     if economy.current_price is None:
         caps.append(ScoreCap("missing_price", "Цена не распознана", 69, "Цена не распознана, рейтинг ограничен ниже высокого"))
-    if row.analysis.legal_risk == "high" and not is_manually_approved:
+    if (analysis_legal_risk or row.analysis.legal_risk) == "high" and not is_manually_approved:
         caps.append(ScoreCap("high_legal_risk", "Высокий юридический риск", 44, "Высокий юридический риск ограничивает рейтинг"))
-    if row.analysis.is_excluded or row.exclude_from_analysis:
+    if bool(analysis_is_excluded) or row.exclude_from_analysis:
         caps.append(ScoreCap("excluded", "Исключение из анализа", 20, "Лот исключен из анализа"))
     if decision == "reject":
         caps.append(ScoreCap("manual_reject", "Ручной отказ", 20, "Команда отметила отказ"))
