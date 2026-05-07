@@ -34,3 +34,5 @@ Enrichment is driven by evidence requirements, not by whether the UI detail card
 - deadline facts
 
 If those are present in persisted local data, the lot does not need enrichment. Optional detail-only facts like documents, media, and description improve ranking quality later, but they are not hard requirements for the first pass.
+
+This slice only classifies lots as locally scorable or needing enrichment. It does not schedule enrichment work, enqueue jobs, or fetch additional data.

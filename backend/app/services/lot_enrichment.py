@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.models.auction import AuctionLotDetailCache, AuctionLotRecord
 from app.schemas.lot_evidence import LotEvidence
+from app.services.lot_evidence import build_lot_evidence
 
 
 class LotEnrichmentRequirementEvaluation(BaseModel):
@@ -30,6 +32,13 @@ def evaluate_lot_enrichment_requirements(evidence: LotEvidence) -> LotEnrichment
         missing_fields=missing_fields,
         reason_category="missing_first_pass_evidence" if needs_enrichment else "ready_for_scoring",
     )
+
+
+def classify_lot_enrichment(
+    record: AuctionLotRecord,
+    detail_cache: AuctionLotDetailCache | None = None,
+) -> LotEnrichmentRequirementEvaluation:
+    return evaluate_lot_enrichment_requirements(build_lot_evidence(record, detail_cache))
 
 
 def _has_price_facts(evidence: LotEvidence) -> bool:

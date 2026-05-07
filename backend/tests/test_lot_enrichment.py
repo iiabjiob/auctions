@@ -7,6 +7,7 @@ from app.models.auction import AuctionLotDetailCache, AuctionLotRecord
 from app.schemas.auctions import LotDatagridRow, LotFreshness, LotImage, LotRating
 from app.services.lot_evidence import build_lot_evidence
 from app.services.lot_enrichment import evaluate_lot_enrichment_requirements
+from app.services.lot_enrichment import classify_lot_enrichment
 
 
 def make_record() -> AuctionLotRecord:
@@ -105,6 +106,74 @@ def make_detail_cache() -> AuctionLotDetailCache:
     )
 
 
+def make_list_only_record(*, missing_price: bool = False, missing_location: bool = False, missing_category: bool = False, missing_deadline: bool = False) -> AuctionLotRecord:
+    row = LotDatagridRow(
+        row_id="tbankrot:auction-1:lot-1",
+        source="tbankrot",
+        source_title="TBankrot",
+        auction_id="auction-1",
+        auction_number="A-1",
+        auction_name="Торги",
+        lot_id="lot-1",
+        lot_number="1",
+        lot_name="Экскаватор гусеничный",
+        lot_description="Подробное описание",
+        category=None if missing_category else "Спецтехника",
+        location=None if missing_location else "Московская область, Химки",
+        location_region=None if missing_location else "Московская область",
+        location_city=None if missing_location else "Химки",
+        location_address=None if missing_location else "ул. Ленина, 1",
+        location_coordinates=None if missing_location else "55.89, 37.45",
+        model_category=None if missing_category else "Спецтехника",
+        status="Идет прием заявок",
+        initial_price=None if missing_price else "1 000 000 руб.",
+        initial_price_value=None if missing_price else Decimal("1000000"),
+        current_price=None if missing_price else "900 000 руб.",
+        current_price_value=None if missing_price else Decimal("900000"),
+        minimum_price=None if missing_price else "800 000 руб.",
+        minimum_price_value=None if missing_price else Decimal("800000"),
+        price_schedule=[],
+        images=[],
+        primary_image_url=None,
+        image_count=0,
+        application_deadline=None if missing_deadline else "05.05.2026 18:00",
+        auction_date=None,
+        market_value=None if missing_price else Decimal("2000000"),
+        exclude_from_analysis=False,
+        freshness=LotFreshness(is_new=True),
+        rating=LotRating(score=0, level="low", reasons=[]),
+    )
+    return AuctionLotRecord(
+        id=1,
+        source_code="tbankrot",
+        auction_external_id="auction-1",
+        lot_external_id="lot-1",
+        auction_number="A-1",
+        lot_number="1",
+        lot_name="Экскаватор гусеничный",
+        status="Идет прием заявок",
+        initial_price=None if missing_price else "1 000 000 руб.",
+        content_hash="content-hash",
+        is_new=True,
+        datagrid_row=row.model_dump(mode="json"),
+        normalized_item={
+            "auction": {"publication_date": "01.05.2026", "application_deadline": None if missing_deadline else "05.05.2026 18:00"},
+            "lot": {
+                "category": None if missing_category else "Спецтехника",
+                "region": None if missing_location else "Московская область",
+                "city": None if missing_location else "Химки",
+                "address": None if missing_location else "ул. Ленина, 1",
+                "coordinates": None if missing_location else "55.89, 37.45",
+                "description": "Подробное описание",
+                "initial_price": None if missing_price else "1 000 000 руб.",
+                "current_price": None if missing_price else "900 000 руб.",
+                "minimum_price": None if missing_price else "800 000 руб.",
+                "market_value": None if missing_price else "2 000 000 руб.",
+            },
+        },
+    )
+
+
 class LotEnrichmentRequirementTests(unittest.TestCase):
     def test_complete_local_evidence_does_not_need_enrichment(self) -> None:
         evidence = build_lot_evidence(make_record(), make_detail_cache())
@@ -163,6 +232,18 @@ class LotEnrichmentRequirementTests(unittest.TestCase):
 
         self.assertFalse(evaluation.needs_enrichment)
         self.assertEqual(evaluation.missing_fields, [])
+
+    def test_classify_lot_enrichment_marks_complete_list_record_locally_scorable(self) -> None:
+        evaluation = classify_lot_enrichment(make_list_only_record())
+
+        self.assertFalse(evaluation.needs_enrichment)
+        self.assertEqual(evaluation.missing_fields, [])
+
+    def test_classify_lot_enrichment_marks_missing_price_record_needing_enrichment(self) -> None:
+        evaluation = classify_lot_enrichment(make_list_only_record(missing_price=True))
+
+        self.assertTrue(evaluation.needs_enrichment)
+        self.assertIn("price", evaluation.missing_fields)
 
 
 if __name__ == "__main__":

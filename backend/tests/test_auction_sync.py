@@ -8,10 +8,19 @@ from unittest.mock import AsyncMock, patch
 from app.models.auction import AuctionLotRecord, AuctionSourceState
 from app.schemas.auctions import AuctionListItem, AuctionSummary, LotSummary, OrganizerInfo
 from app.services.auction_scoring import invalidate_lot_score
+from app.services.lot_enrichment import classify_lot_enrichment
 from app.services.auction_sync import _prepare_snapshot, sync_source_lots
 
 
-def make_list_item(*, lot_name: str = "Экскаватор", status: str = "Идет прием заявок") -> AuctionListItem:
+def make_list_item(
+    *,
+    lot_name: str = "Экскаватор",
+    status: str = "Идет прием заявок",
+    category: str | None = "Спецтехника",
+    location_region: str | None = "Московская область",
+    application_deadline: str | None = "05.05.2026 18:00",
+    initial_price: str | None = "1 000 000 руб.",
+) -> AuctionListItem:
     return AuctionListItem(
         source="tbankrot",
         auction=AuctionSummary(
@@ -27,7 +36,10 @@ def make_list_item(*, lot_name: str = "Экскаватор", status: str = "И�
             number="1",
             name=lot_name,
             status=status,
-            initial_price="1 000 000 руб.",
+            category=category,
+            location_region=location_region,
+            application_deadline=application_deadline,
+            initial_price=initial_price,
         ),
         organizer=OrganizerInfo(name="Organizer"),
     )
@@ -116,10 +128,12 @@ class AuctionSyncInvalidationTests(unittest.IsolatedAsyncioTestCase):
             patch("app.services.auction_sync._backfill_publication_dates", AsyncMock()),
             patch("app.services.auction_sync.bump_auction_lot_dataset_version", AsyncMock()),
             patch("app.services.auction_sync.auction_analysis_config_service.get_runtime_config", AsyncMock(return_value=runtime_config)),
+            patch("app.services.auction_sync.classify_lot_enrichment", wraps=classify_lot_enrichment) as classify_enrichment,
             patch("app.services.auction_sync.invalidate_lot_score", wraps=invalidate_lot_score) as invalidate_score,
         ):
             await sync_source_lots(session, source="tbankrot", limit=1)
 
+        classify_enrichment.assert_called_once()
         invalidate_score.assert_called_once()
         self.assertIsNone(record.score_input_hash)
         self.assertEqual(record.rating_score, 88)
@@ -148,10 +162,12 @@ class AuctionSyncInvalidationTests(unittest.IsolatedAsyncioTestCase):
             patch("app.services.auction_sync._backfill_publication_dates", AsyncMock()),
             patch("app.services.auction_sync.bump_auction_lot_dataset_version", AsyncMock()),
             patch("app.services.auction_sync.auction_analysis_config_service.get_runtime_config", AsyncMock(return_value=runtime_config)),
+            patch("app.services.auction_sync.classify_lot_enrichment", wraps=classify_lot_enrichment) as classify_enrichment,
             patch("app.services.auction_sync.invalidate_lot_score", wraps=invalidate_lot_score) as invalidate_score,
         ):
             await sync_source_lots(session, source="tbankrot", limit=1)
 
+        classify_enrichment.assert_not_called()
         invalidate_score.assert_not_called()
         self.assertIsNotNone(record.score_input_hash)
         self.assertGreater(record.rating_score, 0)
