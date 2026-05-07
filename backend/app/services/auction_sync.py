@@ -22,6 +22,7 @@ from app.models.auction import (
 from app.schemas.auctions import AuctionListItem, SourceSyncResult
 from app.services.auction_analysis_config import auction_analysis_config_service
 from app.services.auction_catalog import build_datagrid_row
+from app.services.auction_grid_state import bump_auction_lot_dataset_version
 from app.services.auction_sources import get_source_provider
 from app.services.auction_scoring import recalculate_record_rating
 from app.services.auction_workspace import ensure_lot_detail_cache, ensure_work_item
@@ -145,6 +146,12 @@ async def sync_source_lots(
                 observed_at=now,
                 runtime_config=runtime_config,
             )
+            await bump_auction_lot_dataset_version(
+                session,
+                record,
+                event_type="row_inserted",
+                payload={"source": "sync", "source_code": source_info.code, "changed_fields": ["row"]},
+            )
         else:
             publication_at = publication_at or _publication_datetime_from_row(record.datagrid_row)
 
@@ -207,6 +214,18 @@ async def sync_source_lots(
                     refresh=False,
                     observed_at=now,
                     runtime_config=runtime_config,
+                )
+            if content_changed or status_changed:
+                changed_fields = []
+                if content_changed:
+                    changed_fields.append("content")
+                if status_changed:
+                    changed_fields.append("status")
+                await bump_auction_lot_dataset_version(
+                    session,
+                    record,
+                    event_type="row_updated",
+                    payload={"source": "sync", "source_code": source_info.code, "changed_fields": changed_fields},
                 )
 
         if processed_items % progress_log_every == 0:
@@ -532,6 +551,16 @@ async def _backfill_publication_dates(
                 row["publication_date"] = _format_publication_date(existing_publication_at)
                 record.datagrid_row = row
                 _apply_record_freshness(record, observed_at=observed_at, published_at=existing_publication_at)
+                await bump_auction_lot_dataset_version(
+                    session,
+                    record,
+                    event_type="row_updated",
+                    payload={
+                        "source": "sync_publication_backfill",
+                        "source_code": source_code,
+                        "changed_fields": ["publication_date", "freshness"],
+                    },
+                )
             normalized_item = dict(record.normalized_item or {})
             auction_payload = dict(normalized_item.get("auction") or {})
             if not auction_payload.get("publication_date"):
@@ -585,3 +614,13 @@ async def _backfill_publication_dates(
         normalized_item["auction"] = auction_payload
         record.normalized_item = normalized_item
         _apply_record_freshness(record, observed_at=observed_at, published_at=published_at)
+        await bump_auction_lot_dataset_version(
+            session,
+            record,
+            event_type="row_updated",
+            payload={
+                "source": "sync_publication_backfill",
+                "source_code": source_code,
+                "changed_fields": ["publication_date", "freshness"],
+            },
+        )

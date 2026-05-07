@@ -12,7 +12,8 @@ from app.schemas.auction_grid import (
     AuctionLotsGridPullRequest,
     AuctionLotsGridPullResponse,
 )
-from app.services.auction_grid import DEFAULT_GRID_WORKSPACE_ID, get_auction_lots_grid_histogram, pull_auction_lots_grid
+from app.services.auction_grid import get_auction_lots_grid_histogram, pull_auction_lots_grid
+from app.services.auction_grid_state import DEFAULT_GRID_WORKSPACE_ID
 
 
 router = APIRouter(prefix="/api/auction-lots", tags=["Auction Lots Grid"])

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from typing import TypeVar
 
@@ -13,6 +12,7 @@ from app.infrastructure.redis.streams import publish_auction_event
 from app.models.auction import AuctionLotDetailCache, AuctionLotRecord, AuctionLotWorkItem
 from app.services.auction_analysis_config import auction_analysis_config_service
 from app.services.auction_datagrid_payload import validate_datagrid_row_payload
+from app.services.auction_grid_state import bump_auction_lot_dataset_version
 from app.services.auction_scoring import (
     SCORING_VERSION,
     build_record_score_input_hash,
@@ -116,6 +116,12 @@ async def analyze_all_lots(limit: int | None = None) -> dict[str, int]:
                         metrics["unchanged"] += 1
                         continue
                     metrics["changed"] += 1
+                    await bump_auction_lot_dataset_version(
+                        session,
+                        record,
+                        event_type="row_updated",
+                        payload=_analysis_change_event_payload(before, after),
+                    )
                     changed_rows.append(validate_datagrid_row_payload(record.datagrid_row).model_dump(mode="json"))
                 except Exception:
                     metrics["failed"] += 1
@@ -145,13 +151,25 @@ def _empty_metrics() -> dict[str, int]:
     }
 
 
-def _visible_score_payload(datagrid_row: dict | None) -> str:
+def _visible_score_payload(datagrid_row: dict | None) -> dict:
     row = datagrid_row or {}
-    payload = {
+    return {
         "rating": row.get("rating"),
         "analysis": row.get("analysis"),
     }
-    return json.dumps(payload, sort_keys=True, ensure_ascii=False)
+
+
+def _analysis_change_event_payload(before: dict, after: dict) -> dict:
+    rating = after.get("rating") if isinstance(after.get("rating"), dict) else {}
+    analysis = after.get("analysis") if isinstance(after.get("analysis"), dict) else {}
+    return {
+        "source": "analysis",
+        "changed_fields": [key for key in ("rating", "analysis") if before.get(key) != after.get(key)],
+        "rating_score": rating.get("score"),
+        "rating_level": rating.get("level"),
+        "analysis_status": analysis.get("status"),
+        "analysis_color": analysis.get("color"),
+    }
 
 
 def _chunks(items: list[_T], size: int) -> list[list[_T]]:

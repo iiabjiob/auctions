@@ -37,6 +37,7 @@ from app.schemas.auctions import (
 from app.infrastructure.redis.streams import publish_auction_event
 from app.services.auction_analysis_config import auction_analysis_config_service
 from app.services.auction_datagrid_payload import validate_datagrid_row_payload
+from app.services.auction_grid_state import bump_auction_lot_dataset_version
 from app.services.auction_scoring import (
     calculate_lot_economy,
     is_media_document,
@@ -107,6 +108,12 @@ async def get_lot_workspace(
             owner_profile=runtime_config.owner_profile,
             dimension_weights=runtime_config.dimension_weights,
         )
+        await bump_auction_lot_dataset_version(
+            session,
+            record,
+            event_type="row_updated",
+            payload={"source": "workspace_refresh", "changed_fields": ["detail_cache", "rating"]},
+        )
     await session.commit()
 
     response = await build_workspace_response(
@@ -159,6 +166,12 @@ async def refresh_lot_workspace_live(
         legal_risk_rules=runtime_config.legal_risk_rules,
         owner_profile=runtime_config.owner_profile,
         dimension_weights=runtime_config.dimension_weights,
+    )
+    await bump_auction_lot_dataset_version(
+        session,
+        record,
+        event_type="row_updated",
+        payload={"source": "workspace_refresh", "changed_fields": ["detail_cache", "rating"]},
     )
     await session.commit()
     response = await build_workspace_response(
@@ -217,6 +230,13 @@ async def update_lot_work_item(
         owner_profile=runtime_config.owner_profile,
         dimension_weights=runtime_config.dimension_weights,
     )
+    if updates:
+        await bump_auction_lot_dataset_version(
+            session,
+            record,
+            event_type="row_updated",
+            payload={"source": "workspace_update", "changed_fields": sorted(updates)},
+        )
     await session.commit()
     await session.refresh(work_item)
     await _publish_row_updated(record)

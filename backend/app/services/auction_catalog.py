@@ -18,9 +18,9 @@ from app.schemas.auctions import (
     LotDatagridRow,
     LotFreshness,
 )
-from app.services.auction_analysis_config import auction_analysis_config_service
 from app.services.auction_datagrid_payload import validate_datagrid_row_payload
-from app.services.auction_scoring import calculate_list_lot_rating, recalculate_record_rating
+from app.services.auction_grid_state import auction_lot_grid_row_id
+from app.services.auction_scoring import calculate_list_lot_rating
 from app.services.auction_sources import SOURCE_PROVIDERS, list_source_infos
 from app.services.auction_values import parse_price
 
@@ -154,29 +154,10 @@ async def list_persisted_lots_for_datagrid(
     records = (await session.scalars(statement)).all()
     work_items = await _work_items_by_record_id(session, [record.id for record in records])
     detail_caches = await _detail_caches_by_record_id(session, [record.id for record in records])
-    runtime_config = await auction_analysis_config_service.get_runtime_config(session)
-    visible_scores_changed = False
     rows: list[LotDatagridRow] = []
     for record in records:
-        before_hash = record.score_input_hash
-        before_version = record.scoring_version
-        before_rating = dict((record.datagrid_row or {}).get("rating") or {})
-        recalculate_record_rating(
-            record,
-            detail_caches.get(record.id),
-            work_items.get(record.id),
-            category_keywords=runtime_config.category_keywords,
-            exclusion_keywords=runtime_config.exclusion_keywords,
-            legal_risk_rules=runtime_config.legal_risk_rules,
-            owner_profile=runtime_config.owner_profile,
-            dimension_weights=runtime_config.dimension_weights,
-        )
-        visible_scores_changed = visible_scores_changed or (
-            before_hash != record.score_input_hash
-            or before_version != record.scoring_version
-            or before_rating != dict((record.datagrid_row or {}).get("rating") or {})
-        )
         row = validate_datagrid_row_payload(record.datagrid_row)
+        row.row_id = auction_lot_grid_row_id(record)
         _hydrate_row_from_normalized_item(row, record.normalized_item)
         _hydrate_row_from_detail_cache(row, detail_caches.get(record.id))
         row.model_category = row.model_category or row.analysis.category
@@ -184,8 +165,6 @@ async def list_persisted_lots_for_datagrid(
         work_item = work_items.get(record.id)
         _attach_work_item_state(row, work_item)
         rows.append(row)
-    if visible_scores_changed:
-        await session.commit()
 
     return LotDatagridResponse(
         columns=LOT_GRID_COLUMNS,
@@ -248,7 +227,7 @@ async def pull_persisted_lots_for_grid(
     rows: list[tuple[AuctionLotRecord, LotDatagridRow]] = []
     for record in records:
         row = validate_datagrid_row_payload(record.datagrid_row)
-        row.row_id = f"{record.source_code}:{record.auction_external_id}:{record.lot_external_id}"
+        row.row_id = auction_lot_grid_row_id(record)
         _hydrate_row_from_normalized_item(row, record.normalized_item)
         _hydrate_row_from_detail_cache(row, detail_caches.get(record.id))
         row.model_category = row.model_category or row.analysis.category

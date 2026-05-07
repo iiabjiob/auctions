@@ -6,7 +6,6 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.auction import AuctionLotRecord
 from app.models.grid import GridRevisionModel
 from app.schemas.auction_grid import (
     AuctionLotsGridHistogramRequest,
@@ -16,10 +15,7 @@ from app.schemas.auction_grid import (
     AuctionLotsGridPullRow,
 )
 from app.services.auction_catalog import list_persisted_lot_column_histogram, pull_persisted_lots_for_grid
-
-
-AUCTION_LOTS_TABLE_ID = "auction-lots"
-DEFAULT_GRID_WORKSPACE_ID = "default"
+from app.services.auction_grid_state import AUCTION_LOTS_TABLE_ID, DEFAULT_GRID_WORKSPACE_ID, auction_lot_grid_row_id
 
 
 async def read_grid_dataset_version(
@@ -64,7 +60,7 @@ async def pull_auction_lots_grid(
     return AuctionLotsGridPullResponse(
         rows=[
             AuctionLotsGridPullRow(
-                id=_auction_lot_row_id(record),
+                id=auction_lot_grid_row_id(record),
                 index=int(record.id),
                 row=row,
             )
@@ -97,11 +93,6 @@ async def get_auction_lots_grid_histogram(
         grid_filter=_histogram_filter_model(request.filter_model, request.column_id, request.options),
     )
     return AuctionLotsGridHistogramResponse(column_id=request.column_id, entries=entries)
-
-
-def _auction_lot_row_id(record: AuctionLotRecord) -> str:
-    return f"{record.source_code}:{record.auction_external_id}:{record.lot_external_id}"
-
 
 def _normalize_sort_model(sort_model: list[dict[str, Any]] | None) -> list[dict[str, str]] | None:
     normalized: list[dict[str, str]] = []
