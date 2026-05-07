@@ -20,3 +20,14 @@ Future scoring should consume `LotEvidence` instead of using scraped detail payl
 At this stage `LotEvidence` is part of the score input identity, but the scoring engine still uses the existing legacy runtime inputs for the actual score computation.
 
 When the persisted `score_input_hash` matches the freshly computed one and the stored score state is complete, the scorer can skip recomputation safely. This is an idempotency check, not a change to the rating formula.
+
+Use `invalidate_lot_score(...)` to mark a record stale after local evidence changes. The supported reasons are:
+- `source_content_changed`
+- `detail_content_changed`
+- `profile_changed`
+- `scoring_config_changed`
+- `manual_economics_changed`
+- `source_status_changed`
+- `ttl_expired`
+
+The intended future wiring points are source sync, detail enrichment, manual economics updates, profile/config edits, and TTL-based freshness checks. For now the helper only clears the persisted score identity so the worker can pick the record up again without dropping the previous UI-facing score payload.

@@ -33,19 +33,7 @@ async def analyze_all_lots(limit: int | None = None) -> dict[str, int]:
         return _empty_metrics()
 
     async with AsyncSessionLocal() as session:
-        statement = (
-            select(AuctionLotRecord.id)
-            .where(AuctionLotRecord.source_code.in_(active_sources))
-            .where(
-                or_(
-                    AuctionLotRecord.scoring_version != SCORING_VERSION,
-                    AuctionLotRecord.score_input_hash.is_(None),
-                    AuctionLotRecord.scored_at.is_(None),
-                    AuctionLotRecord.score_breakdown == {},
-                )
-            )
-            .order_by(AuctionLotRecord.scored_at.asc(), AuctionLotRecord.updated_at.desc(), AuctionLotRecord.id.asc())
-        )
+        statement = _build_scoring_candidate_statement(active_sources)
         if limit and limit > 0:
             statement = statement.limit(limit)
         record_ids = list((await session.scalars(statement)).all())
@@ -140,6 +128,22 @@ async def analyze_all_lots(limit: int | None = None) -> dict[str, int]:
     metrics["updated"] = metrics["changed"]
     logger.info("Auction stale-score analysis metrics: %s", metrics)
     return metrics
+
+
+def _build_scoring_candidate_statement(active_sources: tuple[str, ...]):
+    return (
+        select(AuctionLotRecord.id)
+        .where(AuctionLotRecord.source_code.in_(active_sources))
+        .where(
+            or_(
+                AuctionLotRecord.scoring_version != SCORING_VERSION,
+                AuctionLotRecord.score_input_hash.is_(None),
+                AuctionLotRecord.scored_at.is_(None),
+                AuctionLotRecord.score_breakdown == {},
+            )
+        )
+        .order_by(AuctionLotRecord.scored_at.asc(), AuctionLotRecord.updated_at.desc(), AuctionLotRecord.id.asc())
+    )
 
 
 def _empty_metrics() -> dict[str, int]:

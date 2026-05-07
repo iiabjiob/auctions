@@ -4,6 +4,8 @@ import unittest
 from decimal import Decimal
 from unittest.mock import patch
 
+from sqlalchemy.dialects import postgresql
+
 from app.models.auction import AuctionLotDetailCache, AuctionLotRecord, AuctionLotWorkItem
 from app.schemas.analysis_config import OwnerScoringProfile, ScoringDimensionWeights
 from app.schemas.auctions import LotDatagridRow, LotFreshness, LotRating
@@ -12,10 +14,13 @@ from app.services.auction_datagrid_payload import validate_datagrid_row_payload
 from app.services.auction_scoring import (
     SCORING_VERSION,
     build_record_score_input_hash,
+    invalidate_lot_score,
     recalculate_record_rating,
     record_score_is_current,
 )
+from app.services.auction_scoring_invalidation import SOURCE_CONTENT_CHANGED
 from app.worker import auction_analysis_worker
+from app.worker.auction_analysis_worker import _build_scoring_candidate_statement
 
 
 def make_record(*, lot_name: str, status: str = "Идет прием заявок") -> AuctionLotRecord:
@@ -147,6 +152,22 @@ class AuctionRatingTests(unittest.TestCase):
         self.assertEqual(rating.input_hash, stored_hash)
         build_analysis.assert_not_called()
 
+    def test_invalidate_lot_score_preserves_ui_score_state(self) -> None:
+        record = make_record(lot_name="Экскаватор гусеничный")
+        detail_cache = make_detail_cache()
+        work_item = make_work_item()
+
+        rating = recalculate_record_rating(record, detail_cache, work_item)
+        original_breakdown = record.score_breakdown
+        original_score = record.rating_score
+
+        invalidate_lot_score(record, reason=SOURCE_CONTENT_CHANGED)
+
+        self.assertIsNone(record.score_input_hash)
+        self.assertEqual(record.rating_score, original_score)
+        self.assertEqual(record.score_breakdown, original_breakdown)
+        self.assertFalse(record_score_is_current(record, input_hash=rating.input_hash))
+
     def test_rating_input_hash_changes_when_local_evidence_changes(self) -> None:
         record = make_record(lot_name="Экскаватор гусеничный")
         detail_cache = make_detail_cache()
@@ -171,6 +192,20 @@ class AuctionRatingTests(unittest.TestCase):
 
         build_analysis.assert_called_once()
 
+    def test_invalidation_triggers_rescore_and_persists_new_hash(self) -> None:
+        record = make_record(lot_name="Экскаватор гусеничный")
+        detail_cache = make_detail_cache()
+        work_item = make_work_item()
+
+        first_rating = recalculate_record_rating(record, detail_cache, work_item)
+        invalidate_lot_score(record, reason=SOURCE_CONTENT_CHANGED)
+
+        second_rating = recalculate_record_rating(record, detail_cache, work_item)
+
+        self.assertEqual(second_rating.score, first_rating.score)
+        self.assertEqual(record.score_input_hash, second_rating.input_hash)
+        self.assertEqual(record.scoring_version, SCORING_VERSION)
+
     def test_recalculate_runs_when_score_breakdown_is_missing(self) -> None:
         record = make_record(lot_name="Экскаватор гусеничный")
         detail_cache = make_detail_cache()
@@ -184,6 +219,16 @@ class AuctionRatingTests(unittest.TestCase):
             recalculate_record_rating(record, detail_cache, work_item)
 
         build_analysis.assert_called_once()
+
+    def test_scoring_candidate_statement_includes_incomplete_score_state(self) -> None:
+        statement = _build_scoring_candidate_statement(("tbankrot",))
+        compiled = statement.compile(dialect=postgresql.dialect())
+        sql = str(compiled)
+
+        self.assertIn("auction_lot_records.score_input_hash IS NULL", sql)
+        self.assertIn("auction_lot_records.scored_at IS NULL", sql)
+        self.assertIn("auction_lot_records.score_breakdown", sql)
+        self.assertIn("auction_lot_records.scoring_version", sql)
 
     def test_recalculate_runs_when_scoring_version_changes(self) -> None:
         record = make_record(lot_name="Экскаватор гусеничный")

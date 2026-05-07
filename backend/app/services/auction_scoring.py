@@ -15,6 +15,7 @@ from app.models.auction import AuctionLotDetailCache, AuctionLotRecord, AuctionL
 from app.schemas.analysis_config import OwnerScoringProfile, ScoringDimensionWeights
 from app.schemas.auctions import AuctionListItem, LotEconomyResponse, LotRating
 from app.services.lot_evidence import build_lot_evidence, build_lot_evidence_hash
+from app.services.auction_scoring_invalidation import invalidate_lot_score
 from app.services.auction_analysis import LegalRiskRules, build_lot_analysis
 from app.services.auction_datagrid_payload import validate_datagrid_row_payload
 from app.services.auction_values import parse_price
