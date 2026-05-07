@@ -41,9 +41,11 @@ from app.services.auction_grid_state import bump_auction_lot_dataset_version
 from app.services.auction_scoring import (
     calculate_lot_economy,
     is_media_document,
+    invalidate_lot_score,
     recalculate_record_rating,
     sync_record_from_detail_cache,
 )
+from app.services.auction_scoring_invalidation import DETAIL_CONTENT_CHANGED
 from app.services.auction_sources import get_source_provider
 
 
@@ -422,6 +424,7 @@ async def ensure_lot_detail_cache(
     detail_cache.documents = documents
     sync_record_from_detail_cache(record, detail_cache)
     if content_changed:
+        invalidate_lot_score(record, reason=DETAIL_CONTENT_CHANGED)
         _add_detail_observation(session, record, detail_cache)
     return detail_cache
 

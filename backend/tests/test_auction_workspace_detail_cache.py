@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import unittest
+from datetime import UTC, datetime
 from unittest.mock import patch
 from urllib.error import HTTPError
 
 from app.models.auction import AuctionLotDetailCache, AuctionLotRecord
+from app.schemas.auctions import AuctionSummary, LotDetailResponse, LotSummary
+from app.services.auction_scoring import invalidate_lot_score
 from app.services.auction_workspace import (
     _detail_cache_has_price_schedule,
     _bounded_detail_payload,
@@ -18,14 +23,52 @@ from app.services.auction_workspace import (
 class FakeSession:
     def __init__(self, detail_cache=None):
         self.detail_cache = detail_cache
+        self.added = []
 
     async def scalar(self, statement):
         return self.detail_cache
+
+    def add(self, item) -> None:
+        self.added.append(item)
+
+    async def flush(self):
+        return None
 
 
 class ForbiddenDetailProvider:
     def get_lot(self, lot_id: str, *, include_price_schedule: bool = True):
         raise HTTPError(f"https://example.test/{lot_id}", 403, "Forbidden", hdrs=None, fp=None)
+
+
+class StaticDetailProvider:
+    code = "tbankrot"
+    title = "TBankrot"
+    website = "https://tbankrot.ru"
+
+    def __init__(self, lot_response: LotDetailResponse):
+        self.lot_response = lot_response
+
+    def info(self):
+        return None
+
+    def get_lot(self, lot_id: str, *, include_price_schedule: bool = True):
+        return self.lot_response
+
+    def get_auction(self, auction_id: str):
+        raise NotImplementedError("Auction details are not needed for this test")
+
+    def get_auction_publication_date(self, auction_id: str):
+        return None
+
+
+def _lot_detail_content_hash(response: LotDetailResponse) -> str:
+    payload = _lot_detail_payload_with_price_schedule_state(
+        response.model_dump(mode="json"),
+        previous_payload=None,
+        include_price_schedule=False,
+    )
+    data = {"lot_detail": payload, "auction_detail": None, "documents": response.documents}
+    return hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
 class AuctionWorkspaceDetailCacheTests(unittest.TestCase):
@@ -203,6 +246,136 @@ class AuctionWorkspaceDetailFetchTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIs(detail_cache, existing_cache)
         get_source_provider.assert_not_called()
+
+    async def test_detail_refresh_invalidates_score_when_content_hash_changes(self) -> None:
+        response = LotDetailResponse(
+            source="tbankrot",
+            url="https://example.test/lot-1",
+            auction=AuctionSummary(source="tbankrot", external_id="auction-1", url="https://example.test/auction-1"),
+            lot=LotSummary(
+                source="tbankrot",
+                external_id="lot-1",
+                name="Экскаватор гусеничный",
+                region="Московская область",
+                city="Химки",
+                status="Идет прием заявок",
+            ),
+            organizer=None,
+            debtor=None,
+            documents=[],
+            raw_fields=[],
+            raw_tables=[],
+        )
+        changed_response = LotDetailResponse(
+            source="tbankrot",
+            url="https://example.test/lot-1",
+            auction=AuctionSummary(source="tbankrot", external_id="auction-1", url="https://example.test/auction-1"),
+            lot=LotSummary(
+                source="tbankrot",
+                external_id="lot-1",
+                name="Экскаватор гусеничный",
+                region="Самарская область",
+                city="Самара",
+                status="Идет прием заявок",
+            ),
+            organizer=None,
+            debtor=None,
+            documents=[],
+            raw_fields=[],
+            raw_tables=[],
+        )
+        existing_cache = AuctionLotDetailCache(
+            lot_record_id=1,
+            content_hash=_lot_detail_content_hash(response),
+            lot_detail=_lot_detail_payload_with_price_schedule_state(
+                response.model_dump(mode="json"),
+                previous_payload=None,
+                include_price_schedule=False,
+            ),
+            auction_detail=None,
+            documents=[],
+        )
+        record = AuctionLotRecord(
+            id=1,
+            source_code="tbankrot",
+            auction_external_id=None,
+            lot_external_id="lot-1",
+            content_hash="record-hash",
+            rating_score=88,
+            rating_level="high",
+            scoring_version="deterministic-v2",
+            scored_at=datetime(2026, 5, 7, tzinfo=UTC),
+            score_input_hash="score-hash",
+            score_breakdown={"score": 88, "mode": "record"},
+            datagrid_row={},
+            normalized_item={},
+        )
+
+        with patch("app.services.auction_workspace.get_source_provider", return_value=StaticDetailProvider(changed_response)):
+            with patch("app.services.auction_workspace.invalidate_lot_score", wraps=invalidate_lot_score) as invalidate_score:
+                detail_cache = await ensure_lot_detail_cache(FakeSession(existing_cache), record, refresh=True, include_price_schedule=False)
+
+        self.assertIs(detail_cache, existing_cache)
+        invalidate_score.assert_called_once()
+        self.assertIsNone(record.score_input_hash)
+        self.assertEqual(record.rating_score, 88)
+        self.assertEqual(record.rating_level, "high")
+        self.assertEqual(record.score_breakdown, {"score": 88, "mode": "record"})
+
+    async def test_detail_refresh_with_unchanged_content_preserves_score_identity(self) -> None:
+        response = LotDetailResponse(
+            source="tbankrot",
+            url="https://example.test/lot-1",
+            auction=AuctionSummary(source="tbankrot", external_id="auction-1", url="https://example.test/auction-1"),
+            lot=LotSummary(
+                source="tbankrot",
+                external_id="lot-1",
+                name="Экскаватор гусеничный",
+                region="Московская область",
+                city="Химки",
+                status="Идет прием заявок",
+            ),
+            organizer=None,
+            debtor=None,
+            documents=[],
+            raw_fields=[],
+            raw_tables=[],
+        )
+        existing_cache = AuctionLotDetailCache(
+            lot_record_id=1,
+            content_hash=_lot_detail_content_hash(response),
+            lot_detail=_lot_detail_payload_with_price_schedule_state(
+                response.model_dump(mode="json"),
+                previous_payload=None,
+                include_price_schedule=False,
+            ),
+            auction_detail=None,
+            documents=[],
+        )
+        record = AuctionLotRecord(
+            id=1,
+            source_code="tbankrot",
+            auction_external_id=None,
+            lot_external_id="lot-1",
+            content_hash="record-hash",
+            rating_score=88,
+            rating_level="high",
+            scoring_version="deterministic-v2",
+            scored_at=datetime(2026, 5, 7, tzinfo=UTC),
+            score_input_hash="score-hash",
+            score_breakdown={"score": 88, "mode": "record"},
+            datagrid_row={},
+            normalized_item={},
+        )
+
+        with patch("app.services.auction_workspace.get_source_provider", return_value=StaticDetailProvider(response)):
+            with patch("app.services.auction_workspace.invalidate_lot_score", wraps=invalidate_lot_score) as invalidate_score:
+                await ensure_lot_detail_cache(FakeSession(existing_cache), record, refresh=True, include_price_schedule=False)
+
+        invalidate_score.assert_not_called()
+        self.assertEqual(record.score_input_hash, "score-hash")
+        self.assertEqual(record.rating_score, 88)
+        self.assertEqual(record.score_breakdown, {"score": 88, "mode": "record"})
 
 
 if __name__ == "__main__":

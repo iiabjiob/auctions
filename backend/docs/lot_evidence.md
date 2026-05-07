@@ -30,4 +30,6 @@ Use `invalidate_lot_score(...)` to mark a record stale after local evidence chan
 - `source_status_changed`
 - `ttl_expired`
 
+The first safe wiring point is the detail-cache refresh branch in `ensure_lot_detail_cache(...)`: when the persisted detail `content_hash` changes, call `invalidate_lot_score(record, reason=detail_content_changed)` before the next scoring pass. If the content hash is unchanged, do not invalidate.
+
 The intended future wiring points are source sync, detail enrichment, manual economics updates, profile/config edits, and TTL-based freshness checks. For now the helper only clears the persisted score identity so the worker can pick the record up again without dropping the previous UI-facing score payload.
