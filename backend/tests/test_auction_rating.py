@@ -196,6 +196,10 @@ class AuctionRatingTests(unittest.TestCase):
         self.assertEqual(adapter.record_application_deadline, validate_datagrid_row_payload(record.datagrid_row).application_deadline)
         self.assertEqual(adapter.record_current_price, build_lot_evidence(record, detail_cache).price.current_price)
         self.assertEqual(adapter.record_market_value, work_item.market_value)
+        self.assertEqual(adapter.record_location_region, build_lot_evidence(record, detail_cache).location.region)
+        self.assertEqual(adapter.record_location_city, build_lot_evidence(record, detail_cache).location.city)
+        self.assertEqual(adapter.record_category, build_lot_evidence(record, detail_cache).category.category)
+        self.assertEqual(adapter.record_model_category, build_lot_evidence(record, detail_cache).category.model_category)
 
     def test_record_scoring_runtime_input_handles_missing_evidence_conservatively(self) -> None:
         record = make_record(lot_name="Экскаватор гусеничный")
@@ -240,6 +244,52 @@ class AuctionRatingTests(unittest.TestCase):
         self.assertEqual(rating.level, "medium")
         self.assertIn("Цена распознана", record.score_breakdown["dimensions"]["data_quality"]["reasons"])
         self.assertEqual(rating.input_hash, record.score_input_hash)
+
+    def test_record_scoring_runtime_input_uses_location_and_category_as_primary_source(self) -> None:
+        target_profile = OwnerScoringProfile(
+            target_regions=["Московская область"],
+            target_categories=["Спецтехника"],
+            max_budget=Decimal("2500000"),
+            minimum_roi=Decimal("0.10"),
+            minimum_market_discount=Decimal("0.10"),
+        )
+
+        preferred_record = make_record(lot_name="Товар")
+        preferred_record.datagrid_row["location_region"] = "Новосибирская область"
+        preferred_record.datagrid_row["location_city"] = "Новосибирск"
+        preferred_record.datagrid_row["category"] = "Недвижимость"
+        preferred_record.datagrid_row["model_category"] = "Недвижимость"
+        preferred_record.normalized_item["lot"]["category"] = "Недвижимость"
+        preferred_record.normalized_item["lot"]["model_category"] = "Недвижимость"
+        preferred_runtime_input = build_record_scoring_runtime_input(preferred_record, None, None)
+        preferred_runtime_input.record_location_region = "Московская область"
+        preferred_runtime_input.record_location_city = "Химки"
+        preferred_runtime_input.record_category = "Спецтехника"
+        preferred_runtime_input.record_model_category = "Спецтехника"
+        preferred_runtime_input.owner_profile = target_profile
+
+        fallback_record = make_record(lot_name="Товар")
+        fallback_record.datagrid_row["location_region"] = "Новосибирская область"
+        fallback_record.datagrid_row["location_city"] = "Новосибирск"
+        fallback_record.datagrid_row["category"] = "Недвижимость"
+        fallback_record.datagrid_row["model_category"] = "Недвижимость"
+        fallback_record.normalized_item["lot"]["category"] = "Недвижимость"
+        fallback_record.normalized_item["lot"]["model_category"] = "Недвижимость"
+        fallback_runtime_input = build_record_scoring_runtime_input(fallback_record, None, None)
+        fallback_runtime_input.record_location_region = None
+        fallback_runtime_input.record_location_city = None
+        fallback_runtime_input.record_category = None
+        fallback_runtime_input.record_model_category = None
+        fallback_runtime_input.owner_profile = target_profile
+
+        preferred_rating = recalculate_record_rating_from_runtime_input(preferred_record, None, preferred_runtime_input, force=True)
+        fallback_rating = recalculate_record_rating_from_runtime_input(fallback_record, None, fallback_runtime_input, force=True)
+
+        self.assertGreater(preferred_rating.score, fallback_rating.score)
+        self.assertIn("Регион соответствует профилю", preferred_record.score_breakdown["dimensions"]["owner_fit"]["reasons"])
+        self.assertIn("Категория соответствует профилю", preferred_record.score_breakdown["dimensions"]["owner_fit"]["reasons"])
+        self.assertIn("Регион вне целевого профиля", fallback_record.score_breakdown["dimensions"]["owner_fit"]["reasons"])
+        self.assertIn("Категория вне целевого профиля", fallback_record.score_breakdown["dimensions"]["owner_fit"]["reasons"])
 
     def test_recalculate_record_rating_score_values_remain_unchanged_with_adapter(self) -> None:
         record = make_record(lot_name="Экскаватор гусеничный")

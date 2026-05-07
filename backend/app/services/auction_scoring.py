@@ -64,6 +64,12 @@ class RecordScoringRuntimeInput:
     record_application_deadline: str | None
     record_current_price: Decimal | None
     record_market_value: Decimal | None
+    record_location_region: str | None
+    record_location_city: str | None
+    record_location_address: str | None
+    record_location_coordinates: str | None
+    record_category: str | None
+    record_model_category: str | None
     record_content_hash: str
     detail_content_hash: str | None
     work_item: AuctionLotWorkItem | None
@@ -249,6 +255,12 @@ def recalculate_record_rating_from_runtime_input(
         work_item,
         economy,
         application_deadline=runtime_input.record_application_deadline,
+        location_region=runtime_input.record_location_region,
+        location_city=runtime_input.record_location_city,
+        location_address=runtime_input.record_location_address,
+        location_coordinates=runtime_input.record_location_coordinates,
+        category=runtime_input.record_category,
+        model_category=runtime_input.record_model_category,
         owner_profile=owner_profile,
         dimension_weights=dimension_weights,
     )
@@ -338,6 +350,12 @@ def build_record_scoring_runtime_input(
         record_application_deadline=row.application_deadline,
         record_current_price=evidence.price.current_price,
         record_market_value=work_item.market_value if work_item and work_item.market_value is not None else None,
+        record_location_region=evidence.location.region,
+        record_location_city=evidence.location.city,
+        record_location_address=evidence.location.address,
+        record_location_coordinates=evidence.location.coordinates,
+        record_category=evidence.category.category,
+        record_model_category=evidence.category.model_category,
         record_content_hash=record.content_hash,
         detail_content_hash=detail_cache.content_hash if detail_cache else None,
         work_item=work_item,
@@ -491,6 +509,12 @@ def _calculate_record_rating(
     economy: LotEconomyResponse,
     *,
     application_deadline: str | None,
+    location_region: str | None,
+    location_city: str | None,
+    location_address: str | None,
+    location_coordinates: str | None,
+    category: str | None,
+    model_category: str | None,
     owner_profile: OwnerScoringProfile | None,
     dimension_weights: ScoringDimensionWeights | None,
 ) -> ScoreComputation:
@@ -590,6 +614,12 @@ def _calculate_record_rating(
         detail_cache=detail_cache,
         work_item=work_item,
         economy=economy,
+        location_region=location_region,
+        location_city=location_city,
+        location_address=location_address,
+        location_coordinates=location_coordinates,
+        category=category,
+        model_category=model_category,
         profile=owner_profile or OwnerScoringProfile(),
         dimensions=dimensions,
     )
@@ -620,13 +650,29 @@ def _apply_owner_profile_dimension(
     detail_cache: AuctionLotDetailCache | None,
     work_item: AuctionLotWorkItem | None,
     economy: LotEconomyResponse,
+    location_region: str | None,
+    location_city: str | None,
+    location_address: str | None,
+    location_coordinates: str | None,
+    category: str | None,
+    model_category: str | None,
     profile: OwnerScoringProfile,
     dimensions: dict[str, ScoreDimension],
 ) -> None:
     dimension = dimensions["owner_fit"]
-    search_text = _owner_profile_search_text(record, row, detail_cache)
-    category = row.analysis.category or row.category or row.model_category
-    region = row.location_region or row.location or ""
+    search_text = _owner_profile_search_text(
+        record,
+        row,
+        detail_cache,
+        location_region=location_region,
+        location_city=location_city,
+        location_address=location_address,
+        location_coordinates=location_coordinates,
+        category=category,
+        model_category=model_category,
+    )
+    category = category or row.analysis.category or row.category or row.model_category
+    region = location_region or row.location_region or row.location or ""
     budget_value = economy.full_entry_cost or economy.current_price
 
     if profile.target_regions:
@@ -691,7 +737,7 @@ def _apply_owner_profile_dimension(
     if not profile.allow_dismantling and ((dismantling_cost or Decimal("0")) > 0 or "демонтаж" in search_text):
         dimension.add(-8, "Профиль не допускает демонтаж")
 
-    if profile.max_delivery_distance_km is not None and row.location_coordinates is None:
+    if profile.max_delivery_distance_km is not None and (location_coordinates or row.location_coordinates) is None:
         dimension.add(-2, "Дистанция доставки не подтверждена")
 
 
@@ -706,17 +752,30 @@ def _weighted_dimension_total(
     return int(total.to_integral_value())
 
 
-def _owner_profile_search_text(record: AuctionLotRecord, row, detail_cache: AuctionLotDetailCache | None) -> str:
+def _owner_profile_search_text(
+    record: AuctionLotRecord,
+    row,
+    detail_cache: AuctionLotDetailCache | None,
+    *,
+    location_region: str | None,
+    location_city: str | None,
+    location_address: str | None,
+    location_coordinates: str | None,
+    category: str | None,
+    model_category: str | None,
+) -> str:
     parts = [
         record.lot_name,
         record.status,
         row.lot_name,
         row.lot_description,
-        row.category,
-        row.model_category,
+        category,
+        model_category,
         row.location,
-        row.location_region,
-        row.location_city,
+        location_region,
+        location_city,
+        location_address,
+        location_coordinates,
         json.dumps(record.normalized_item or {}, ensure_ascii=False),
     ]
     if detail_cache is not None:
