@@ -5,13 +5,14 @@ ENV PATH=$PNPM_HOME:$PATH
 
 WORKDIR /app
 
-RUN corepack enable
+RUN corepack enable && corepack prepare pnpm@10.18.0 --activate
 
 COPY frontend/package.json frontend/pnpm-lock.yaml ./
+COPY frontend/.npmrc* ./
 RUN pnpm install --frozen-lockfile
 
 COPY frontend/ ./
-RUN pnpm build
+RUN pnpm build-only
 
 FROM nginx:1.27-alpine
 
