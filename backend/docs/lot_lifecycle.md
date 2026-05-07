@@ -42,7 +42,16 @@ This slice classifies lots as locally scorable or needing enrichment. When a sou
 - it is not a queue, job table, or background fetcher
 - it does not open the UI detail card or call external sources
 
-The next step is candidate selection only: a query can list lots with `enrichment_requested_at` set, ordered by the request time, so a future worker can consume them without inventing a new scheduling system. This slice still does not fetch detail data.
+The next step is candidate selection only: a query can list lots with `enrichment_requested_at` set so a future worker can consume them without inventing a new scheduling system. This slice still does not fetch detail data.
+
+Enrichment priority is still query-time logic, not a persisted column. The worker orders requested lots by local evidence only:
+
+- higher `rating_score` first
+- nearer deadlines first when scores are equal or missing
+- fresher source/list rows first when score and deadline are equal
+- then request time and record id for deterministic ties
+
+That keeps the claim path conservative and reviewable while the architecture is still transitioning.
 
 There is now a dry-run execution path that loads those candidates, evaluates local evidence, and returns processing metadata. It still does not fetch external detail data or mutate lots beyond the scheduling marker that was already written at source sync time.
 

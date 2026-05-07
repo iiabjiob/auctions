@@ -13,6 +13,7 @@ from app.schemas.auctions import LotDatagridRow, LotFreshness, LotImage, LotRati
 from app.services.lot_evidence import build_lot_evidence
 from app.services.lot_enrichment import (
     build_lot_enrichment_candidate_statement,
+    build_lot_enrichment_priority_key,
     claim_lot_enrichment_candidates,
     execute_lot_enrichment_candidates,
     dry_run_lot_enrichment_candidates,
@@ -194,10 +195,19 @@ def make_candidate_record(
     requested_at: datetime | None,
     status: str = "Идет прием заявок",
     missing_price: bool = False,
+    rating_score: int = 0,
+    last_seen_at: datetime | None = None,
+    application_deadline: str | None = None,
 ) -> AuctionLotRecord:
     record = make_list_only_record(missing_price=missing_price)
     record.id = record_id
     record.status = status
+    record.rating_score = rating_score
+    if last_seen_at is not None:
+        record.last_seen_at = last_seen_at
+    if application_deadline is not None:
+        record.datagrid_row["application_deadline"] = application_deadline
+        record.normalized_item.setdefault("auction", {})["application_deadline"] = application_deadline
     record.enrichment_requested_at = requested_at
     record.enrichment_attempt_count = 0
     record.last_enrichment_attempt_at = None
@@ -307,6 +317,86 @@ class LotEnrichmentRequirementTests(unittest.TestCase):
         selected = collect_lot_enrichment_candidates([later, unrequested, earlier], limit=10)
 
         self.assertEqual([record.id for record in selected], [2, 3])
+
+    def test_higher_score_candidates_are_claimed_first(self) -> None:
+        high_score = make_candidate_record(
+            record_id=2,
+            requested_at=datetime(2026, 5, 7, 9, tzinfo=UTC),
+            rating_score=90,
+        )
+        low_score = make_candidate_record(
+            record_id=1,
+            requested_at=datetime(2026, 5, 7, 8, tzinfo=UTC),
+            rating_score=40,
+        )
+
+        class FakeSession:
+            async def scalars(self, statement):
+                class FakeScalars:
+                    def all(self_inner):
+                        return [low_score, high_score]
+
+                return FakeScalars()
+
+            async def flush(self):
+                return None
+
+        claimed = asyncio.run(
+            claim_lot_enrichment_candidates(FakeSession(), current_time=datetime(2026, 5, 7, 12, tzinfo=UTC), limit=2)
+        )
+
+        self.assertEqual([row.id for row in claimed], [2, 1])
+
+    def test_near_deadline_candidates_are_claimed_before_far_deadline_candidates_when_scores_match(self) -> None:
+        current_time = datetime(2026, 5, 7, 12, tzinfo=UTC)
+        near_deadline = make_candidate_record(
+            record_id=2,
+            requested_at=datetime(2026, 5, 7, 9, tzinfo=UTC),
+            rating_score=50,
+            application_deadline="07.05.2026 13:00",
+        )
+        far_deadline = make_candidate_record(
+            record_id=1,
+            requested_at=datetime(2026, 5, 7, 8, tzinfo=UTC),
+            rating_score=50,
+            application_deadline="08.05.2026 13:00",
+        )
+
+        class FakeSession:
+            async def scalars(self, statement):
+                class FakeScalars:
+                    def all(self_inner):
+                        return [far_deadline, near_deadline]
+
+                return FakeScalars()
+
+            async def flush(self):
+                return None
+
+        claimed = asyncio.run(claim_lot_enrichment_candidates(FakeSession(), current_time=current_time, limit=2))
+
+        self.assertEqual([row.id for row in claimed], [2, 1])
+
+    def test_priority_order_is_deterministic_for_ties(self) -> None:
+        current_time = datetime(2026, 5, 7, 12, tzinfo=UTC)
+        first = make_candidate_record(
+            record_id=1,
+            requested_at=datetime(2026, 5, 7, 8, tzinfo=UTC),
+            rating_score=50,
+            application_deadline="07.05.2026 13:00",
+            last_seen_at=datetime(2026, 5, 7, 11, tzinfo=UTC),
+        )
+        second = make_candidate_record(
+            record_id=2,
+            requested_at=datetime(2026, 5, 7, 8, tzinfo=UTC),
+            rating_score=50,
+            application_deadline="07.05.2026 13:00",
+            last_seen_at=datetime(2026, 5, 7, 11, tzinfo=UTC),
+        )
+
+        selected = collect_lot_enrichment_candidates([second, first], current_time=current_time, limit=10)
+
+        self.assertEqual([record.id for record in selected], [1, 2])
 
     def test_limit_caps_enrichment_candidates(self) -> None:
         first = make_candidate_record(record_id=1, requested_at=datetime(2026, 5, 7, 8, tzinfo=UTC))
@@ -444,6 +534,38 @@ class LotEnrichmentRequirementTests(unittest.TestCase):
         )
 
         self.assertEqual([row.id for row in claimed], [1, 2])
+
+    def test_build_lot_enrichment_priority_key_prefers_higher_scores_and_nearer_deadlines(self) -> None:
+        current_time = datetime(2026, 5, 7, 12, tzinfo=UTC)
+        high_score = make_candidate_record(
+            record_id=1,
+            requested_at=datetime(2026, 5, 7, 8, tzinfo=UTC),
+            rating_score=80,
+            application_deadline="08.05.2026 12:00",
+        )
+        near_deadline = make_candidate_record(
+            record_id=2,
+            requested_at=datetime(2026, 5, 7, 8, tzinfo=UTC),
+            rating_score=50,
+            application_deadline="07.05.2026 13:00",
+        )
+        fresh = make_candidate_record(
+            record_id=3,
+            requested_at=datetime(2026, 5, 7, 8, tzinfo=UTC),
+            rating_score=50,
+            application_deadline=None,
+            last_seen_at=datetime(2026, 5, 7, 11, 30, tzinfo=UTC),
+        )
+        fresh.datagrid_row["application_deadline"] = None
+        fresh.normalized_item.setdefault("auction", {})["application_deadline"] = None
+
+        keys = [
+            build_lot_enrichment_priority_key(record, current_time=current_time)
+            for record in [high_score, near_deadline, fresh]
+        ]
+
+        self.assertLess(keys[0], keys[1])
+        self.assertLess(keys[1], keys[2])
 
     def test_dry_run_lot_enrichment_candidates_uses_selected_records_only(self) -> None:
         selected = [make_candidate_record(record_id=1, requested_at=datetime(2026, 5, 7, 8, tzinfo=UTC), missing_price=True)]

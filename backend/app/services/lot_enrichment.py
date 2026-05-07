@@ -50,6 +50,13 @@ TERMINAL_LOT_STATUS_MARKERS: tuple[str, ...] = (
     "заверш",
     "отмен",
 )
+DEADLINE_PATTERNS: tuple[str, ...] = (
+    "%d.%m.%Y %H:%M:%S",
+    "%d.%m.%Y %H:%M",
+    "%d/%m/%Y %H:%M:%S",
+    "%d/%m/%Y %H:%M",
+    "%Y-%m-%dT%H:%M:%S",
+)
 DEFAULT_ENRICHMENT_CANDIDATE_LIMIT = 50
 DEFAULT_ENRICHMENT_CLAIM_SECONDS = 15 * 60
 ENRICHMENT_BACKOFF_BASE_SECONDS = 30 * 60
@@ -126,7 +133,7 @@ async def list_lot_enrichment_candidates(
     limit: int = DEFAULT_ENRICHMENT_CANDIDATE_LIMIT,
 ) -> list[AuctionLotRecord]:
     current_time = current_time or datetime.now(UTC)
-    statement = build_lot_enrichment_candidate_statement(source_code=source_code, current_time=current_time, limit=limit)
+    statement = build_lot_enrichment_candidate_statement(source_code=source_code, current_time=current_time, limit=None)
     records = (await session.scalars(statement)).all()
     return collect_lot_enrichment_candidates(records, current_time=current_time, limit=limit)
 
@@ -139,7 +146,7 @@ def collect_lot_enrichment_candidates(
 ) -> list[AuctionLotRecord]:
     current_time = current_time or datetime.now(UTC)
     eligible = [record for record in records if _is_enrichment_candidate(record, current_time=current_time)]
-    eligible.sort(key=_candidate_sort_key)
+    eligible.sort(key=lambda record: build_lot_enrichment_priority_key(record, current_time=current_time))
     if limit is None:
         return eligible
     if limit <= 0:
@@ -276,9 +283,23 @@ def _is_enrichment_candidate(record: AuctionLotRecord, *, current_time: datetime
     )
 
 
-def _candidate_sort_key(record: AuctionLotRecord) -> tuple[datetime, int]:
-    requested_at = record.enrichment_requested_at or datetime.min.replace(tzinfo=UTC)
-    return requested_at, record.id or 0
+def _candidate_sort_key(record: AuctionLotRecord) -> tuple[object, ...]:
+    return build_lot_enrichment_priority_key(record)
+
+
+def build_lot_enrichment_priority_key(
+    record: AuctionLotRecord,
+    *,
+    current_time: datetime | None = None,
+) -> tuple[object, ...]:
+    current_time = current_time or datetime.now(UTC)
+    rating_score = int(getattr(record, "rating_score", 0) or 0)
+    deadline_hours = _candidate_hours_to_deadline(record, current_time=current_time)
+    deadline_bucket = 0 if deadline_hours is not None else 1
+    deadline_value = deadline_hours if deadline_hours is not None else 0
+    freshness_value = _freshness_priority_value(getattr(record, "last_seen_at", None))
+    requested_at = getattr(record, "enrichment_requested_at", None) or datetime.min.replace(tzinfo=UTC)
+    return (-rating_score, deadline_bucket, deadline_value, freshness_value, requested_at, record.id or 0)
 
 
 def _terminal_status_predicate():
@@ -318,7 +339,7 @@ async def claim_lot_enrichment_candidates(
     lease_seconds: int = DEFAULT_ENRICHMENT_CLAIM_SECONDS,
 ) -> list[AuctionLotRecord]:
     current_time = current_time or datetime.now(UTC)
-    statement = build_lot_enrichment_candidate_statement(source_code=source_code, current_time=current_time, limit=limit)
+    statement = build_lot_enrichment_candidate_statement(source_code=source_code, current_time=current_time, limit=None)
     statement = statement.with_for_update(skip_locked=True, of=AuctionLotRecord)
     records = (await session.scalars(statement)).all()
     claimed = collect_lot_enrichment_candidates(records, current_time=current_time, limit=limit)
@@ -357,6 +378,59 @@ def _release_lot_enrichment_claim(record: AuctionLotRecord) -> None:
     record.enrichment_claimed_at = None
     record.enrichment_claimed_by = None
     record.enrichment_claim_expires_at = None
+
+
+def _candidate_hours_to_deadline(record: AuctionLotRecord, *, current_time: datetime) -> int | None:
+    deadline_text = _candidate_deadline_text(record)
+    if not deadline_text:
+        return None
+    deadline = _parse_deadline(deadline_text)
+    if deadline is None:
+        return None
+    remaining_seconds = (deadline - current_time.replace(tzinfo=None)).total_seconds()
+    return int(remaining_seconds // 3600)
+
+
+def _candidate_deadline_text(record: AuctionLotRecord) -> str | None:
+    row = record.datagrid_row if isinstance(record.datagrid_row, dict) else {}
+    normalized_item = record.normalized_item if isinstance(record.normalized_item, dict) else {}
+    normalized_auction = normalized_item.get("auction") if isinstance(normalized_item.get("auction"), dict) else {}
+    normalized_lot = normalized_item.get("lot") if isinstance(normalized_item.get("lot"), dict) else {}
+    return _first_text(
+        row.get("application_deadline"),
+        row.get("auction_date"),
+        normalized_auction.get("application_deadline"),
+        normalized_auction.get("auction_date"),
+        normalized_lot.get("application_deadline"),
+        normalized_lot.get("auction_date"),
+    )
+
+
+def _freshness_priority_value(last_seen_at: datetime | None) -> float:
+    if last_seen_at is None:
+        return float("inf")
+    if last_seen_at.tzinfo is None:
+        last_seen_at = last_seen_at.replace(tzinfo=UTC)
+    return -last_seen_at.timestamp()
+
+
+def _first_text(*values: object) -> str | None:
+    for value in values:
+        if isinstance(value, str):
+            normalized = value.strip()
+            if normalized:
+                return normalized
+    return None
+
+
+def _parse_deadline(value: str) -> datetime | None:
+    normalized = value.strip()
+    for pattern in DEADLINE_PATTERNS:
+        try:
+            return datetime.strptime(normalized[:19], pattern)
+        except ValueError:
+            continue
+    return None
 
 
 def _has_price_facts(evidence: LotEvidence) -> bool:
