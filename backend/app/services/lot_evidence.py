@@ -58,24 +58,17 @@ def build_lot_evidence(record: AuctionLotRecord, detail_cache: AuctionLotDetailC
         detail_content_hash=detail_cache.content_hash if detail_cache else None,
         price=LotPriceFacts(
             initial_price=_resolve_decimal(
-                row.initial_price_value,
-                row.initial_price,
                 merged_lot.get("initial_price"),
                 record.initial_price,
             ),
             current_price=_resolve_decimal(
-                row.current_price_value,
-                row.current_price,
                 merged_lot.get("current_price"),
                 record.initial_price,
             ),
             minimum_price=_resolve_decimal(
-                row.minimum_price_value,
-                row.minimum_price,
                 merged_lot.get("minimum_price"),
             ),
             market_value=_resolve_decimal(
-                row.market_value,
                 merged_lot.get("market_value"),
             ),
             currency=_first_text(
@@ -90,8 +83,8 @@ def build_lot_evidence(record: AuctionLotRecord, detail_cache: AuctionLotDetailC
             coordinates=_first_text(row.location_coordinates, merged_lot.get("coordinates")),
         ),
         category=LotCategoryFacts(
-            category=_first_text(row.category, row.model_category, merged_lot.get("category")),
-            model_category=_first_text(row.model_category),
+            category=_first_text(merged_lot.get("category")),
+            model_category=_first_text(merged_lot.get("model_category")),
             lot_name=_first_text(row.lot_name, record.lot_name),
             status=_first_text(row.status, record.status),
         ),

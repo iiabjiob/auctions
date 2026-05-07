@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from app.models.auction import AuctionLotDetailCache, AuctionLotRecord, AuctionLotWorkItem
 from app.schemas.analysis_config import OwnerScoringProfile, ScoringDimensionWeights
 from app.schemas.auctions import AuctionListItem, LotEconomyResponse, LotRating
+from app.services.lot_evidence import build_lot_evidence, build_lot_evidence_hash
 from app.services.auction_analysis import LegalRiskRules, build_lot_analysis
 from app.services.auction_datagrid_payload import validate_datagrid_row_payload
 from app.services.auction_values import parse_price
@@ -228,15 +229,19 @@ def build_record_score_input_hash(
     legal_risk_rules: LegalRiskRules | None = None,
     owner_profile: OwnerScoringProfile | None = None,
     dimension_weights: ScoringDimensionWeights | None = None,
+    profile_identifier: str | None = None,
 ) -> str:
+    evidence = build_lot_evidence(record, detail_cache)
     return build_score_input_hash(
         mode="record",
+        lot_evidence_hash=build_lot_evidence_hash(evidence),
         normalized_item=record.normalized_item,
         record_status=record.status,
         record_initial_price=record.initial_price,
         record_content_hash=record.content_hash,
         detail_content_hash=detail_cache.content_hash if detail_cache else None,
         work_item=work_item,
+        profile_identifier=profile_identifier,
         category_keywords=category_keywords,
         exclusion_keywords=exclusion_keywords,
         legal_risk_rules=legal_risk_rules,

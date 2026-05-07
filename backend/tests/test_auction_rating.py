@@ -45,7 +45,19 @@ def make_record(*, lot_name: str, status: str = "Идет прием заяво�
         initial_price="1 000 000 руб.",
         content_hash="hash",
         datagrid_row=row.model_dump(mode="json"),
-        normalized_item={"lot": {"name": lot_name, "status": status}},
+        normalized_item={
+            "auction": {"publication_date": "01.05.2026"},
+            "lot": {
+                "name": lot_name,
+                "status": status,
+                "category": "Спецтехника",
+                "model_category": "Спецтехника",
+                "region": "Московская область",
+                "city": "Химки",
+                "address": "ул. Ленина, 1",
+                "coordinates": "55.89, 37.45",
+            },
+        },
     )
 
 
@@ -118,6 +130,17 @@ class AuctionRatingTests(unittest.TestCase):
         self.assertEqual(first_hash, record.score_input_hash)
         self.assertEqual(first_rating.input_hash, second_rating.input_hash)
         self.assertEqual(second_rating.breakdown["score"], second_rating.score)
+
+    def test_rating_input_hash_changes_when_local_evidence_changes(self) -> None:
+        record = make_record(lot_name="Экскаватор гусеничный")
+        detail_cache = make_detail_cache()
+        work_item = make_work_item()
+
+        first_hash = build_record_score_input_hash(record, detail_cache, work_item)
+        detail_cache.lot_detail["lot"]["region"] = "Самарская область"
+        second_hash = build_record_score_input_hash(record, detail_cache, work_item)
+
+        self.assertNotEqual(first_hash, second_hash)
 
     def test_score_current_detection_uses_version_and_input_hash(self) -> None:
         record = make_record(lot_name="Экскаватор гусеничный")
