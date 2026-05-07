@@ -9,6 +9,7 @@ from sqlalchemy.dialects import postgresql
 from app.models.auction import AuctionLotDetailCache, AuctionLotRecord, AuctionLotWorkItem
 from app.schemas.analysis_config import OwnerScoringProfile, ScoringDimensionWeights
 from app.schemas.auctions import LotDatagridRow, LotFreshness, LotRating
+from app.schemas.scoring_profile import LotScoringProfile, build_lot_scoring_profile_hash
 from app.services import auction_catalog, auction_scoring, auction_sync, auction_workspace
 from app.services.auction_datagrid_payload import validate_datagrid_row_payload
 from app.services.auction_scoring import (
@@ -173,6 +174,82 @@ class AuctionRatingTests(unittest.TestCase):
                     baseline_hash,
                     build_record_score_input_hash(record, detail_cache, work_item),
                 )
+
+    def test_record_score_input_hash_profile_identity_is_optional(self) -> None:
+        record = make_record(lot_name="Экскаватор гусеничный")
+        detail_cache = make_detail_cache()
+        work_item = make_work_item()
+
+        baseline_hash = build_record_score_input_hash(record, detail_cache, work_item)
+
+        self.assertEqual(baseline_hash, build_record_score_input_hash(record, detail_cache, work_item, scoring_profile=None))
+
+    def test_record_score_input_hash_is_stable_for_same_profile(self) -> None:
+        record = make_record(lot_name="Экскаватор гусеничный")
+        detail_cache = make_detail_cache()
+        work_item = make_work_item()
+        profile = LotScoringProfile(
+            profile_identifier="profile-1",
+            target_regions=["Москва", "Московская область"],
+            target_categories=["Спецтехника"],
+            budget_max=Decimal("2500000"),
+            minimum_roi=Decimal("0.25"),
+            strategy="balanced",
+        )
+
+        first_hash = build_record_score_input_hash(record, detail_cache, work_item, scoring_profile=profile)
+        second_hash = build_record_score_input_hash(record, detail_cache, work_item, scoring_profile=profile.model_copy())
+
+        self.assertEqual(first_hash, second_hash)
+        self.assertEqual(build_lot_scoring_profile_hash(profile), build_lot_scoring_profile_hash(profile.model_copy()))
+
+    def test_record_score_input_hash_uses_explicit_profile_hash_when_provided(self) -> None:
+        record = make_record(lot_name="Экскаватор гусеничный")
+        detail_cache = make_detail_cache()
+        work_item = make_work_item()
+        profile_hash = "profile-hash-1"
+
+        baseline_hash = build_record_score_input_hash(record, detail_cache, work_item)
+        explicit_hash = build_record_score_input_hash(record, detail_cache, work_item, profile_hash=profile_hash)
+        baseline_rating = recalculate_record_rating(record, detail_cache, work_item)
+        explicit_rating = recalculate_record_rating(record, detail_cache, work_item, profile_hash=profile_hash)
+
+        self.assertNotEqual(baseline_hash, explicit_hash)
+        self.assertEqual(
+            explicit_hash,
+            build_record_score_input_hash(record, detail_cache, work_item, profile_hash=profile_hash),
+        )
+        self.assertEqual(baseline_rating.score, explicit_rating.score)
+        self.assertEqual(baseline_rating.level, explicit_rating.level)
+
+    def test_record_score_input_hash_changes_when_profile_changes(self) -> None:
+        record = make_record(lot_name="Экскаватор гусеничный")
+        detail_cache = make_detail_cache()
+        work_item = make_work_item()
+        base_profile = LotScoringProfile(
+            profile_identifier="profile-1",
+            target_regions=["Москва"],
+            budget_max=Decimal("2000000"),
+            strategy="balanced",
+        )
+        changed_profile = base_profile.model_copy(update={"budget_max": Decimal("2500000"), "strategy": "aggressive"})
+
+        baseline_hash = build_record_score_input_hash(record, detail_cache, work_item, scoring_profile=base_profile)
+        changed_hash = build_record_score_input_hash(record, detail_cache, work_item, scoring_profile=changed_profile)
+
+        self.assertNotEqual(baseline_hash, changed_hash)
+
+    def test_record_scoring_score_values_remain_unchanged_with_profile_identity(self) -> None:
+        record = make_record(lot_name="Экскаватор гусеничный")
+        detail_cache = make_detail_cache()
+        work_item = make_work_item()
+        profile = LotScoringProfile(profile_identifier="profile-1", target_regions=["Москва"])
+
+        baseline_rating = recalculate_record_rating(record, detail_cache, work_item)
+        profile_rating = recalculate_record_rating(record, detail_cache, work_item, scoring_profile=profile)
+
+        self.assertEqual(baseline_rating.score, profile_rating.score)
+        self.assertEqual(baseline_rating.level, profile_rating.level)
 
     def test_record_scoring_runtime_input_matches_legacy_inputs(self) -> None:
         record = make_record(lot_name="Экскаватор гусеничный")

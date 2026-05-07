@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from app.models.auction import AuctionLotDetailCache, AuctionLotRecord, AuctionLotWorkItem
 from app.schemas.analysis_config import OwnerScoringProfile, ScoringDimensionWeights
 from app.schemas.auctions import AuctionListItem, LotEconomyResponse, LotRating
+from app.schemas.scoring_profile import LotScoringProfile, build_lot_scoring_profile_hash
 from app.services.lot_evidence import build_lot_evidence, build_lot_evidence_hash
 from app.services.auction_scoring_invalidation import invalidate_lot_score
 from app.services.auction_analysis import LegalRiskRules, build_lot_analysis
@@ -81,6 +82,7 @@ class RecordScoringRuntimeInput:
     record_content_hash: str
     detail_content_hash: str | None
     work_item: AuctionLotWorkItem | None
+    profile_hash: str | None = None
     profile_identifier: str | None = None
     category_keywords: dict[str, tuple[str, ...]] | None = None
     exclusion_keywords: tuple[str, ...] | None = None
@@ -89,7 +91,7 @@ class RecordScoringRuntimeInput:
     dimension_weights: ScoringDimensionWeights | None = None
 
     def to_legacy_payload(self) -> dict[str, Any]:
-        return {
+        payload = {
             "scoring_version": self.scoring_version,
             "mode": "record",
             "lot_evidence_hash": self.lot_evidence_hash,
@@ -109,6 +111,9 @@ class RecordScoringRuntimeInput:
             "owner_profile": self.owner_profile,
             "dimension_weights": self.dimension_weights,
         }
+        if self.profile_hash is not None:
+            payload["profile_hash"] = self.profile_hash
+        return payload
 
 
 def calculate_list_lot_rating(item: AuctionListItem, price_value: Decimal | None) -> LotRating:
@@ -184,6 +189,8 @@ def recalculate_record_rating(
     legal_risk_rules: LegalRiskRules | None = None,
     owner_profile: OwnerScoringProfile | None = None,
     dimension_weights: ScoringDimensionWeights | None = None,
+    scoring_profile: LotScoringProfile | None = None,
+    profile_hash: str | None = None,
     force: bool = False,
 ) -> LotRating:
     if detail_cache is not None:
@@ -197,6 +204,8 @@ def recalculate_record_rating(
         legal_risk_rules=legal_risk_rules,
         owner_profile=owner_profile,
         dimension_weights=dimension_weights,
+        scoring_profile=scoring_profile,
+        profile_hash=profile_hash,
     )
     return recalculate_record_rating_from_runtime_input(record, detail_cache, runtime_input, force=force)
 
@@ -342,7 +351,12 @@ def build_record_score_input_hash(
     owner_profile: OwnerScoringProfile | None = None,
     dimension_weights: ScoringDimensionWeights | None = None,
     profile_identifier: str | None = None,
+    scoring_profile: LotScoringProfile | None = None,
+    profile_hash: str | None = None,
 ) -> str:
+    resolved_profile_hash = profile_hash
+    if resolved_profile_hash is None and scoring_profile is not None:
+        resolved_profile_hash = build_lot_scoring_profile_hash(scoring_profile)
     runtime_input = build_record_scoring_runtime_input(
         record,
         detail_cache,
@@ -353,6 +367,8 @@ def build_record_score_input_hash(
         owner_profile=owner_profile,
         dimension_weights=dimension_weights,
         profile_identifier=profile_identifier,
+        scoring_profile=scoring_profile,
+        profile_hash=resolved_profile_hash,
     )
     return build_score_input_hash(**runtime_input.to_legacy_payload())
 
@@ -368,9 +384,14 @@ def build_record_scoring_runtime_input(
     owner_profile: OwnerScoringProfile | None = None,
     dimension_weights: ScoringDimensionWeights | None = None,
     profile_identifier: str | None = None,
+    scoring_profile: LotScoringProfile | None = None,
+    profile_hash: str | None = None,
 ) -> RecordScoringRuntimeInput:
     evidence = build_lot_evidence(record, detail_cache)
     row = validate_datagrid_row_payload(record.datagrid_row)
+    resolved_profile_hash = profile_hash
+    if resolved_profile_hash is None and scoring_profile is not None:
+        resolved_profile_hash = build_lot_scoring_profile_hash(scoring_profile)
     return RecordScoringRuntimeInput(
         scoring_version=SCORING_VERSION,
         lot_evidence_hash=build_lot_evidence_hash(evidence),
@@ -396,6 +417,7 @@ def build_record_scoring_runtime_input(
         record_exclusion_keyword=evidence.legal.exclusion_signals[0] if evidence.legal.exclusion_signals else None,
         record_content_hash=record.content_hash,
         detail_content_hash=detail_cache.content_hash if detail_cache else None,
+        profile_hash=resolved_profile_hash,
         work_item=work_item,
         profile_identifier=profile_identifier,
         category_keywords=category_keywords,
