@@ -197,6 +197,67 @@ async def list_persisted_lots_for_datagrid(
     )
 
 
+async def pull_persisted_lots_for_grid(
+    session: AsyncSession,
+    *,
+    start_row: int,
+    end_row: int,
+    period: str = "month",
+    source: str | None = None,
+    q: str | None = None,
+    status: str | None = None,
+    analysis_color: str | None = None,
+    min_price: Decimal | None = None,
+    max_price: Decimal | None = None,
+    only_new: bool = False,
+    shortlist: bool = False,
+    min_rating: int | None = None,
+    sort_model: list[dict] | None = None,
+    grid_filter: dict | None = None,
+) -> tuple[list[tuple[AuctionLotRecord, LotDatagridRow]], int]:
+    resolved_start = max(0, start_row)
+    resolved_end = max(resolved_start, end_row)
+    limit = min(resolved_end - resolved_start, LOT_DATASET_MAX_ROWS)
+    filters = LotDatagridFilters(
+        period=period,
+        source=source,
+        q=q,
+        status=status,
+        analysis_color=analysis_color,
+        min_price=min_price,
+        max_price=max_price,
+        only_new=only_new,
+        shortlist=shortlist,
+        min_rating=min_rating,
+    )
+    active_sources = tuple(SOURCE_PROVIDERS)
+    if source and source != "all" and source not in SOURCE_PROVIDERS:
+        supported = ", ".join(sorted(SOURCE_PROVIDERS))
+        raise ValueError(f"Unsupported auction source '{source}'. Supported: {supported}")
+
+    statement = _build_persisted_lots_statement(filters, active_sources, grid_filter=grid_filter)
+    total = await _count_persisted_lots(session, statement)
+    if limit == 0:
+        return [], total
+
+    statement = _apply_record_sort(statement, sort_model=sort_model)
+    records = (await session.scalars(statement.offset(resolved_start).limit(limit))).all()
+    work_items = await _work_items_by_record_id(session, [record.id for record in records])
+    detail_caches = await _detail_caches_by_record_id(session, [record.id for record in records])
+
+    rows: list[tuple[AuctionLotRecord, LotDatagridRow]] = []
+    for record in records:
+        row = validate_datagrid_row_payload(record.datagrid_row)
+        row.row_id = f"{record.source_code}:{record.auction_external_id}:{record.lot_external_id}"
+        _hydrate_row_from_normalized_item(row, record.normalized_item)
+        _hydrate_row_from_detail_cache(row, detail_caches.get(record.id))
+        row.model_category = row.model_category or row.analysis.category
+        _apply_display_category(row)
+        _attach_work_item_state(row, work_items.get(record.id))
+        rows.append((record, row))
+    return rows, total
+
+
 async def list_persisted_lot_column_histogram(
     session: AsyncSession,
     *,
