@@ -117,6 +117,8 @@ def build_lot_analysis(
     category_keywords: dict[str, tuple[str, ...]] | None = None,
     exclusion_keywords: tuple[str, ...] | None = None,
     legal_risk_rules: LegalRiskRules | None = None,
+    has_documents: bool | None = None,
+    has_photos: bool | None = None,
 ) -> LotAnalysis:
     analysis_time = now or datetime.now(UTC)
     search_text = _build_search_text(record, detail_cache)
@@ -129,9 +131,11 @@ def build_lot_analysis(
     if work_item and work_item.exclude_from_analysis:
         exclusion_keyword = (work_item.exclusion_reason or "").strip() or "manual"
     legal_risk = _resolve_legal_risk(search_text, category, legal_risk_rules or DEFAULT_LEGAL_RISK_RULES)
-    has_documents = bool(detail_cache and detail_cache.documents)
+    if has_documents is None:
+        has_documents = bool(detail_cache and detail_cache.documents)
     has_row_photos = _has_real_row_photos(row)
-    has_photos = has_row_photos or any(_is_media_document(document) for document in (detail_cache.documents if detail_cache else []))
+    if has_photos is None:
+        has_photos = has_row_photos or any(_is_media_document(document) for document in (detail_cache.documents if detail_cache else []))
     completeness = "complete" if has_documents and has_photos else "partial"
     hours_to_deadline = _hours_to_deadline(row.application_deadline, analysis_time)
 

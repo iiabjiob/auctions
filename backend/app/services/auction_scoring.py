@@ -235,6 +235,8 @@ def recalculate_record_rating_from_runtime_input(
         category_keywords=category_keywords,
         exclusion_keywords=exclusion_keywords,
         legal_risk_rules=legal_risk_rules,
+        has_documents=runtime_input.record_has_documents,
+        has_photos=runtime_input.record_has_photos,
     )
     if runtime_input.record_has_documents is not None:
         row.analysis.has_documents = runtime_input.record_has_documents

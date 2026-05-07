@@ -82,7 +82,7 @@ Scoring is also moving through a transition layer. The public runtime scoring pa
 
 The remaining legacy fallback surface is now intentionally small and mainly limited to:
 
-- a few `build_lot_analysis(...)` fallback reads that still rely on the legacy row/detail payload shape
+- a few `build_lot_analysis(...)` fallback reads that still rely on the legacy row/detail payload shape for category/exclusion/legal-risk heuristics and operational-readiness hints
 - `row.location_coordinates` as a last resort for the delivery-distance penalty
 
 Those areas are kept for compatibility until a later slice removes them one by one.

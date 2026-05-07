@@ -338,6 +338,28 @@ class AuctionRatingTests(unittest.TestCase):
         self.assertIn("Лот исключен из анализа", record.score_breakdown["reasons"])
         self.assertEqual(legacy_rating.input_hash, adapter_rating.input_hash)
 
+    def test_record_scoring_runtime_input_uses_documents_and_photos_as_primary_source(self) -> None:
+        record = make_record(lot_name="Экскаватор гусеничный")
+        detail_cache = make_detail_cache()
+        runtime_input = build_record_scoring_runtime_input(record, detail_cache, None)
+
+        baseline_rating = recalculate_record_rating_from_runtime_input(record, detail_cache, runtime_input, force=True)
+        baseline_analysis = validate_datagrid_row_payload(record.datagrid_row).analysis
+
+        self.assertEqual(baseline_analysis.completeness, "complete")
+        self.assertGreaterEqual(baseline_rating.score, 82)
+
+        runtime_input.record_has_documents = False
+        runtime_input.record_has_photos = False
+        adapter_rating = recalculate_record_rating_from_runtime_input(record, detail_cache, runtime_input, force=True)
+        adapter_analysis = validate_datagrid_row_payload(record.datagrid_row).analysis
+
+        self.assertEqual(adapter_analysis.completeness, "partial")
+        self.assertIn("Нет документов", adapter_analysis.reasons)
+        self.assertIn("Нет фото", adapter_analysis.reasons)
+        self.assertLess(adapter_rating.score, baseline_rating.score)
+        self.assertEqual(adapter_rating.input_hash, build_record_score_input_hash(record, detail_cache, None))
+
     def test_recalculate_record_rating_score_values_remain_unchanged_with_adapter(self) -> None:
         record = make_record(lot_name="Экскаватор гусеничный")
         detail_cache = make_detail_cache()
