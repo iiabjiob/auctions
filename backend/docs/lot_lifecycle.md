@@ -35,4 +35,9 @@ Enrichment is driven by evidence requirements, not by whether the UI detail card
 
 If those are present in persisted local data, the lot does not need enrichment. Optional detail-only facts like documents, media, and description improve ranking quality later, but they are not hard requirements for the first pass.
 
-This slice only classifies lots as locally scorable or needing enrichment. It does not schedule enrichment work, enqueue jobs, or fetch additional data.
+This slice classifies lots as locally scorable or needing enrichment. When a source sync detects missing first-pass evidence, the backend now writes a lightweight `enrichment_requested_at` marker on the lot record. That marker is only a scheduling hint, not a worker pipeline:
+
+- it is set when the classification says enrichment is needed
+- it is cleared when the lot is locally scorable again
+- it is not a queue, job table, or background fetcher
+- it does not open the UI detail card or call external sources

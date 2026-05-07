@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import unittest
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from app.models.auction import AuctionLotDetailCache, AuctionLotRecord
 from app.schemas.auctions import LotDatagridRow, LotFreshness, LotImage, LotRating
 from app.services.lot_evidence import build_lot_evidence
 from app.services.lot_enrichment import evaluate_lot_enrichment_requirements
-from app.services.lot_enrichment import classify_lot_enrichment
+from app.services.lot_enrichment import classify_lot_enrichment, schedule_lot_enrichment
 
 
 def make_record() -> AuctionLotRecord:
@@ -244,6 +245,25 @@ class LotEnrichmentRequirementTests(unittest.TestCase):
 
         self.assertTrue(evaluation.needs_enrichment)
         self.assertIn("price", evaluation.missing_fields)
+
+    def test_schedule_lot_enrichment_sets_marker_for_missing_evidence(self) -> None:
+        record = make_list_only_record(missing_price=True)
+        evaluation = classify_lot_enrichment(record)
+
+        changed = schedule_lot_enrichment(record, evaluation, requested_at=datetime(2026, 5, 7, tzinfo=UTC), force=True)
+
+        self.assertTrue(changed)
+        self.assertEqual(record.enrichment_requested_at, datetime(2026, 5, 7, tzinfo=UTC))
+
+    def test_schedule_lot_enrichment_clears_marker_when_evidence_is_sufficient(self) -> None:
+        record = make_list_only_record()
+        record.enrichment_requested_at = datetime(2026, 5, 7, tzinfo=UTC)
+        evaluation = classify_lot_enrichment(record)
+
+        changed = schedule_lot_enrichment(record, evaluation)
+
+        self.assertTrue(changed)
+        self.assertIsNone(record.enrichment_requested_at)
 
 
 if __name__ == "__main__":

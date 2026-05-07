@@ -24,7 +24,7 @@ from app.services.auction_analysis_config import auction_analysis_config_service
 from app.services.auction_catalog import build_datagrid_row
 from app.services.auction_grid_state import bump_auction_lot_dataset_version
 from app.services.auction_sources import get_source_provider
-from app.services.lot_enrichment import classify_lot_enrichment
+from app.services.lot_enrichment import classify_lot_enrichment, schedule_lot_enrichment
 from app.services.auction_scoring import recalculate_record_rating
 from app.services.auction_scoring_invalidation import SOURCE_CONTENT_CHANGED
 from app.services.auction_scoring import invalidate_lot_score
@@ -138,7 +138,9 @@ async def sync_source_lots(
             )
             session.add(record)
             await session.flush()
-            _ = classify_lot_enrichment(record)
+            evaluation = classify_lot_enrichment(record)
+            if evaluation.needs_enrichment:
+                schedule_lot_enrichment(record, evaluation, requested_at=now, force=True)
             await _recalculate_record_with_cached_inputs(session, record, runtime_config=runtime_config)
             result.created += 1
             await _add_observation(session, record, snapshot)
@@ -185,7 +187,9 @@ async def sync_source_lots(
             record.normalized_item = snapshot.normalized_item
             if content_changed:
                 invalidate_lot_score(record, reason=SOURCE_CONTENT_CHANGED)
-                _ = classify_lot_enrichment(record)
+                evaluation = classify_lot_enrichment(record)
+                if evaluation.needs_enrichment or record.enrichment_requested_at is not None:
+                    schedule_lot_enrichment(record, evaluation, requested_at=now, force=True)
             else:
                 record.rating_score = snapshot.datagrid_row["rating"]["score"]
                 record.rating_level = snapshot.datagrid_row["rating"]["level"]

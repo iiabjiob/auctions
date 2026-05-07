@@ -9,6 +9,7 @@ from app.models.auction import AuctionLotRecord, AuctionSourceState
 from app.schemas.auctions import AuctionListItem, AuctionSummary, LotSummary, OrganizerInfo
 from app.services.auction_scoring import invalidate_lot_score
 from app.services.lot_enrichment import classify_lot_enrichment
+from app.services.lot_enrichment import schedule_lot_enrichment
 from app.services.auction_sync import _prepare_snapshot, sync_source_lots
 
 
@@ -63,6 +64,7 @@ def make_record(snapshot, *, content_hash: str, score_input_hash: str = "score-h
         scored_at=datetime(2026, 5, 7, tzinfo=UTC),
         score_input_hash=score_input_hash,
         score_breakdown={"score": 88, "mode": "record"},
+        enrichment_requested_at=None,
         datagrid_row=snapshot.datagrid_row,
         normalized_item=snapshot.normalized_item,
         first_seen_at=datetime(2026, 5, 7, tzinfo=UTC),
@@ -106,6 +108,70 @@ class FakeSession:
 
 
 class AuctionSyncInvalidationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_source_content_change_schedules_enrichment_when_evidence_is_missing(self) -> None:
+        item = make_list_item(initial_price=None)
+        snapshot = _prepare_snapshot(item, "TBankrot")
+        record = make_record(snapshot, content_hash="old-content-hash")
+        session = FakeSession()
+        runtime_config = SimpleNamespace(
+            category_keywords={},
+            exclusion_keywords=(),
+            legal_risk_rules=SimpleNamespace(),
+            owner_profile=SimpleNamespace(),
+            dimension_weights=SimpleNamespace(),
+        )
+        provider = StaticSourceProvider([item])
+
+        with (
+            patch("app.services.auction_sync.get_source_provider", return_value=provider),
+            patch("app.services.auction_sync._find_lot_record", AsyncMock(return_value=record)),
+            patch("app.services.auction_sync._recalculate_record_with_cached_inputs", AsyncMock()),
+            patch("app.services.auction_sync._sync_detail_if_needed", AsyncMock(return_value=0)),
+            patch("app.services.auction_sync._backfill_publication_dates", AsyncMock()),
+            patch("app.services.auction_sync.bump_auction_lot_dataset_version", AsyncMock()),
+            patch("app.services.auction_sync.auction_analysis_config_service.get_runtime_config", AsyncMock(return_value=runtime_config)),
+            patch("app.services.auction_sync.classify_lot_enrichment", return_value=SimpleNamespace(needs_enrichment=True)) as classify_enrichment,
+            patch("app.services.auction_sync.schedule_lot_enrichment", wraps=schedule_lot_enrichment) as schedule_enrichment,
+            patch("app.services.auction_sync.invalidate_lot_score", wraps=invalidate_lot_score),
+        ):
+            await sync_source_lots(session, source="tbankrot", limit=1)
+
+        classify_enrichment.assert_called_once()
+        schedule_enrichment.assert_called_once()
+        self.assertIsNotNone(record.enrichment_requested_at)
+
+    async def test_source_content_change_does_not_schedule_enrichment_when_local_evidence_is_sufficient(self) -> None:
+        item = make_list_item()
+        snapshot = _prepare_snapshot(item, "TBankrot")
+        record = make_record(snapshot, content_hash="old-content-hash")
+        session = FakeSession()
+        runtime_config = SimpleNamespace(
+            category_keywords={},
+            exclusion_keywords=(),
+            legal_risk_rules=SimpleNamespace(),
+            owner_profile=SimpleNamespace(),
+            dimension_weights=SimpleNamespace(),
+        )
+        provider = StaticSourceProvider([item])
+
+        with (
+            patch("app.services.auction_sync.get_source_provider", return_value=provider),
+            patch("app.services.auction_sync._find_lot_record", AsyncMock(return_value=record)),
+            patch("app.services.auction_sync._recalculate_record_with_cached_inputs", AsyncMock()),
+            patch("app.services.auction_sync._sync_detail_if_needed", AsyncMock(return_value=0)),
+            patch("app.services.auction_sync._backfill_publication_dates", AsyncMock()),
+            patch("app.services.auction_sync.bump_auction_lot_dataset_version", AsyncMock()),
+            patch("app.services.auction_sync.auction_analysis_config_service.get_runtime_config", AsyncMock(return_value=runtime_config)),
+            patch("app.services.auction_sync.classify_lot_enrichment", return_value=SimpleNamespace(needs_enrichment=False)) as classify_enrichment,
+            patch("app.services.auction_sync.schedule_lot_enrichment", wraps=schedule_lot_enrichment) as schedule_enrichment,
+            patch("app.services.auction_sync.invalidate_lot_score", wraps=invalidate_lot_score),
+        ):
+            await sync_source_lots(session, source="tbankrot", limit=1)
+
+        classify_enrichment.assert_called_once()
+        schedule_enrichment.assert_not_called()
+        self.assertIsNone(record.enrichment_requested_at)
+
     async def test_source_content_change_invalidates_score_identity_and_preserves_ui_score_state(self) -> None:
         item = make_list_item()
         snapshot = _prepare_snapshot(item, "TBankrot")
@@ -172,6 +238,40 @@ class AuctionSyncInvalidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(record.score_input_hash)
         self.assertGreater(record.rating_score, 0)
         self.assertIn("mode", record.score_breakdown)
+
+    async def test_repeated_identical_sync_does_not_duplicate_enrichment_scheduling(self) -> None:
+        item = make_list_item(initial_price=None)
+        snapshot = _prepare_snapshot(item, "TBankrot")
+        record = make_record(snapshot, content_hash="old-content-hash")
+        session = FakeSession()
+        runtime_config = SimpleNamespace(
+            category_keywords={},
+            exclusion_keywords=(),
+            legal_risk_rules=SimpleNamespace(),
+            owner_profile=SimpleNamespace(),
+            dimension_weights=SimpleNamespace(),
+        )
+        provider = StaticSourceProvider([item])
+
+        with (
+            patch("app.services.auction_sync.get_source_provider", return_value=provider),
+            patch("app.services.auction_sync._find_lot_record", AsyncMock(return_value=record)),
+            patch("app.services.auction_sync._recalculate_record_with_cached_inputs", AsyncMock()),
+            patch("app.services.auction_sync._sync_detail_if_needed", AsyncMock(return_value=0)),
+            patch("app.services.auction_sync._backfill_publication_dates", AsyncMock()),
+            patch("app.services.auction_sync.bump_auction_lot_dataset_version", AsyncMock()),
+            patch("app.services.auction_sync.auction_analysis_config_service.get_runtime_config", AsyncMock(return_value=runtime_config)),
+            patch("app.services.auction_sync.classify_lot_enrichment", return_value=SimpleNamespace(needs_enrichment=True)) as classify_enrichment,
+            patch("app.services.auction_sync.schedule_lot_enrichment", wraps=schedule_lot_enrichment) as schedule_enrichment,
+            patch("app.services.auction_sync.invalidate_lot_score", wraps=invalidate_lot_score),
+        ):
+            await sync_source_lots(session, source="tbankrot", limit=1)
+            first_requested_at = record.enrichment_requested_at
+            await sync_source_lots(session, source="tbankrot", limit=1)
+
+        self.assertEqual(classify_enrichment.call_count, 1)
+        self.assertEqual(schedule_enrichment.call_count, 1)
+        self.assertEqual(record.enrichment_requested_at, first_requested_at)
 
 
 if __name__ == "__main__":

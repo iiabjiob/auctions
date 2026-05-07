@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.auction import AuctionLotDetailCache, AuctionLotRecord
@@ -39,6 +41,25 @@ def classify_lot_enrichment(
     detail_cache: AuctionLotDetailCache | None = None,
 ) -> LotEnrichmentRequirementEvaluation:
     return evaluate_lot_enrichment_requirements(build_lot_evidence(record, detail_cache))
+
+
+def schedule_lot_enrichment(
+    record: AuctionLotRecord,
+    evaluation: LotEnrichmentRequirementEvaluation,
+    *,
+    requested_at: datetime | None = None,
+    force: bool = False,
+) -> bool:
+    if evaluation.needs_enrichment:
+        next_requested_at = requested_at or datetime.now(UTC)
+        if not force and record.enrichment_requested_at is not None:
+            return False
+        record.enrichment_requested_at = next_requested_at
+        return True
+    if record.enrichment_requested_at is None:
+        return False
+    record.enrichment_requested_at = None
+    return True
 
 
 def _has_price_facts(evidence: LotEvidence) -> bool:
