@@ -18,6 +18,7 @@ from app.schemas.auctions import (
     LotWorkspaceResponse,
 )
 from app.services import auction_catalog
+from app.services.auction_scoring import invalidate_lot_score
 from app.services.auction_workspace import update_lot_work_item
 
 
@@ -51,6 +52,17 @@ def make_record() -> AuctionLotRecord:
         datagrid_row=row.model_dump(mode="json"),
         normalized_item={"lot": {"name": "Лот", "status": "Идет прием заявок"}},
     )
+
+
+def make_scored_record() -> AuctionLotRecord:
+    record = make_record()
+    record.rating_score = 88
+    record.rating_level = "high"
+    record.scoring_version = "deterministic-v2"
+    record.scored_at = None
+    record.score_input_hash = "score-hash"
+    record.score_breakdown = {"score": 88, "mode": "record"}
+    return record
 
 
 class FakeStatement:
@@ -168,6 +180,135 @@ class AuctionGridSideEffectTests(unittest.IsolatedAsyncioTestCase):
             bump.await_args.kwargs["payload"],
             {"source": "workspace_update", "changed_fields": ["comment", "decision_status"]},
         )
+
+    async def test_workspace_update_invalidates_score_for_scoring_relevant_manual_fields(self) -> None:
+        record = make_scored_record()
+        work_item = AuctionLotWorkItem(lot_record_id=record.id, analogs=[], market_value=Decimal("1500000"))
+        session = FakeWorkspaceSession()
+        workspace_response = LotWorkspaceResponse(
+            record_id=record.id,
+            row=LotDatagridRow.model_validate(record.datagrid_row),
+            work_item=LotWorkItemResponse(lot_record_id=record.id),
+            economy=LotEconomyResponse(),
+            changes=LotChangeSummary(),
+        )
+        runtime_config = SimpleNamespace(
+            category_keywords={},
+            exclusion_keywords=(),
+            legal_risk_rules=None,
+            owner_profile=None,
+            dimension_weights=None,
+        )
+        bump = AsyncMock(return_value=1)
+
+        with (
+            patch("app.services.auction_workspace.find_lot_record", AsyncMock(return_value=record)),
+            patch("app.services.auction_workspace.ensure_work_item", AsyncMock(return_value=work_item)),
+            patch("app.services.auction_workspace.auction_analysis_config_service.get_runtime_config", AsyncMock(return_value=runtime_config)),
+            patch("app.services.auction_workspace.recalculate_record_rating"),
+            patch("app.services.auction_workspace.bump_auction_lot_dataset_version", bump),
+            patch("app.services.auction_workspace._publish_row_updated", AsyncMock()),
+            patch("app.services.auction_workspace.build_workspace_response", AsyncMock(return_value=workspace_response)),
+            patch("app.services.auction_workspace.invalidate_lot_score", wraps=invalidate_lot_score) as invalidate_score,
+        ):
+            result = await update_lot_work_item(
+                session,
+                source="tbankrot",
+                lot_id="lot-1",
+                auction_id="auction-1",
+                payload=LotWorkItemUpdate(market_value=Decimal("1700000")),
+            )
+
+        self.assertEqual(result.record_id, record.id)
+        invalidate_score.assert_called_once()
+        self.assertIsNone(record.score_input_hash)
+        self.assertEqual(record.rating_score, 88)
+        self.assertEqual(record.rating_level, "high")
+        self.assertEqual(record.score_breakdown, {"score": 88, "mode": "record"})
+
+    async def test_workspace_update_does_not_invalidate_for_identical_scoring_field_value(self) -> None:
+        record = make_scored_record()
+        work_item = AuctionLotWorkItem(lot_record_id=record.id, analogs=[], market_value=Decimal("1500000"))
+        session = FakeWorkspaceSession()
+        workspace_response = LotWorkspaceResponse(
+            record_id=record.id,
+            row=LotDatagridRow.model_validate(record.datagrid_row),
+            work_item=LotWorkItemResponse(lot_record_id=record.id),
+            economy=LotEconomyResponse(),
+            changes=LotChangeSummary(),
+        )
+        runtime_config = SimpleNamespace(
+            category_keywords={},
+            exclusion_keywords=(),
+            legal_risk_rules=None,
+            owner_profile=None,
+            dimension_weights=None,
+        )
+
+        with (
+            patch("app.services.auction_workspace.find_lot_record", AsyncMock(return_value=record)),
+            patch("app.services.auction_workspace.ensure_work_item", AsyncMock(return_value=work_item)),
+            patch("app.services.auction_workspace.auction_analysis_config_service.get_runtime_config", AsyncMock(return_value=runtime_config)),
+            patch("app.services.auction_workspace.recalculate_record_rating"),
+            patch("app.services.auction_workspace.bump_auction_lot_dataset_version", AsyncMock(return_value=1)),
+            patch("app.services.auction_workspace._publish_row_updated", AsyncMock()),
+            patch("app.services.auction_workspace.build_workspace_response", AsyncMock(return_value=workspace_response)),
+            patch("app.services.auction_workspace.invalidate_lot_score", wraps=invalidate_lot_score) as invalidate_score,
+        ):
+            await update_lot_work_item(
+                session,
+                source="tbankrot",
+                lot_id="lot-1",
+                auction_id="auction-1",
+                payload=LotWorkItemUpdate(market_value=Decimal("1500000")),
+            )
+
+        invalidate_score.assert_not_called()
+        self.assertEqual(record.score_input_hash, "score-hash")
+        self.assertEqual(record.rating_score, 88)
+        self.assertEqual(record.score_breakdown, {"score": 88, "mode": "record"})
+
+    async def test_workspace_update_does_not_invalidate_for_comment_only_change(self) -> None:
+        record = make_scored_record()
+        work_item = AuctionLotWorkItem(lot_record_id=record.id, analogs=[], market_value=Decimal("1500000"), comment="old")
+        session = FakeWorkspaceSession()
+        workspace_response = LotWorkspaceResponse(
+            record_id=record.id,
+            row=LotDatagridRow.model_validate(record.datagrid_row),
+            work_item=LotWorkItemResponse(lot_record_id=record.id),
+            economy=LotEconomyResponse(),
+            changes=LotChangeSummary(),
+        )
+        runtime_config = SimpleNamespace(
+            category_keywords={},
+            exclusion_keywords=(),
+            legal_risk_rules=None,
+            owner_profile=None,
+            dimension_weights=None,
+        )
+
+        with (
+            patch("app.services.auction_workspace.find_lot_record", AsyncMock(return_value=record)),
+            patch("app.services.auction_workspace.ensure_work_item", AsyncMock(return_value=work_item)),
+            patch("app.services.auction_workspace.auction_analysis_config_service.get_runtime_config", AsyncMock(return_value=runtime_config)),
+            patch("app.services.auction_workspace.recalculate_record_rating"),
+            patch("app.services.auction_workspace.bump_auction_lot_dataset_version", AsyncMock(return_value=1)),
+            patch("app.services.auction_workspace._publish_row_updated", AsyncMock()),
+            patch("app.services.auction_workspace.build_workspace_response", AsyncMock(return_value=workspace_response)),
+            patch("app.services.auction_workspace.invalidate_lot_score", wraps=invalidate_lot_score) as invalidate_score,
+        ):
+            await update_lot_work_item(
+                session,
+                source="tbankrot",
+                lot_id="lot-1",
+                auction_id="auction-1",
+                payload=LotWorkItemUpdate(comment="new"),
+            )
+
+        invalidate_score.assert_not_called()
+        self.assertEqual(record.score_input_hash, "score-hash")
+        self.assertEqual(record.rating_score, 88)
+        self.assertEqual(record.score_breakdown, {"score": 88, "mode": "record"})
 
 
 if __name__ == "__main__":

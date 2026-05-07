@@ -34,4 +34,6 @@ The first safe wiring point is the detail-cache refresh branch in `ensure_lot_de
 
 The first safe source/list wiring point is the existing `content_changed` branch in `sync_source_lots(...)`: when the persisted list snapshot hash changes, call `invalidate_lot_score(record, reason=source_content_changed)` and keep the previous UI-facing score payload until the next score pass runs. If the source hash is unchanged, do not invalidate.
 
+The first safe manual/workspace wiring point is `update_lot_work_item(...)`: when a scoring-relevant persisted field changes, call `invalidate_lot_score(record, reason=manual_economics_changed)` before the scorer runs. Non-scoring fields like freeform comments should not invalidate the score identity.
+
 The intended future wiring points are source sync, detail enrichment, manual economics updates, profile/config edits, and TTL-based freshness checks. For now the helper only clears the persisted score identity so the worker can pick the record up again without dropping the previous UI-facing score payload.

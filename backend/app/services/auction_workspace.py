@@ -45,7 +45,7 @@ from app.services.auction_scoring import (
     recalculate_record_rating,
     sync_record_from_detail_cache,
 )
-from app.services.auction_scoring_invalidation import DETAIL_CONTENT_CHANGED
+from app.services.auction_scoring_invalidation import DETAIL_CONTENT_CHANGED, MANUAL_ECONOMICS_CHANGED
 from app.services.auction_sources import get_source_provider
 
 
@@ -216,10 +216,14 @@ async def update_lot_work_item(
         sync_record_from_detail_cache(record, detail_cache)
     work_item = await ensure_work_item(session, record)
     updates = payload.model_dump(exclude_unset=True)
+    scoring_updates_changed = _work_item_scoring_updates_changed(work_item, updates)
     for field, value in updates.items():
         if field == "analogs":
             value = [dict(analog) for analog in value]
         setattr(work_item, field, value)
+
+    if scoring_updates_changed:
+        invalidate_lot_score(record, reason=MANUAL_ECONOMICS_CHANGED)
 
     runtime_config = await auction_analysis_config_service.get_runtime_config(session)
     recalculate_record_rating(
@@ -654,6 +658,40 @@ def _work_item_response(work_item: AuctionLotWorkItem) -> LotWorkItemResponse:
         created_at=work_item.created_at,
         updated_at=work_item.updated_at,
     )
+
+
+SCORING_RELEVANT_WORK_ITEM_FIELDS: tuple[str, ...] = (
+    "decision_status",
+    "final_decision",
+    "exclude_from_analysis",
+    "exclusion_reason",
+    "category_override",
+    "max_purchase_price",
+    "market_value",
+    "platform_fee",
+    "delivery_cost",
+    "dismantling_cost",
+    "repair_cost",
+    "storage_cost",
+    "legal_cost",
+    "other_costs",
+    "target_profit",
+    "analogs",
+)
+
+
+def _work_item_scoring_updates_changed(work_item: AuctionLotWorkItem, updates: dict) -> bool:
+    for field in SCORING_RELEVANT_WORK_ITEM_FIELDS:
+        if field not in updates:
+            continue
+        current_value = getattr(work_item, field)
+        next_value = updates[field]
+        if field == "analogs":
+            current_value = [dict(analog) for analog in current_value or []]
+            next_value = [dict(analog) for analog in next_value or []]
+        if current_value != next_value:
+            return True
+    return False
 
 
 async def _change_summary(session: AsyncSession, record: AuctionLotRecord, *, include_fields: bool = False) -> LotChangeSummary:
