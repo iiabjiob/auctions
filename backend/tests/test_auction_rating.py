@@ -316,6 +316,21 @@ class AuctionRatingTests(unittest.TestCase):
         self.assertIn("Регион вне целевого профиля", fallback_record.score_breakdown["dimensions"]["owner_fit"]["reasons"])
         self.assertIn("Категория вне целевого профиля", fallback_record.score_breakdown["dimensions"]["owner_fit"]["reasons"])
 
+    def test_record_scoring_runtime_input_uses_location_coordinates_as_primary_source(self) -> None:
+        record = make_record(lot_name="Экскаватор гусеничный")
+        record.datagrid_row["location_coordinates"] = "legacy-row-coordinates"
+        runtime_input = build_record_scoring_runtime_input(record, None, None)
+        runtime_input.record_location_coordinates = "adapter-coordinates"
+        runtime_input.owner_profile = OwnerScoringProfile(max_delivery_distance_km=Decimal("25"))
+
+        with patch("app.services.auction_scoring._apply_owner_profile_dimension", wraps=auction_scoring._apply_owner_profile_dimension) as apply_owner_profile:
+            rating = recalculate_record_rating_from_runtime_input(record, None, runtime_input, force=True)
+
+        apply_owner_profile.assert_called_once()
+        self.assertEqual(apply_owner_profile.call_args.kwargs["location_coordinates"], "adapter-coordinates")
+        self.assertEqual(rating.score, record.rating_score)
+        self.assertEqual(rating.input_hash, record.score_input_hash)
+
     def test_record_scoring_runtime_input_uses_legal_document_media_as_primary_source(self) -> None:
         record = make_record(lot_name="Товар")
         detail_cache = make_detail_cache()

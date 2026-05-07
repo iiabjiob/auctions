@@ -793,7 +793,8 @@ def _apply_owner_profile_dimension(
     if not profile.allow_dismantling and ((dismantling_cost or Decimal("0")) > 0 or "демонтаж" in search_text):
         dimension.add(-8, "Профиль не допускает демонтаж")
 
-    if profile.max_delivery_distance_km is not None and (location_coordinates or row.location_coordinates) is None:
+    delivery_coordinates = location_coordinates or row.location_coordinates
+    if profile.max_delivery_distance_km is not None and delivery_coordinates is None:
         dimension.add(-2, "Дистанция доставки не подтверждена")
 
 
