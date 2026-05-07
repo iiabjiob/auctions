@@ -228,6 +228,66 @@ class AuctionRatingTests(unittest.TestCase):
         self.assertEqual(rating.score, record.rating_score)
         self.assertEqual(rating.input_hash, record.score_input_hash)
 
+    def test_adapter_backed_scoring_regression_variants(self) -> None:
+        cases = [
+            {
+                "name": "list_only_enough_evidence",
+                "build": lambda: (make_record(lot_name="Экскаватор гусеничный"), None, None, 63, "medium"),
+            },
+            {
+                "name": "detail_cache_evidence",
+                "build": lambda: (make_record(lot_name="Экскаватор гусеничный"), make_detail_cache(), None, 82, "high"),
+            },
+            {
+                "name": "missing_optional_detail_fields",
+                "build": lambda: (
+                    make_record(lot_name="Экскаватор гусеничный"),
+                    self._make_detail_cache_without_auction_detail(),
+                    None,
+                    82,
+                    "high",
+                ),
+            },
+            {
+                "name": "manual_workspace_economics",
+                "build": lambda: (make_record(lot_name="Экскаватор гусеничный"), make_detail_cache(), make_work_item(), 100, "high"),
+            },
+            {
+                "name": "weak_missing_evidence",
+                "build": lambda: (
+                    self._make_weak_missing_record(),
+                    None,
+                    None,
+                    55,
+                    "medium",
+                ),
+            },
+        ]
+
+        for case in cases:
+            with self.subTest(case=case["name"]):
+                record, detail_cache, work_item, expected_score, expected_level = case["build"]()
+                adapter = build_record_scoring_runtime_input(record, detail_cache, work_item)
+                expected_hash = build_record_score_input_hash(record, detail_cache, work_item)
+                rating = recalculate_record_rating(record, detail_cache, work_item)
+
+                self.assertEqual(rating.score, expected_score)
+                self.assertEqual(rating.level, expected_level)
+                self.assertEqual(rating.input_hash, expected_hash)
+                self.assertEqual(expected_hash, build_record_score_input_hash(record, detail_cache, work_item))
+                self.assertEqual(adapter.lot_evidence_hash, build_lot_evidence_hash(build_lot_evidence(record, detail_cache)))
+                self.assertEqual(adapter.scoring_version, SCORING_VERSION)
+                self.assertEqual(adapter.record_content_hash, record.content_hash)
+                self.assertEqual(adapter.record_status, record.status)
+                if detail_cache is not None:
+                    self.assertEqual(adapter.detail_content_hash, detail_cache.content_hash)
+                else:
+                    self.assertIsNone(adapter.detail_content_hash)
+                if work_item is not None:
+                    self.assertIs(adapter.work_item, work_item)
+                else:
+                    self.assertIsNone(adapter.work_item)
+
     def test_rating_input_hash_ignores_ui_only_manual_fields(self) -> None:
         record = make_record(lot_name="Экскаватор гусеничный")
         detail_cache = make_detail_cache()
@@ -525,6 +585,21 @@ class AuctionRatingTests(unittest.TestCase):
         self.assertEqual(row.market_value, Decimal("4549608"))
         self.assertFalse(row.exclude_from_analysis)
         self.assertIsInstance(rating.score, int)
+
+    @staticmethod
+    def _make_weak_missing_record() -> AuctionLotRecord:
+        record = make_record(lot_name="Экскаватор гусеничный")
+        record.initial_price = None
+        record.datagrid_row["current_price"] = None
+        record.datagrid_row["current_price_value"] = None
+        record.normalized_item["lot"]["initial_price"] = None
+        return record
+
+    @staticmethod
+    def _make_detail_cache_without_auction_detail() -> AuctionLotDetailCache:
+        detail_cache = make_detail_cache()
+        detail_cache.auction_detail = None
+        return detail_cache
 
 
 if __name__ == "__main__":
