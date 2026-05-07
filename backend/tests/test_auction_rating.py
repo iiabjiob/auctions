@@ -243,13 +243,91 @@ class AuctionRatingTests(unittest.TestCase):
         record = make_record(lot_name="Экскаватор гусеничный")
         detail_cache = make_detail_cache()
         work_item = make_work_item()
-        profile = LotScoringProfile(profile_identifier="profile-1", target_regions=["Москва"])
+        profile = LotScoringProfile(profile_identifier="profile-1")
 
         baseline_rating = recalculate_record_rating(record, detail_cache, work_item)
         profile_rating = recalculate_record_rating(record, detail_cache, work_item, scoring_profile=profile)
 
         self.assertEqual(baseline_rating.score, profile_rating.score)
         self.assertEqual(baseline_rating.level, profile_rating.level)
+        self.assertEqual(baseline_rating.breakdown["dimensions"]["profile_fit"]["score"], 0)
+
+    def test_record_scoring_without_profile_remains_exactly_the_same(self) -> None:
+        record = make_record(lot_name="Экскаватор гусеничный")
+        detail_cache = make_detail_cache()
+        work_item = make_work_item()
+
+        baseline_rating = recalculate_record_rating(record, detail_cache, work_item)
+        no_profile_rating = recalculate_record_rating(record, detail_cache, work_item, scoring_profile=None)
+
+        self.assertEqual(baseline_rating.score, no_profile_rating.score)
+        self.assertEqual(baseline_rating.level, no_profile_rating.level)
+        self.assertEqual(baseline_rating.input_hash, no_profile_rating.input_hash)
+
+    def test_record_scoring_profile_fit_matching_profile_increases_score_slightly(self) -> None:
+        record = make_record(lot_name="Экскаватор гусеничный")
+        detail_cache = None
+        work_item = None
+        profile = LotScoringProfile(
+            profile_identifier="fit-match",
+            target_regions=["Московская область"],
+            target_categories=["Спецтехника"],
+            budget_max=Decimal("2500000"),
+            strategy="balanced",
+        )
+
+        baseline_rating = recalculate_record_rating(record, detail_cache, work_item)
+        profiled_rating = recalculate_record_rating(record, detail_cache, work_item, scoring_profile=profile)
+
+        self.assertGreater(profiled_rating.score, baseline_rating.score)
+        self.assertEqual(profiled_rating.score - baseline_rating.score, 4)
+        self.assertIn("Профиль интереса соответствует", profiled_rating.reasons)
+        self.assertEqual(
+            baseline_rating.breakdown["dimensions"]["economics"]["score"],
+            profiled_rating.breakdown["dimensions"]["economics"]["score"],
+        )
+        self.assertEqual(
+            baseline_rating.breakdown["dimensions"]["risk"]["score"],
+            profiled_rating.breakdown["dimensions"]["risk"]["score"],
+        )
+        self.assertEqual(
+            baseline_rating.breakdown["dimensions"]["urgency"]["score"],
+            profiled_rating.breakdown["dimensions"]["urgency"]["score"],
+        )
+
+    def test_record_scoring_profile_fit_blockers_reduce_score(self) -> None:
+        record = make_record(lot_name="Экскаватор гусеничный")
+        detail_cache = None
+        work_item = None
+        profile = LotScoringProfile(
+            profile_identifier="fit-block",
+            stop_words=["экскаватор"],
+            allowed_legal_risks=["low"],
+            strategy="balanced",
+        )
+
+        baseline_rating = recalculate_record_rating(record, detail_cache, work_item)
+        profiled_rating = recalculate_record_rating(record, detail_cache, work_item, scoring_profile=profile)
+
+        self.assertLess(profiled_rating.score, baseline_rating.score)
+        self.assertIn("Профиль исключает слово: экскаватор", profiled_rating.reasons)
+        self.assertIn("Профиль интереса содержит блокирующие условия", profiled_rating.reasons)
+        self.assertIn("Профиль исключает слово: экскаватор", profiled_rating.breakdown["dimensions"]["profile_fit"]["blockers"])
+        self.assertLessEqual(profiled_rating.score, baseline_rating.score - 5)
+
+    def test_record_scoring_profile_fit_partial_profile_is_neutral(self) -> None:
+        record = make_record(lot_name="Экскаватор гусеничный")
+        detail_cache = make_detail_cache()
+        work_item = make_work_item()
+        profile = LotScoringProfile(profile_identifier="fit-neutral", max_distance_km=Decimal("25"))
+
+        baseline_rating = recalculate_record_rating(record, detail_cache, work_item)
+        profiled_rating = recalculate_record_rating(record, detail_cache, work_item, scoring_profile=profile)
+
+        self.assertEqual(profiled_rating.score, baseline_rating.score)
+        self.assertEqual(profiled_rating.level, baseline_rating.level)
+        self.assertEqual(profiled_rating.breakdown["dimensions"]["profile_fit"]["score"], 0)
+        self.assertIn("Дистанция не оценена без локальной геометрии", profiled_rating.breakdown["dimensions"]["profile_fit"]["reasons"])
 
     def test_record_scoring_runtime_input_matches_legacy_inputs(self) -> None:
         record = make_record(lot_name="Экскаватор гусеничный")

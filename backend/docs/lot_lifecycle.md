@@ -79,7 +79,7 @@ For operational visibility, the backend also exposes a small pipeline counter sn
 
 These counters are local DB snapshots only. They are meant for lightweight diagnostics and do not change any worker behavior.
 
-Scoring is also moving through a transition layer. The public runtime scoring path now builds an explicit scoring input adapter from `LotEvidence` plus manual/work-item fields and the active scoring version, then routes the existing calculation through that adapter. The scorer still maps the adapter back onto the same normalized legacy inputs where needed, so score values remain stable while the system moves toward a LotEvidence-first scoring model.
+Scoring is also moving through a transition layer. The public runtime scoring path now builds an explicit scoring input adapter from `LotEvidence` plus manual/work-item fields and the active scoring version, then routes the existing calculation through that adapter. The scorer still maps the adapter back onto the same normalized legacy inputs where needed, and now can add a small additive `profile_fit` dimension when a scoring profile is provided, so score values remain stable while the system moves toward a LotEvidence-first scoring model.
 
 The remaining legacy fallback surface is now intentionally small and mainly limited to:
 

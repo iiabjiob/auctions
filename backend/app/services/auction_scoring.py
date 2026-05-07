@@ -15,11 +15,13 @@ from app.models.auction import AuctionLotDetailCache, AuctionLotRecord, AuctionL
 from app.schemas.analysis_config import OwnerScoringProfile, ScoringDimensionWeights
 from app.schemas.auctions import AuctionListItem, LotEconomyResponse, LotRating
 from app.schemas.scoring_profile import LotScoringProfile, build_lot_scoring_profile_hash
+from app.schemas.scoring_profile_fit import LotProfileFitEvaluation
 from app.services.lot_evidence import build_lot_evidence, build_lot_evidence_hash
 from app.services.auction_scoring_invalidation import invalidate_lot_score
 from app.services.auction_analysis import LegalRiskRules, build_lot_analysis
 from app.services.auction_datagrid_payload import validate_datagrid_row_payload
 from app.services.auction_values import parse_price
+from app.services.scoring_profile_fit import evaluate_lot_profile_fit
 
 
 SCORING_VERSION = "deterministic-v2"
@@ -32,6 +34,7 @@ class ScoreDimension:
     label: str
     score: int = 0
     reasons: list[str] = field(default_factory=list)
+    blockers: list[str] = field(default_factory=list)
 
     def add(self, points: int, reason: str) -> None:
         self.score += points
@@ -207,7 +210,13 @@ def recalculate_record_rating(
         scoring_profile=scoring_profile,
         profile_hash=profile_hash,
     )
-    return recalculate_record_rating_from_runtime_input(record, detail_cache, runtime_input, force=force)
+    return recalculate_record_rating_from_runtime_input(
+        record,
+        detail_cache,
+        runtime_input,
+        scoring_profile=scoring_profile,
+        force=force,
+    )
 
 
 def recalculate_record_rating_from_runtime_input(
@@ -215,6 +224,7 @@ def recalculate_record_rating_from_runtime_input(
     detail_cache: AuctionLotDetailCache | None,
     runtime_input: RecordScoringRuntimeInput,
     *,
+    scoring_profile: LotScoringProfile | None = None,
     force: bool = False,
 ) -> LotRating:
     scoring_time = datetime.now(UTC)
@@ -233,6 +243,7 @@ def recalculate_record_rating_from_runtime_input(
     legal_risk_rules = runtime_input.legal_risk_rules
     owner_profile = runtime_input.owner_profile
     dimension_weights = runtime_input.dimension_weights
+    profile_fit = evaluate_lot_profile_fit(build_lot_evidence(record, detail_cache), scoring_profile) if scoring_profile else None
     economy = calculate_lot_economy(
         record,
         work_item,
@@ -300,6 +311,7 @@ def recalculate_record_rating_from_runtime_input(
         description_present=runtime_input.record_description_present,
         analysis_legal_risk=runtime_input.record_legal_risk,
         analysis_is_excluded=runtime_input.record_is_excluded,
+        profile_fit=profile_fit,
         owner_profile=owner_profile,
         dimension_weights=dimension_weights,
     )
@@ -557,6 +569,7 @@ def _new_score_dimensions() -> dict[str, ScoreDimension]:
         "data_quality": ScoreDimension("data_quality", "Качество данных"),
         "operational_readiness": ScoreDimension("operational_readiness", "Операционная готовность"),
         "owner_fit": ScoreDimension("owner_fit", "Профиль интереса"),
+        "profile_fit": ScoreDimension("profile_fit", "Профиль сценария"),
         "manual_intent": ScoreDimension("manual_intent", "Ручной статус"),
     }
 
@@ -582,6 +595,7 @@ def _calculate_record_rating(
     description_present: bool | None,
     analysis_legal_risk: str | None,
     analysis_is_excluded: bool | None,
+    profile_fit: LotProfileFitEvaluation | None,
     owner_profile: OwnerScoringProfile | None,
     dimension_weights: ScoringDimensionWeights | None,
 ) -> ScoreComputation:
@@ -685,6 +699,19 @@ def _calculate_record_rating(
     if economy.potential_profit is not None and economy.potential_profit > 0:
         dimensions["economics"].add(5, "Потенциальная прибыль положительная")
         reasons.append("Потенциальная прибыль положительная")
+
+    if profile_fit is not None:
+        profile_dimension = dimensions["profile_fit"]
+        profile_dimension.reasons.extend(profile_fit.reasons)
+        profile_dimension.blockers.extend(profile_fit.blockers)
+        if profile_fit.blockers:
+            profile_dimension.add(-5, "Профиль интереса содержит блокирующие условия")
+            reasons.append("Профиль интереса содержит блокирующие условия")
+            reasons.extend(profile_fit.blockers)
+        elif any(dim.matched for dim in profile_fit.dimensions.values()):
+            profile_dimension.add(4, "Профиль интереса соответствует")
+            reasons.append("Профиль интереса соответствует")
+            reasons.extend(profile_fit.reasons)
 
     decision = (work_item.decision_status or "") if work_item else ""
     is_rejected = decision == "reject"
@@ -1102,6 +1129,7 @@ def _score_dimensions_payload(
             "weight": _normalize_score_payload(weight_payload.get(key, Decimal("1.0"))),
             "weighted_score": int((Decimal(dimension.score) * Decimal(weight_payload.get(key, Decimal("1.0")))).to_integral_value()),
             "reasons": list(dimension.reasons),
+            "blockers": list(dimension.blockers),
         }
         for key, dimension in dimensions.items()
     }

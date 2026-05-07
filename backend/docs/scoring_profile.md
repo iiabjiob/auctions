@@ -21,14 +21,14 @@ The contract includes:
 The profile is normalized deterministically and can be hashed for identity, comparison, or future caching.
 
 This is still a contract layer for now.
-Runtime scoring does not use the profile yet, and no profile is persisted in the database as part of this slice.
+No profile is persisted in the database as part of this slice.
 
 The record score identity path can now include an explicit profile hash when one is provided, so the persisted score input hash can vary by user/company profile without changing score formulas or score values.
 
-Passing a `LotScoringProfile` object or an explicit `profile_hash` only affects score identity. Runtime scoring still does not consume profile preferences as scoring inputs in this slice.
+Passing a `LotScoringProfile` object or an explicit `profile_hash` still only affects score identity, while the runtime scorer remains backward-compatible with the existing base dimensions.
 
 ## Profile-fit preview
 
 There is also a local-only preview helper that evaluates `LotEvidence` against a `LotScoringProfile` and returns profile-fit reasons and blockers for region, category, budget, legal risk, keywords, and distance availability.
 
-It is intentionally read-only and deterministic. The main scoring path does not use this helper yet, so score values remain unchanged while the profile contract is being introduced.
+It is intentionally read-only and deterministic. The main scoring path now uses it as an additive `profile_fit` dimension, but the base score formula and existing dimensions remain unchanged.
