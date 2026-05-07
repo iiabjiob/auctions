@@ -73,6 +73,8 @@ class RecordScoringRuntimeInput:
     record_model_category: str | None
     record_has_documents: bool | None
     record_has_photos: bool | None
+    record_inspection_order: str | None
+    record_description_present: bool | None
     record_legal_risk: str | None
     record_is_excluded: bool | None
     record_exclusion_keyword: str | None
@@ -95,6 +97,8 @@ class RecordScoringRuntimeInput:
             "record_status": self.record_status,
             "record_current_status": self.record_current_status,
             "record_initial_price": self.record_initial_price,
+            "record_inspection_order": self.record_inspection_order,
+            "record_description_present": self.record_description_present,
             "record_content_hash": self.record_content_hash,
             "detail_content_hash": self.detail_content_hash,
             "work_item": self.work_item,
@@ -237,6 +241,8 @@ def recalculate_record_rating_from_runtime_input(
         legal_risk_rules=legal_risk_rules,
         has_documents=runtime_input.record_has_documents,
         has_photos=runtime_input.record_has_photos,
+        inspection_order=runtime_input.record_inspection_order,
+        description_present=runtime_input.record_description_present,
         category=runtime_input.record_category,
         legal_risk=runtime_input.record_legal_risk,
         is_excluded=runtime_input.record_is_excluded,
@@ -281,6 +287,8 @@ def recalculate_record_rating_from_runtime_input(
         current_status=runtime_input.record_current_status,
         has_documents=runtime_input.record_has_documents,
         has_photos=runtime_input.record_has_photos,
+        inspection_order=runtime_input.record_inspection_order,
+        description_present=runtime_input.record_description_present,
         analysis_legal_risk=runtime_input.record_legal_risk,
         analysis_is_excluded=runtime_input.record_is_excluded,
         owner_profile=owner_profile,
@@ -381,6 +389,8 @@ def build_record_scoring_runtime_input(
         record_model_category=evidence.category.model_category,
         record_has_documents=evidence.legal.has_documents,
         record_has_photos=evidence.legal.has_photos,
+        record_inspection_order=evidence.constraints.inspection_order,
+        record_description_present=evidence.constraints.description_present,
         record_legal_risk="high" if evidence.legal.legal_risk_signals else "medium",
         record_is_excluded=bool(evidence.legal.exclusion_signals),
         record_exclusion_keyword=evidence.legal.exclusion_signals[0] if evidence.legal.exclusion_signals else None,
@@ -546,6 +556,8 @@ def _calculate_record_rating(
     model_category: str | None,
     has_documents: bool | None,
     has_photos: bool | None,
+    inspection_order: str | None,
+    description_present: bool | None,
     analysis_legal_risk: str | None,
     analysis_is_excluded: bool | None,
     owner_profile: OwnerScoringProfile | None,
@@ -607,12 +619,21 @@ def _calculate_record_rating(
         dimensions["data_quality"].add(-5, "Фото не найдены")
         reasons.append("Фото не найдены")
 
-    if detail_cache:
+    if inspection_order:
+        dimensions["operational_readiness"].add(4, "Есть порядок осмотра")
+        reasons.append("Есть порядок осмотра")
+    elif detail_cache:
         lot_detail = detail_cache.lot_detail or {}
         lot = lot_detail.get("lot") or {}
         if lot.get("inspection_order"):
             dimensions["operational_readiness"].add(4, "Есть порядок осмотра")
             reasons.append("Есть порядок осмотра")
+    if description_present is True:
+        dimensions["operational_readiness"].add(3, "Есть подробное описание")
+        reasons.append("Есть подробное описание")
+    elif description_present is None and detail_cache:
+        lot_detail = detail_cache.lot_detail or {}
+        lot = lot_detail.get("lot") or {}
         if lot.get("description"):
             dimensions["operational_readiness"].add(3, "Есть подробное описание")
             reasons.append("Есть подробное описание")

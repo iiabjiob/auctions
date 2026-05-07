@@ -353,6 +353,27 @@ class AuctionRatingTests(unittest.TestCase):
         self.assertIn("Лот исключен из анализа", record.score_breakdown["reasons"])
         self.assertEqual(legacy_rating.input_hash, adapter_rating.input_hash)
 
+    def test_record_scoring_runtime_input_uses_operational_readiness_adapter_values(self) -> None:
+        record = make_record(lot_name="Экскаватор гусеничный")
+        detail_cache = make_detail_cache()
+        detail_cache.lot_detail["lot"]["inspection_order"] = "legacy inspection order"
+        detail_cache.lot_detail["lot"]["description"] = "legacy detailed description"
+
+        baseline_runtime_input = build_record_scoring_runtime_input(record, detail_cache, None)
+        baseline_rating = recalculate_record_rating_from_runtime_input(record, detail_cache, baseline_runtime_input, force=True)
+
+        runtime_input = build_record_scoring_runtime_input(record, detail_cache, None)
+        runtime_input.record_inspection_order = "adapter inspection order"
+        runtime_input.record_description_present = False
+
+        rating = recalculate_record_rating_from_runtime_input(record, detail_cache, runtime_input, force=True)
+        operational_readiness = record.score_breakdown["dimensions"]["operational_readiness"]
+
+        self.assertIn("Есть порядок осмотра", operational_readiness["reasons"])
+        self.assertNotIn("Есть подробное описание", operational_readiness["reasons"])
+        self.assertNotEqual(rating.input_hash, baseline_rating.input_hash)
+        self.assertEqual(rating.scoring_version, SCORING_VERSION)
+
     def test_build_lot_analysis_prefers_adapter_category_and_risk_values(self) -> None:
         record = make_record(lot_name="Объект")
         detail_cache = make_detail_cache()

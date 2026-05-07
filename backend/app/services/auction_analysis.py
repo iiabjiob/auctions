@@ -119,6 +119,8 @@ def build_lot_analysis(
     legal_risk_rules: LegalRiskRules | None = None,
     has_documents: bool | None = None,
     has_photos: bool | None = None,
+    inspection_order: str | None = None,
+    description_present: bool | None = None,
     category: str | None = None,
     legal_risk: str | None = None,
     is_excluded: bool | None = None,
@@ -148,6 +150,17 @@ def build_lot_analysis(
         has_photos = has_row_photos or any(_is_media_document(document) for document in (detail_cache.documents if detail_cache else []))
     completeness = "complete" if has_documents and has_photos else "partial"
     hours_to_deadline = _hours_to_deadline(row.application_deadline, analysis_time)
+    if inspection_order is None and detail_cache:
+        lot_detail = detail_cache.lot_detail or {}
+        lot = lot_detail.get("lot") or {}
+        inspection_order = lot.get("inspection_order")
+    if description_present is None:
+        if detail_cache:
+            lot_detail = detail_cache.lot_detail or {}
+            lot = lot_detail.get("lot") or {}
+            description_present = bool(lot.get("description"))
+        else:
+            description_present = False
 
     reasons: list[str] = []
     if category:
@@ -162,6 +175,10 @@ def build_lot_analysis(
         reasons.append(f"Дисконт к рынку: {_format_percent(economy.market_discount)}")
     if hours_to_deadline is not None and 0 <= hours_to_deadline <= 48:
         reasons.append("До конца заявок меньше 48 часов")
+    if inspection_order:
+        reasons.append("Есть порядок осмотра")
+    if description_present:
+        reasons.append("Есть подробное описание")
     if not has_documents:
         reasons.append("Нет документов")
     if not has_photos:
