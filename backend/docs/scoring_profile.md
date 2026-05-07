@@ -30,8 +30,8 @@ The additive `profile_fit` dimension supports these optional override keys in `w
 
 The service clamps these overrides to a conservative range before they reach the scorer, so extreme values cannot distort the score unexpectedly.
 
-This is still a contract layer for now.
-No profile is persisted in the database as part of this slice.
+This is still a contract layer for now, but persisted profiles are now supported in the backend.
+The scorer does not automatically consume stored profiles yet, so existing scoring behavior stays unchanged until a later slice wires one in explicitly.
 
 The record score identity path can now include an explicit profile hash when one is provided, so the persisted score input hash can vary by user/company profile without changing score formulas or score values.
 
@@ -42,3 +42,9 @@ Passing a `LotScoringProfile` object or an explicit `profile_hash` still only af
 There is also a local-only preview helper that evaluates `LotEvidence` against a `LotScoringProfile` and returns profile-fit reasons and blockers for region, category, budget, legal risk, keywords, and distance availability.
 
 It is intentionally read-only and deterministic. The main scoring path now uses it as an additive `profile_fit` dimension, but the base score formula and existing dimensions remain unchanged.
+
+## Persisted profiles
+
+The backend now has a small persisted profile table and service helper that can normalize a profile payload, compute and store its hash, and fetch the current active profile.
+
+That storage layer is intentionally separate from automatic scoring. Nothing in the runtime scorer is switched to read the active profile yet, so score values remain unchanged by default.
