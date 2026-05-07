@@ -270,6 +270,7 @@ class AuctionRatingTests(unittest.TestCase):
         compiled = statement.compile(dialect=postgresql.dialect())
         sql = str(compiled)
 
+        self.assertIn("auction_lot_records.scoring_version !=", sql)
         self.assertIn("auction_lot_records.score_input_hash IS NULL", sql)
         self.assertIn("auction_lot_records.scored_at IS NULL", sql)
         self.assertIn("auction_lot_records.score_breakdown", sql)

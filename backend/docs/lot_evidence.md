@@ -38,4 +38,6 @@ The first safe manual/workspace wiring point is `update_lot_work_item(...)`: whe
 
 The score input hash must include every persisted manual/workspace field that can affect scoring, including `final_decision`, `decision_status`, `exclude_from_analysis`, `exclusion_reason`, `category_override`, manual economics fields, and manual analogs. UI-only fields such as comments, assignee, and other non-scoring annotations stay out of the hash.
 
+When the active scoring config changes, `queue_recalculation(...)` should stale the score identity in bulk by setting `scoring_version` to a queued-change marker and clearing `score_input_hash`, while leaving the score payload columns intact until rescoring runs. That makes old records eligible again without dropping the previous UI-facing score output.
+
 The intended future wiring points are source sync, detail enrichment, manual economics updates, profile/config edits, and TTL-based freshness checks. For now the helper only clears the persisted score identity so the worker can pick the record up again without dropping the previous UI-facing score payload.

@@ -3,10 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import AuctionAnalysisConfigModel, AuctionLotRecord
+from app.models import AuctionAnalysisConfigModel
 from app.schemas.analysis_config import (
     AnalysisCategoryRule,
     AnalysisLegalRiskRules,
@@ -25,6 +24,7 @@ from app.services.auction_analysis import (
     default_legal_risk_rules_payload,
 )
 from app.services.auction_scoring import SCORING_VERSION
+from app.services.auction_scoring_invalidation import invalidate_records_for_scoring_config_change
 
 
 DEFAULT_ANALYSIS_CONFIG_ID = "default"
@@ -146,12 +146,10 @@ class AuctionAnalysisConfigService:
         return weights.model_dump(mode="json")
 
     async def queue_recalculation(self, session: AsyncSession) -> int:
-        result = await session.execute(
-            update(AuctionLotRecord)
-            .where(AuctionLotRecord.scoring_version == SCORING_VERSION)
-            .values(scoring_version="queued-config-change", score_input_hash=None)
+        return await invalidate_records_for_scoring_config_change(
+            session,
+            current_scoring_version=SCORING_VERSION,
         )
-        return int(result.rowcount or 0)
 
 
 def default_owner_profile_payload() -> dict:
