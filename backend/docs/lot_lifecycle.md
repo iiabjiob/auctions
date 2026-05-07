@@ -73,6 +73,7 @@ For operational visibility, the backend also exposes a small pipeline counter sn
 - `enrichment_claimed_active`: lots with an active enrichment lease
 - `enrichment_retry_waiting`: requested lots waiting for backoff
 - `enrichment_failed_with_error`: lots with a recorded enrichment failure message
+- `enrichment_maxed_out`: requested lots that have reached the retry limit
 - `scoring_stale_or_incomplete`: lots whose persisted score identity is stale or incomplete
 - `scored_current`: lots whose persisted score identity is current
 
@@ -98,3 +99,5 @@ Failed or still-incomplete attempts now set a conservative retry schedule on the
 - `enrichment_claim_expires_at`
 
 Candidate selection ignores lots whose next retry is still in the future or whose lease is still active, so the worker does not hammer the same lots repeatedly and concurrent workers do not process the same lot at the same time. The lease is intentionally short and bounded; if a worker dies, the claim expires and another worker can reclaim the lot later.
+
+There is also a conservative max-attempt cutoff for enrichment. Once a lot reaches `ENRICHMENT_MAX_ATTEMPTS`, it is no longer selected for near-term enrichment retries. The record keeps its last error and attempt count for observability, but it stops circulating through the normal worker path until a separate source-side change re-requests it.

@@ -26,6 +26,7 @@ class AuctionPipelineObservabilityTests(unittest.IsolatedAsyncioTestCase):
                         enrichment_claimed_active=1,
                         enrichment_retry_waiting=3,
                         enrichment_failed_with_error=1,
+                        enrichment_maxed_out=2,
                         scoring_stale_or_incomplete=5,
                         scored_current=9,
                     )
@@ -38,6 +39,7 @@ class AuctionPipelineObservabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(counters.enrichment_claimed_active, 1)
         self.assertEqual(counters.enrichment_retry_waiting, 3)
         self.assertEqual(counters.enrichment_failed_with_error, 1)
+        self.assertEqual(counters.enrichment_maxed_out, 2)
         self.assertEqual(counters.scoring_stale_or_incomplete, 5)
         self.assertEqual(counters.scored_current, 9)
 
@@ -49,6 +51,7 @@ class AuctionPipelineObservabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("next_enrichment_attempt_at", sql)
         self.assertIn("enrichment_claimed_at", sql)
         self.assertIn("last_enrichment_error", sql)
+        self.assertIn("enrichment_attempt_count", sql)
         self.assertIn("scoring_version", sql)
         self.assertIn("score_input_hash", sql)
         self.assertIn("score_breakdown", sql)

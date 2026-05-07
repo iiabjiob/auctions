@@ -12,6 +12,7 @@ from app.models.auction import AuctionLotDetailCache, AuctionLotRecord
 from app.schemas.auctions import LotDatagridRow, LotFreshness, LotImage, LotRating
 from app.services.lot_evidence import build_lot_evidence
 from app.services.lot_enrichment import (
+    ENRICHMENT_MAX_ATTEMPTS,
     build_lot_enrichment_candidate_statement,
     build_lot_enrichment_priority_key,
     claim_lot_enrichment_candidates,
@@ -203,6 +204,7 @@ def make_candidate_record(
     rating_score: int = 0,
     last_seen_at: datetime | None = None,
     application_deadline: str | None = None,
+    attempt_count: int = 0,
 ) -> AuctionLotRecord:
     record = make_list_only_record(missing_price=missing_price)
     record.id = record_id
@@ -214,7 +216,7 @@ def make_candidate_record(
         record.datagrid_row["application_deadline"] = application_deadline
         record.normalized_item.setdefault("auction", {})["application_deadline"] = application_deadline
     record.enrichment_requested_at = requested_at
-    record.enrichment_attempt_count = 0
+    record.enrichment_attempt_count = attempt_count
     record.last_enrichment_attempt_at = None
     record.next_enrichment_attempt_at = None
     record.last_enrichment_error = None
@@ -517,6 +519,7 @@ class LotEnrichmentRequirementTests(unittest.TestCase):
 
         self.assertIn("enrichment_requested_at IS NOT NULL", sql)
         self.assertIn("next_enrichment_attempt_at", sql)
+        self.assertIn("enrichment_attempt_count", sql)
         self.assertIn("enrichment_claim_expires_at", sql)
         self.assertIn("auction_source_states.enabled IS true", sql)
         self.assertIn("auction_lot_records.source_code = %(source_code_1)s", sql)
@@ -748,6 +751,58 @@ class LotEnrichmentRequirementTests(unittest.TestCase):
         self.assertEqual(record.last_enrichment_error, "detail_refresh_failed")
         self.assertIsNotNone(record.enrichment_requested_at)
         self.assertIsNone(record.enrichment_claimed_at)
+
+    def test_records_at_or_above_max_attempts_are_excluded(self) -> None:
+        record = make_candidate_record(
+            record_id=1,
+            requested_at=datetime(2026, 5, 7, 8, tzinfo=UTC),
+            missing_price=True,
+            attempt_count=ENRICHMENT_MAX_ATTEMPTS,
+        )
+        candidate = make_candidate_record(
+            record_id=2,
+            requested_at=datetime(2026, 5, 7, 9, tzinfo=UTC),
+            missing_price=True,
+        )
+
+        selected = collect_lot_enrichment_candidates([record, candidate], current_time=datetime(2026, 5, 7, 12, tzinfo=UTC), limit=10)
+
+        self.assertEqual([row.id for row in selected], [2])
+
+    def test_final_failed_attempt_marks_record_as_no_longer_due(self) -> None:
+        record = make_candidate_record(
+            record_id=1,
+            requested_at=datetime(2026, 5, 7, 8, tzinfo=UTC),
+            missing_price=True,
+            attempt_count=ENRICHMENT_MAX_ATTEMPTS - 1,
+        )
+
+        class FakeSession:
+            async def scalar(self, statement):
+                return None
+
+            async def scalars(self, statement):
+                class FakeScalars:
+                    def all(self_inner):
+                        return [record]
+
+                return FakeScalars()
+
+            async def flush(self):
+                return None
+
+        with patch("app.services.lot_enrichment.ensure_lot_detail_cache", return_value=None):
+            result = asyncio.run(execute_lot_enrichment_candidates(FakeSession(), limit=10))
+
+        self.assertEqual(result.fetched_count, 1)
+        self.assertEqual(record.enrichment_attempt_count, ENRICHMENT_MAX_ATTEMPTS)
+        self.assertIsNone(record.next_enrichment_attempt_at)
+        self.assertEqual(record.last_enrichment_error, "detail_refresh_failed")
+        self.assertIsNone(record.enrichment_claimed_at)
+        self.assertEqual(
+            collect_lot_enrichment_candidates([record], current_time=datetime(2026, 5, 7, 12, tzinfo=UTC), limit=10),
+            [],
+        )
 
     def test_successful_sufficient_enrichment_clears_retry_bookkeeping(self) -> None:
         record = make_candidate_record(record_id=1, requested_at=datetime(2026, 5, 7, 8, tzinfo=UTC), missing_price=True)

@@ -69,6 +69,7 @@ DEFAULT_ENRICHMENT_CANDIDATE_LIMIT = 50
 DEFAULT_ENRICHMENT_CLAIM_SECONDS = 15 * 60
 ENRICHMENT_BACKOFF_BASE_SECONDS = 30 * 60
 ENRICHMENT_BACKOFF_MAX_SECONDS = 24 * 60 * 60
+ENRICHMENT_MAX_ATTEMPTS = 3
 ENRICHMENT_WORKER_ID = "auction-enrichment-worker"
 TTL_REFRESH_HOURS = 7 * 24
 TTL_REFRESH_HIGH_SCORE_THRESHOLD = 75
@@ -181,6 +182,7 @@ def build_lot_enrichment_candidate_statement(
                 AuctionLotRecord.enrichment_claim_expires_at <= current_time,
             )
         )
+        .where(AuctionLotRecord.enrichment_attempt_count < ENRICHMENT_MAX_ATTEMPTS)
         .where(AuctionSourceState.enabled.is_(True))
         .where(~_terminal_status_predicate())
         .order_by(AuctionLotRecord.enrichment_requested_at.asc(), AuctionLotRecord.id.asc())
@@ -341,6 +343,7 @@ def _is_enrichment_candidate(record: AuctionLotRecord, *, current_time: datetime
     return (
         record.enrichment_requested_at is not None
         and (next_retry is None or next_retry <= current_time)
+        and not _is_enrichment_maxed_out(record)
         and (
             getattr(record, "enrichment_claimed_at", None) is None
             or claim_expires_at is None
@@ -374,6 +377,10 @@ def _terminal_status_predicate():
     return or_(*(status_text.contains(marker) for marker in TERMINAL_LOT_STATUS_MARKERS))
 
 
+def _is_enrichment_maxed_out(record: AuctionLotRecord) -> bool:
+    return int(getattr(record, "enrichment_attempt_count", 0) or 0) >= ENRICHMENT_MAX_ATTEMPTS
+
+
 def _is_terminal_status(status: str | None) -> bool:
     if not isinstance(status, str):
         return False
@@ -392,6 +399,9 @@ def _mark_enrichment_attempt(record: AuctionLotRecord, *, now: datetime) -> bool
 def _schedule_lot_retry(record: AuctionLotRecord, *, now: datetime, reason: str | None) -> None:
     attempt_count = int(getattr(record, "enrichment_attempt_count", 0) or 0)
     record.last_enrichment_error = reason
+    if attempt_count >= ENRICHMENT_MAX_ATTEMPTS:
+        record.next_enrichment_attempt_at = None
+        return
     record.next_enrichment_attempt_at = _next_enrichment_attempt_at(now, attempt_count=attempt_count)
     record.enrichment_requested_at = record.enrichment_requested_at or now
 
