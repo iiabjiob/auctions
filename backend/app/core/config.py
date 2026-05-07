@@ -64,6 +64,7 @@ class Settings(BaseSettings):
     auction_analysis_commit_chunk_size: int = 25
     auction_analysis_event_chunk_size: int = 25
     auction_analysis_event_pause_seconds: float = 0.1
+    auction_analysis_use_active_scoring_profile: bool = False
     grid_change_feed_limit: int = 1000
     grid_change_feed_max_limit: int = 1000
 

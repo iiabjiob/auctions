@@ -64,5 +64,15 @@ class ScoringProfileStoreService:
         )
         return await session.scalar(statement)
 
+    async def get_active_scoring_profile(
+        self,
+        session: AsyncSession,
+    ) -> tuple[LotScoringProfile | None, str | None]:
+        profile = await self.get_active_profile(session)
+        if profile is None:
+            return None, None
+        normalized_profile = LotScoringProfile.model_validate(profile.profile_payload)
+        return normalized_profile, profile.profile_hash
+
 
 scoring_profile_store_service = ScoringProfileStoreService()

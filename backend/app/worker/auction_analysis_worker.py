@@ -20,6 +20,8 @@ from app.services.auction_scoring import (
     record_score_is_current,
 )
 from app.services.auction_sources import SOURCE_PROVIDERS
+from app.schemas.scoring_profile import LotScoringProfile
+from app.services.scoring_profile_store import scoring_profile_store_service
 
 
 logger = logging.getLogger(__name__)
@@ -39,6 +41,7 @@ async def analyze_all_lots(limit: int | None = None) -> dict[str, int]:
         record_ids = list((await session.scalars(statement)).all())
         if not record_ids:
             return _empty_metrics()
+        active_scoring_profile, active_scoring_profile_hash = await _resolve_active_scoring_profile(session)
         runtime_config = await auction_analysis_config_service.get_runtime_config(session)
 
     metrics = _empty_metrics()
@@ -71,6 +74,7 @@ async def analyze_all_lots(limit: int | None = None) -> dict[str, int]:
             }
 
             changed_rows: list[dict] = []
+            profile_kwargs = _active_profile_kwargs(active_scoring_profile, active_scoring_profile_hash)
             for record in records:
                 metrics["processed"] += 1
                 detail_cache = detail_caches.get(record.id)
@@ -85,6 +89,7 @@ async def analyze_all_lots(limit: int | None = None) -> dict[str, int]:
                         legal_risk_rules=runtime_config.legal_risk_rules,
                         owner_profile=runtime_config.owner_profile,
                         dimension_weights=runtime_config.dimension_weights,
+                        **profile_kwargs,
                     )
                     if record_score_is_current(record, input_hash=input_hash):
                         metrics["skipped_current"] += 1
@@ -100,6 +105,7 @@ async def analyze_all_lots(limit: int | None = None) -> dict[str, int]:
                         legal_risk_rules=runtime_config.legal_risk_rules,
                         owner_profile=runtime_config.owner_profile,
                         dimension_weights=runtime_config.dimension_weights,
+                        **profile_kwargs,
                     )
                     after = _visible_score_payload(record.datagrid_row)
                     if after == before:
@@ -155,6 +161,24 @@ def _empty_metrics() -> dict[str, int]:
         "skipped_current": 0,
         "failed": 0,
     }
+
+
+async def _resolve_active_scoring_profile(session) -> tuple[LotScoringProfile | None, str | None]:
+    if not settings.auction_analysis_use_active_scoring_profile:
+        return None, None
+    return await scoring_profile_store_service.get_active_scoring_profile(session)
+
+
+def _active_profile_kwargs(
+    active_scoring_profile: LotScoringProfile | None,
+    active_scoring_profile_hash: str | None,
+) -> dict[str, object]:
+    kwargs: dict[str, object] = {}
+    if active_scoring_profile is not None:
+        kwargs["scoring_profile"] = active_scoring_profile
+    if active_scoring_profile_hash is not None:
+        kwargs["profile_hash"] = active_scoring_profile_hash
+    return kwargs
 
 
 def _visible_score_payload(datagrid_row: dict | None) -> dict:

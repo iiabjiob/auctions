@@ -158,6 +158,19 @@ class ScoringProfileStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("scoring_profiles.is_active IS true", sql)
         self.assertIn("scoring_profiles.updated_at DESC", sql)
 
+    async def test_get_active_scoring_profile_returns_normalized_profile_and_hash(self) -> None:
+        active_profile = scoring_profile_store_service.build_profile_record(
+            "Active",
+            {"profile_identifier": "active-1", "target_regions": ["Москва"]},
+            is_active=True,
+        )
+        session = FakeSession(scalar_result=active_profile)
+
+        profile, profile_hash = await scoring_profile_store_service.get_active_scoring_profile(session)
+
+        self.assertEqual(profile, LotScoringProfile.model_validate(active_profile.profile_payload))
+        self.assertEqual(profile_hash, active_profile.profile_hash)
+
     def test_invalid_profile_payload_is_rejected(self) -> None:
         with self.assertRaises(ValidationError):
             scoring_profile_store_service.normalize_profile_payload({"strategy": "invalid"})

@@ -31,7 +31,7 @@ The additive `profile_fit` dimension supports these optional override keys in `w
 The service clamps these overrides to a conservative range before they reach the scorer, so extreme values cannot distort the score unexpectedly.
 
 This is still a contract layer for now, but persisted profiles are now supported in the backend.
-The scorer does not automatically consume stored profiles yet, so existing scoring behavior stays unchanged until a later slice wires one in explicitly.
+The scorer does not automatically consume stored profiles by default. There is now an explicit opt-in worker path, controlled by `auction_analysis_use_active_scoring_profile`, that can load the current active persisted profile and pass it into scoring without changing the default no-profile behavior.
 
 The record score identity path can now include an explicit profile hash when one is provided, so the persisted score input hash can vary by user/company profile without changing score formulas or score values.
 
@@ -48,3 +48,5 @@ It is intentionally read-only and deterministic. The main scoring path now uses 
 The backend now has a small persisted profile table and service helper that can normalize a profile payload, compute and store its hash, and fetch the current active profile.
 
 That storage layer is intentionally separate from automatic scoring. Nothing in the runtime scorer is switched to read the active profile yet, so score values remain unchanged by default.
+
+The opt-in worker path is intentionally narrow: it reads the active stored profile only when the analysis worker flag is enabled, and falls back to the default no-profile path when the flag is disabled or no active profile exists.
