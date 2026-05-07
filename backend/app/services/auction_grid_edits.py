@@ -97,7 +97,30 @@ async def commit_auction_lot_grid_edits(
     user_id: str | None = None,
     session_id: str | None = None,
 ) -> AuctionLotsGridEditResponse:
-    prepared_edits = [_prepare_edit(edit) for edit in request.edits]
+    return await _commit_auction_lot_grid_operations(
+        session,
+        base_version=request.base_version,
+        edits=request.edits,
+        workspace_id=workspace_id,
+        user_id=user_id,
+        session_id=session_id,
+        operation_type="edit",
+        payload={"edits": [edit.model_dump(by_alias=True, mode="json") for edit in request.edits]},
+    )
+
+
+async def _commit_auction_lot_grid_operations(
+    session: AsyncSession,
+    *,
+    base_version: int,
+    edits: list[AuctionLotsGridCellEdit],
+    workspace_id: str = DEFAULT_GRID_WORKSPACE_ID,
+    user_id: str | None = None,
+    session_id: str | None = None,
+    operation_type: str,
+    payload: dict[str, Any] | None,
+) -> AuctionLotsGridEditResponse:
+    prepared_edits = [_prepare_edit(edit) for edit in edits]
     edits_by_row: dict[str, list[PreparedGridEdit]] = defaultdict(list)
     row_order: list[str] = []
     for edit in prepared_edits:
@@ -107,8 +130,8 @@ async def commit_auction_lot_grid_edits(
 
     revision = await get_or_create_grid_revision(session, workspace_id, AUCTION_LOTS_TABLE_ID)
     current_version = int(revision.dataset_version)
-    if current_version != request.base_version:
-        raise AuctionGridEditConflictError(base_version=request.base_version, current_version=current_version)
+    if current_version != base_version:
+        raise AuctionGridEditConflictError(base_version=base_version, current_version=current_version)
 
     runtime_config = await auction_analysis_config_service.get_runtime_config(session)
     updated_records: dict[str, AuctionLotRecord] = {}
@@ -184,12 +207,12 @@ async def commit_auction_lot_grid_edits(
         session,
         workspace_id=workspace_id,
         table_id=AUCTION_LOTS_TABLE_ID,
-        operation_type="edit",
+        operation_type=operation_type,
         user_id=user_id,
         session_id=session_id,
-        base_version=request.base_version,
+        base_version=base_version,
         resulting_version=resulting_version,
-        payload={"edits": [edit.model_dump(by_alias=True, mode="json") for edit in request.edits]},
+        payload=payload,
         undo_payload={"edits": list(undo_values.values())},
         redo_payload={"edits": list(redo_values.values())},
     )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import Literal
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -103,3 +104,20 @@ class AuctionLotsGridEditResponse(BaseModel):
 
     dataset_version: int = Field(alias="datasetVersion")
     updated_rows: list[AuctionLotsGridPullRow] = Field(alias="updatedRows")
+
+
+class AuctionLotsGridFillRange(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    start_row: int = Field(ge=0, alias="startRow")
+    end_row: int = Field(ge=0, alias="endRow")
+    column_id: str = Field(alias="columnId", min_length=1)
+
+
+class AuctionLotsGridFillRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    base_version: int = Field(alias="baseVersion", ge=0)
+    source: AuctionLotsGridFillRange
+    target: AuctionLotsGridFillRange
+    mode: Literal["copy"]
