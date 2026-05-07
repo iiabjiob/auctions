@@ -680,9 +680,9 @@ const CATALOG_ROW_CACHE_LIMIT = 20_000
 const CATALOG_VIEWPORT_ROW_OVERSCAN = 100
 const CATALOG_VIEWPORT_COLUMN_OVERSCAN = 2
 const CATALOG_ROW_MODEL_PREFETCH_TRIGGER_VIEWPORT_FACTOR = 1
-const CATALOG_ROW_MODEL_PREFETCH_WINDOW_VIEWPORT_FACTOR = 3
-const CATALOG_ROW_MODEL_PREFETCH_MIN_BATCH_SIZE = 256
-const CATALOG_ROW_MODEL_PREFETCH_MAX_BATCH_SIZE = 768
+const CATALOG_ROW_MODEL_PREFETCH_WINDOW_VIEWPORT_FACTOR = 1
+const CATALOG_ROW_MODEL_PREFETCH_MIN_BATCH_SIZE = 128
+const CATALOG_ROW_MODEL_PREFETCH_MAX_BATCH_SIZE = 256
 const EMPTY_GRID_ROWS: readonly GridLotRow[] = []
 const catalogVirtualizationOptions = {
   rows: true,
@@ -844,6 +844,7 @@ type GridWorkSnapshot = {
 
 const savedGridWorkSnapshots = new Map<string, string>()
 const optimisticGridRows = new Map<string, GridLotRow>()
+const loadedGridRowIds = new Set<string>()
 
 const workDraft = reactive<WorkDraft>(emptyWorkDraft())
 const emptyAnalysisConfigDraft = (): AnalysisConfigDraft => ({
@@ -2375,7 +2376,6 @@ function persistGridSavedView() {
 
   const stableView = sanitizeGridSavedView(savedView)
   setGridColumnWidths(stableView.state.columns.widths)
-  resetCatalogServerViewportOnQueryChange(stableView)
   writeDataGridSavedViewToStorage(window.localStorage, GRID_SAVED_VIEW_STORAGE_KEY, stableView)
   scheduleGridSummaryRefresh()
 }
@@ -2501,33 +2501,44 @@ function createAuctionServerCatalogDataSource(): CatalogAuctionServerDataSource 
       gridRowRevision.value = nextRevision
       return nextRevision
     },
-    onPullCompleted({ rows, total, datasetVersion }) {
+    onPullCompleted({ rows, total, datasetVersion, reason, priority }) {
+      const isBackgroundPrefetch = reason === 'prefetch' || priority === 'background'
       latestAuctionGridDatasetVersion.value = datasetVersion
       catalogTotal.value = total
-      rememberLoadedRows(rows)
-      lastLoadedAt.value = new Date().toLocaleString('ru-RU')
-      void ensureAuctionSourcesLoaded().catch((error) => {
-        console.warn('[auction-grid] failed to load source options', error)
-      })
-      startAuctionGridChangePolling()
+      rememberLoadedRows(rows, { trackLoadedRows: !isBackgroundPrefetch })
+      if (!isBackgroundPrefetch) {
+        lastLoadedAt.value = new Date().toLocaleString('ru-RU')
+        void ensureAuctionSourcesLoaded().catch((error) => {
+          console.warn('[auction-grid] failed to load source options', error)
+        })
+        startAuctionGridChangePolling()
+      }
     },
   })
 }
 
 const auctionServerDataSource = createAuctionServerCatalogDataSource()
 
-function rememberLoadedRows(rows: GridLotRow[]) {
+function rememberLoadedRows(rows: GridLotRow[], options: { trackLoadedRows?: boolean } = {}) {
+  const trackLoadedRows = options.trackLoadedRows !== false
   const byId = gridRowsById.value
   for (const row of rows) {
     rememberLoadedStatus(row.status)
     const existing = byId.get(row.id)
     if (existing) {
       Object.assign(existing, row, { rowRevision: existing.rowRevision })
+      if (trackLoadedRows && !loadedGridRowIds.has(existing.id)) {
+        loadedGridRowIds.add(existing.id)
+        allRows.value.push(existing)
+      }
       rememberGridWorkSnapshot(existing)
       continue
     }
     byId.set(row.id, row)
-    allRows.value.push(row)
+    if (trackLoadedRows) {
+      loadedGridRowIds.add(row.id)
+      allRows.value.push(row)
+    }
     rememberGridWorkSnapshot(row)
   }
 }
@@ -2783,6 +2794,11 @@ async function softRefreshCatalogRows(options: {
       filterModel: options.filterModel,
     })
     if (reloadSeq !== catalogSoftReloadSeq) return
+    latestAuctionGridDatasetVersion.value = result.datasetVersion
+    catalogTotal.value = result.total
+    rememberLoadedRows(result.rows)
+    lastLoadedAt.value = new Date().toLocaleString('ru-RU')
+    startAuctionGridChangePolling()
     emitCatalogRowsUpsert(result.rows, result.total, result.start)
     if (options.expandViewportAfter === true) {
       ensureCatalogServerViewport(range)
@@ -2803,6 +2819,7 @@ function resetCatalogRowModel() {
   catalogDataSourceListeners.clear()
   clearCatalogViewportDim()
   allRows.value = []
+  loadedGridRowIds.clear()
   gridRowsById.value.clear()
   loadedStatusValues.value = []
   projectedRowsForSummary.value = []
@@ -2972,6 +2989,7 @@ function applyWorkspaceRows(
       mappedUpdates.push(existing)
     } else {
       byId.set(mapped.id, mapped)
+      loadedGridRowIds.add(mapped.id)
       allRows.value.push(mapped)
       mappedUpdates.push(mapped)
     }
@@ -4178,6 +4196,7 @@ function resetCatalogState() {
   catalogRowModel.value = null
   clearCatalogViewportDim()
   allRows.value = []
+  loadedGridRowIds.clear()
   gridRowsById.value.clear()
   loadedStatusValues.value = []
   catalogTotal.value = 0

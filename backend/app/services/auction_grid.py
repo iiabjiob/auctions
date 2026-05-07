@@ -61,10 +61,10 @@ async def pull_auction_lots_grid(
         rows=[
             AuctionLotsGridPullRow(
                 id=auction_lot_grid_row_id(record),
-                index=int(record.id),
+                index=request.resolved_start_row + offset,
                 row=row,
             )
-            for record, row in rows
+            for offset, (record, row) in enumerate(rows)
         ],
         total=total,
         dataset_version=dataset_version,

@@ -74,6 +74,8 @@ export type CreateAuctionServerDatasourceOptions<TApiRow, TRow> = {
     total: number
     datasetVersion: number
     rowRevision: number
+    reason?: string
+    priority?: string
   }) => void
 }
 
@@ -120,6 +122,8 @@ export function createAuctionServerDatasource<TApiRow, TRow>(
       total: data.total,
       datasetVersion: data.datasetVersion,
       rowRevision,
+      reason: request.reason,
+      priority: request.priority,
     })
 
     return {

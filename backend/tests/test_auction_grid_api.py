@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from app.schemas.auction_grid import AuctionLotsGridPullRequest, AuctionLotsGridPullResponse
-from app.services.auction_grid import _histogram_filter_model, _normalize_sort_model
+from app.schemas.auctions import LotDatagridRow
+from app.services.auction_grid import _histogram_filter_model, _normalize_sort_model, pull_auction_lots_grid
 
 
 class AuctionGridApiTests(unittest.TestCase):
@@ -65,6 +68,28 @@ class AuctionGridApiTests(unittest.TestCase):
         self.assertEqual(filtered["columnFilters"], {"source": {"kind": "valueSet", "tokens": ["string:tbankrot"]}})
         self.assertEqual(filtered["advancedFilters"], {})
         self.assertIn("status", filter_model["columnFilters"])
+
+
+class AuctionGridPullServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_pull_response_indexes_are_viewport_positions_not_record_ids(self) -> None:
+        request = AuctionLotsGridPullRequest.model_validate({"startRow": 10, "endRow": 12})
+        records = [SimpleNamespace(id=101), SimpleNamespace(id=204)]
+        rows = [
+            LotDatagridRow.model_construct(row_id="row-101"),
+            LotDatagridRow.model_construct(row_id="row-204"),
+        ]
+
+        with (
+            patch("app.services.auction_grid.read_grid_dataset_version", AsyncMock(return_value=7)),
+            patch("app.services.auction_grid.pull_persisted_lots_for_grid", AsyncMock(return_value=(list(zip(records, rows)), 100))),
+            patch("app.services.auction_grid.auction_lot_grid_row_id", side_effect=lambda record: f"record-{record.id}"),
+        ):
+            response = await pull_auction_lots_grid(AsyncMock(), request)
+
+        self.assertEqual([row.index for row in response.rows], [10, 11])
+        self.assertEqual([row.id for row in response.rows], ["record-101", "record-204"])
+        self.assertEqual(response.total, 100)
+        self.assertEqual(response.dataset_version, 7)
 
 
 if __name__ == "__main__":
