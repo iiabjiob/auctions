@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from decimal import Decimal
+from unittest.mock import patch
 
 from app.models.auction import AuctionLotDetailCache, AuctionLotRecord, AuctionLotWorkItem
 from app.schemas.analysis_config import OwnerScoringProfile, ScoringDimensionWeights
@@ -131,6 +132,21 @@ class AuctionRatingTests(unittest.TestCase):
         self.assertEqual(first_rating.input_hash, second_rating.input_hash)
         self.assertEqual(second_rating.breakdown["score"], second_rating.score)
 
+    def test_recalculate_skips_when_input_hash_is_unchanged_and_score_state_is_complete(self) -> None:
+        record = make_record(lot_name="Экскаватор гусеничный")
+        detail_cache = make_detail_cache()
+        work_item = make_work_item()
+
+        recalculate_record_rating(record, detail_cache, work_item)
+        stored_hash = record.score_input_hash
+
+        with patch("app.services.auction_scoring.build_lot_analysis", wraps=auction_scoring.build_lot_analysis) as build_analysis:
+            rating = recalculate_record_rating(record, detail_cache, work_item)
+
+        self.assertEqual(stored_hash, record.score_input_hash)
+        self.assertEqual(rating.input_hash, stored_hash)
+        build_analysis.assert_not_called()
+
     def test_rating_input_hash_changes_when_local_evidence_changes(self) -> None:
         record = make_record(lot_name="Экскаватор гусеничный")
         detail_cache = make_detail_cache()
@@ -141,6 +157,46 @@ class AuctionRatingTests(unittest.TestCase):
         second_hash = build_record_score_input_hash(record, detail_cache, work_item)
 
         self.assertNotEqual(first_hash, second_hash)
+
+    def test_recalculate_runs_when_local_evidence_changes(self) -> None:
+        record = make_record(lot_name="Экскаватор гусеничный")
+        detail_cache = make_detail_cache()
+        work_item = make_work_item()
+
+        recalculate_record_rating(record, detail_cache, work_item)
+        detail_cache.lot_detail["lot"]["region"] = "Самарская область"
+
+        with patch("app.services.auction_scoring.build_lot_analysis", wraps=auction_scoring.build_lot_analysis) as build_analysis:
+            recalculate_record_rating(record, detail_cache, work_item)
+
+        build_analysis.assert_called_once()
+
+    def test_recalculate_runs_when_score_breakdown_is_missing(self) -> None:
+        record = make_record(lot_name="Экскаватор гусеничный")
+        detail_cache = make_detail_cache()
+        work_item = make_work_item()
+
+        recalculate_record_rating(record, detail_cache, work_item)
+        record.score_breakdown = {}
+        record.scored_at = None
+
+        with patch("app.services.auction_scoring.build_lot_analysis", wraps=auction_scoring.build_lot_analysis) as build_analysis:
+            recalculate_record_rating(record, detail_cache, work_item)
+
+        build_analysis.assert_called_once()
+
+    def test_recalculate_runs_when_scoring_version_changes(self) -> None:
+        record = make_record(lot_name="Экскаватор гусеничный")
+        detail_cache = make_detail_cache()
+        work_item = make_work_item()
+
+        recalculate_record_rating(record, detail_cache, work_item)
+        record.scoring_version = "old-version"
+
+        with patch("app.services.auction_scoring.build_lot_analysis", wraps=auction_scoring.build_lot_analysis) as build_analysis:
+            recalculate_record_rating(record, detail_cache, work_item)
+
+        build_analysis.assert_called_once()
 
     def test_score_current_detection_uses_version_and_input_hash(self) -> None:
         record = make_record(lot_name="Экскаватор гусеничный")

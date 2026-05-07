@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import UTC, datetime
@@ -20,6 +21,7 @@ from app.services.auction_values import parse_price
 
 
 SCORING_VERSION = "deterministic-v2"
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -141,6 +143,10 @@ def recalculate_record_rating(
         dimension_weights=dimension_weights,
     )
     if not force and record_score_is_current(record, input_hash=input_hash):
+        logger.debug(
+            "Skipped auction lot score recalculation",
+            extra={"lot_record_id": record.id, "scoring_version": record.scoring_version, "input_hash": input_hash},
+        )
         return row.rating
 
     economy = calculate_lot_economy(record, work_item) if work_item else LotEconomyResponse(current_price=parse_price(record.initial_price))
@@ -254,6 +260,10 @@ def record_score_is_current(record: AuctionLotRecord, *, input_hash: str | None 
     if record.scoring_version != SCORING_VERSION:
         return False
     if not record.score_input_hash:
+        return False
+    if not record.scored_at:
+        return False
+    if not record.score_breakdown:
         return False
     return record.score_input_hash == input_hash if input_hash is not None else True
 

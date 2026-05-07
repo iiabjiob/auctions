@@ -40,6 +40,8 @@ async def analyze_all_lots(limit: int | None = None) -> dict[str, int]:
                 or_(
                     AuctionLotRecord.scoring_version != SCORING_VERSION,
                     AuctionLotRecord.score_input_hash.is_(None),
+                    AuctionLotRecord.scored_at.is_(None),
+                    AuctionLotRecord.score_breakdown == {},
                 )
             )
             .order_by(AuctionLotRecord.scored_at.asc(), AuctionLotRecord.updated_at.desc(), AuctionLotRecord.id.asc())
