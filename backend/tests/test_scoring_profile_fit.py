@@ -14,7 +14,7 @@ from app.schemas.lot_evidence import (
     LotPriceFacts,
 )
 from app.schemas.scoring_profile import LotScoringProfile
-from app.services.scoring_profile_fit import evaluate_lot_profile_fit
+from app.services.scoring_profile_fit import evaluate_lot_profile_fit, resolve_profile_fit_weights
 
 
 def make_evidence(**overrides: object) -> LotEvidence:
@@ -37,6 +37,21 @@ def make_evidence(**overrides: object) -> LotEvidence:
 
 
 class ScoringProfileFitTests(unittest.TestCase):
+    def test_profile_fit_weight_defaults_and_clamping(self) -> None:
+        self.assertEqual(resolve_profile_fit_weights(None), {"match_bonus": 4, "blocker_penalty": -5, "neutral": 0})
+
+        profile = LotScoringProfile(
+            weights={
+                "profile_fit.match_bonus": Decimal("100"),
+                "profile_fit.blocker_penalty": Decimal("-100"),
+                "profile_fit.neutral": Decimal("3"),
+            }
+        )
+        self.assertEqual(
+            resolve_profile_fit_weights(profile),
+            {"match_bonus": 10, "blocker_penalty": -10, "neutral": 3},
+        )
+
     def test_matching_region_category_budget_produces_positive_fit(self) -> None:
         evidence = make_evidence()
         profile = LotScoringProfile(

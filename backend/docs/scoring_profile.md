@@ -20,6 +20,16 @@ The contract includes:
 
 The profile is normalized deterministically and can be hashed for identity, comparison, or future caching.
 
+### Profile-fit weights
+
+The additive `profile_fit` dimension supports these optional override keys in `weights`:
+
+- `profile_fit.match_bonus`
+- `profile_fit.blocker_penalty`
+- `profile_fit.neutral`
+
+The service clamps these overrides to a conservative range before they reach the scorer, so extreme values cannot distort the score unexpectedly.
+
 This is still a contract layer for now.
 No profile is persisted in the database as part of this slice.
 

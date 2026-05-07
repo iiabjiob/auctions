@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.auction import AuctionLotRecord, AuctionSourceState
 from app.schemas.auction_pipeline_observability import AuctionPipelineCounters
 from app.services.auction_scoring import SCORING_VERSION
+from app.services.lot_enrichment import ENRICHMENT_MAX_ATTEMPTS
 
 
 DEFAULT_ENRICHMENT_TTL_OBSERVABILITY_SECONDS = 7 * 24 * 60 * 60
@@ -29,6 +30,7 @@ async def get_auction_pipeline_counters(
             "enrichment_claimed_active": int(row.enrichment_claimed_active or 0),
             "enrichment_retry_waiting": int(row.enrichment_retry_waiting or 0),
             "enrichment_failed_with_error": int(row.enrichment_failed_with_error or 0),
+            "enrichment_maxed_out": int(row.enrichment_maxed_out or 0),
             "scoring_stale_or_incomplete": int(row.scoring_stale_or_incomplete or 0),
             "scored_current": int(row.scored_current or 0),
         }
@@ -72,6 +74,12 @@ def build_auction_pipeline_counters_statement(*, current_time: datetime | None =
         source_enabled_clause,
         terminal_clause,
     )
+    maxed_out_clause = and_(
+        AuctionLotRecord.enrichment_requested_at.is_not(None),
+        AuctionLotRecord.enrichment_attempt_count >= ENRICHMENT_MAX_ATTEMPTS,
+        source_enabled_clause,
+        terminal_clause,
+    )
     stale_or_incomplete_clause = or_(
         AuctionLotRecord.scoring_version != SCORING_VERSION,
         AuctionLotRecord.score_input_hash.is_(None),
@@ -93,6 +101,7 @@ def build_auction_pipeline_counters_statement(*, current_time: datetime | None =
             func.count(AuctionLotRecord.id).filter(active_claim_clause).label("enrichment_claimed_active"),
             func.count(AuctionLotRecord.id).filter(retry_waiting_clause).label("enrichment_retry_waiting"),
             func.count(AuctionLotRecord.id).filter(failed_clause).label("enrichment_failed_with_error"),
+            func.count(AuctionLotRecord.id).filter(maxed_out_clause).label("enrichment_maxed_out"),
             func.count(AuctionLotRecord.id).filter(and_(stale_or_incomplete_clause, source_enabled_clause)).label("scoring_stale_or_incomplete"),
             func.count(AuctionLotRecord.id).filter(and_(current_score_clause, source_enabled_clause)).label("scored_current"),
         )

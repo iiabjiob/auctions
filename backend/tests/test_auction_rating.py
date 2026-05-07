@@ -310,10 +310,10 @@ class AuctionRatingTests(unittest.TestCase):
         profiled_rating = recalculate_record_rating(record, detail_cache, work_item, scoring_profile=profile)
 
         self.assertLess(profiled_rating.score, baseline_rating.score)
+        self.assertEqual(profiled_rating.score, baseline_rating.score - 5)
         self.assertIn("Профиль исключает слово: экскаватор", profiled_rating.reasons)
         self.assertIn("Профиль интереса содержит блокирующие условия", profiled_rating.reasons)
         self.assertIn("Профиль исключает слово: экскаватор", profiled_rating.breakdown["dimensions"]["profile_fit"]["blockers"])
-        self.assertLessEqual(profiled_rating.score, baseline_rating.score - 5)
 
     def test_record_scoring_profile_fit_partial_profile_is_neutral(self) -> None:
         record = make_record(lot_name="Экскаватор гусеничный")
@@ -328,6 +328,64 @@ class AuctionRatingTests(unittest.TestCase):
         self.assertEqual(profiled_rating.level, baseline_rating.level)
         self.assertEqual(profiled_rating.breakdown["dimensions"]["profile_fit"]["score"], 0)
         self.assertIn("Дистанция не оценена без локальной геометрии", profiled_rating.breakdown["dimensions"]["profile_fit"]["reasons"])
+
+    def test_record_scoring_profile_fit_custom_weights_override_only_profile_fit(self) -> None:
+        record = make_record(lot_name="Экскаватор гусеничный")
+        detail_cache = None
+        work_item = None
+        profile = LotScoringProfile(
+            profile_identifier="fit-custom",
+            target_regions=["Московская область"],
+            target_categories=["Спецтехника"],
+            budget_max=Decimal("2500000"),
+            strategy="balanced",
+            weights={
+                "profile_fit.match_bonus": Decimal("7"),
+                "profile_fit.blocker_penalty": Decimal("-2"),
+            },
+        )
+
+        baseline_rating = recalculate_record_rating(record, detail_cache, work_item)
+        profiled_rating = recalculate_record_rating(record, detail_cache, work_item, scoring_profile=profile)
+
+        self.assertEqual(profiled_rating.score - baseline_rating.score, 7)
+        self.assertEqual(profiled_rating.breakdown["dimensions"]["profile_fit"]["score"], 7)
+        self.assertEqual(profiled_rating.breakdown["dimensions"]["economics"]["score"], baseline_rating.breakdown["dimensions"]["economics"]["score"])
+        self.assertEqual(profiled_rating.breakdown["dimensions"]["risk"]["score"], baseline_rating.breakdown["dimensions"]["risk"]["score"])
+
+    def test_record_scoring_profile_fit_extreme_weights_are_clamped(self) -> None:
+        record = make_record(lot_name="Экскаватор гусеничный")
+        detail_cache = None
+        work_item = None
+        match_profile = LotScoringProfile(
+            profile_identifier="fit-clamped",
+            target_regions=["Московская область"],
+            target_categories=["Спецтехника"],
+            budget_max=Decimal("2500000"),
+            weights={
+                "profile_fit.match_bonus": Decimal("100"),
+                "profile_fit.blocker_penalty": Decimal("-100"),
+            },
+        )
+
+        baseline_rating = recalculate_record_rating(record, detail_cache, work_item)
+        profiled_rating = recalculate_record_rating(record, detail_cache, work_item, scoring_profile=match_profile)
+
+        self.assertEqual(profiled_rating.score - baseline_rating.score, 10)
+        self.assertEqual(profiled_rating.breakdown["dimensions"]["profile_fit"]["score"], 10)
+
+        blocker_profile = LotScoringProfile(
+            profile_identifier="fit-clamped-block",
+            stop_words=["экскаватор"],
+            weights={
+                "profile_fit.match_bonus": Decimal("100"),
+                "profile_fit.blocker_penalty": Decimal("-100"),
+            },
+        )
+        blocker_rating = recalculate_record_rating(record, detail_cache, work_item, scoring_profile=blocker_profile)
+
+        self.assertEqual(blocker_rating.score, baseline_rating.score - 10)
+        self.assertEqual(blocker_rating.breakdown["dimensions"]["profile_fit"]["score"], -10)
 
     def test_record_scoring_runtime_input_matches_legacy_inputs(self) -> None:
         record = make_record(lot_name="Экскаватор гусеничный")

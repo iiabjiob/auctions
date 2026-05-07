@@ -6,6 +6,27 @@ from app.schemas.lot_evidence import LotEvidence
 from app.schemas.scoring_profile import LotScoringProfile
 from app.schemas.scoring_profile_fit import LotProfileFitDimension, LotProfileFitEvaluation
 
+PROFILE_FIT_MATCH_BONUS_KEY = "profile_fit.match_bonus"
+PROFILE_FIT_BLOCKER_PENALTY_KEY = "profile_fit.blocker_penalty"
+PROFILE_FIT_NEUTRAL_KEY = "profile_fit.neutral"
+PROFILE_FIT_WEIGHT_MIN = Decimal("-10")
+PROFILE_FIT_WEIGHT_MAX = Decimal("10")
+
+
+def resolve_profile_fit_weights(profile: LotScoringProfile | None) -> dict[str, int]:
+    if profile is None:
+        return {
+            "match_bonus": 4,
+            "blocker_penalty": -5,
+            "neutral": 0,
+        }
+    weights = profile.weights or {}
+    return {
+        "match_bonus": _clamp_weight(_weight_or_default(weights.get(PROFILE_FIT_MATCH_BONUS_KEY), Decimal("4"))),
+        "blocker_penalty": _clamp_weight(_weight_or_default(weights.get(PROFILE_FIT_BLOCKER_PENALTY_KEY), Decimal("-5"))),
+        "neutral": _clamp_weight(_weight_or_default(weights.get(PROFILE_FIT_NEUTRAL_KEY), Decimal("0"))),
+    }
+
 
 def evaluate_lot_profile_fit(evidence: LotEvidence, profile: LotScoringProfile) -> LotProfileFitEvaluation:
     profile_payload = profile.canonical_payload()
@@ -215,6 +236,16 @@ def _decimal_or_none(value: object) -> Decimal | None:
         return Decimal(str(value))
     except (InvalidOperation, ValueError, TypeError):
         return None
+
+
+def _weight_or_default(value: object | None, default: Decimal) -> Decimal:
+    weight = _decimal_or_none(value)
+    return weight if weight is not None else default
+
+
+def _clamp_weight(value: Decimal) -> int:
+    clamped = max(PROFILE_FIT_WEIGHT_MIN, min(PROFILE_FIT_WEIGHT_MAX, value))
+    return int(clamped.to_integral_value())
 
 
 def _risk_label(evidence: LotEvidence) -> str:

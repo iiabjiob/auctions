@@ -11,5 +11,6 @@ class AuctionPipelineCounters(BaseModel):
     enrichment_claimed_active: int
     enrichment_retry_waiting: int
     enrichment_failed_with_error: int
+    enrichment_maxed_out: int
     scoring_stale_or_incomplete: int
     scored_current: int

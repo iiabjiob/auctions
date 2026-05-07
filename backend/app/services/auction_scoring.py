@@ -21,7 +21,7 @@ from app.services.auction_scoring_invalidation import invalidate_lot_score
 from app.services.auction_analysis import LegalRiskRules, build_lot_analysis
 from app.services.auction_datagrid_payload import validate_datagrid_row_payload
 from app.services.auction_values import parse_price
-from app.services.scoring_profile_fit import evaluate_lot_profile_fit
+from app.services.scoring_profile_fit import evaluate_lot_profile_fit, resolve_profile_fit_weights
 
 
 SCORING_VERSION = "deterministic-v2"
@@ -243,6 +243,7 @@ def recalculate_record_rating_from_runtime_input(
     legal_risk_rules = runtime_input.legal_risk_rules
     owner_profile = runtime_input.owner_profile
     dimension_weights = runtime_input.dimension_weights
+    profile_fit_weights = resolve_profile_fit_weights(scoring_profile) if scoring_profile else None
     profile_fit = evaluate_lot_profile_fit(build_lot_evidence(record, detail_cache), scoring_profile) if scoring_profile else None
     economy = calculate_lot_economy(
         record,
@@ -312,6 +313,7 @@ def recalculate_record_rating_from_runtime_input(
         analysis_legal_risk=runtime_input.record_legal_risk,
         analysis_is_excluded=runtime_input.record_is_excluded,
         profile_fit=profile_fit,
+        profile_fit_weights=profile_fit_weights,
         owner_profile=owner_profile,
         dimension_weights=dimension_weights,
     )
@@ -596,6 +598,7 @@ def _calculate_record_rating(
     analysis_legal_risk: str | None,
     analysis_is_excluded: bool | None,
     profile_fit: LotProfileFitEvaluation | None,
+    profile_fit_weights: dict[str, int] | None,
     owner_profile: OwnerScoringProfile | None,
     dimension_weights: ScoringDimensionWeights | None,
 ) -> ScoreComputation:
@@ -705,11 +708,13 @@ def _calculate_record_rating(
         profile_dimension.reasons.extend(profile_fit.reasons)
         profile_dimension.blockers.extend(profile_fit.blockers)
         if profile_fit.blockers:
-            profile_dimension.add(-5, "Профиль интереса содержит блокирующие условия")
+            blocker_penalty = (profile_fit_weights or resolve_profile_fit_weights(None))["blocker_penalty"]
+            profile_dimension.add(blocker_penalty, "Профиль интереса содержит блокирующие условия")
             reasons.append("Профиль интереса содержит блокирующие условия")
             reasons.extend(profile_fit.blockers)
         elif any(dim.matched for dim in profile_fit.dimensions.values()):
-            profile_dimension.add(4, "Профиль интереса соответствует")
+            match_bonus = (profile_fit_weights or resolve_profile_fit_weights(None))["match_bonus"]
+            profile_dimension.add(match_bonus, "Профиль интереса соответствует")
             reasons.append("Профиль интереса соответствует")
             reasons.extend(profile_fit.reasons)
 
