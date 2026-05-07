@@ -13,6 +13,7 @@ from app.schemas.auctions import LotDatagridRow, LotFreshness, LotImage, LotRati
 from app.services.lot_evidence import build_lot_evidence
 from app.services.lot_enrichment import (
     build_lot_enrichment_candidate_statement,
+    claim_lot_enrichment_candidates,
     execute_lot_enrichment_candidates,
     dry_run_lot_enrichment_candidates,
     classify_lot_enrichment,
@@ -202,6 +203,9 @@ def make_candidate_record(
     record.last_enrichment_attempt_at = None
     record.next_enrichment_attempt_at = None
     record.last_enrichment_error = None
+    record.enrichment_claimed_at = None
+    record.enrichment_claimed_by = None
+    record.enrichment_claim_expires_at = None
     return record
 
 
@@ -323,6 +327,17 @@ class LotEnrichmentRequirementTests(unittest.TestCase):
 
         self.assertEqual([record.id for record in selected], [1])
 
+    def test_active_claim_records_are_not_selected(self) -> None:
+        current_time = datetime(2026, 5, 7, 12, tzinfo=UTC)
+        ready = make_candidate_record(record_id=1, requested_at=datetime(2026, 5, 7, 8, tzinfo=UTC))
+        claimed = make_candidate_record(record_id=2, requested_at=datetime(2026, 5, 7, 9, tzinfo=UTC))
+        claimed.enrichment_claimed_at = datetime(2026, 5, 7, 11, tzinfo=UTC)
+        claimed.enrichment_claim_expires_at = datetime(2026, 5, 7, 18, tzinfo=UTC)
+
+        selected = collect_lot_enrichment_candidates([claimed, ready], current_time=current_time, limit=10)
+
+        self.assertEqual([record.id for record in selected], [1])
+
     def test_terminal_status_records_are_not_selected(self) -> None:
         active = make_candidate_record(record_id=1, requested_at=datetime(2026, 5, 7, 8, tzinfo=UTC))
         archived = make_candidate_record(record_id=2, requested_at=datetime(2026, 5, 7, 9, tzinfo=UTC), status="Архив")
@@ -338,10 +353,97 @@ class LotEnrichmentRequirementTests(unittest.TestCase):
 
         self.assertIn("enrichment_requested_at IS NOT NULL", sql)
         self.assertIn("next_enrichment_attempt_at", sql)
+        self.assertIn("enrichment_claim_expires_at", sql)
         self.assertIn("auction_source_states.enabled IS true", sql)
         self.assertIn("auction_lot_records.source_code = %(source_code_1)s", sql)
         self.assertIn("ORDER BY auction_lot_records.enrichment_requested_at ASC", sql)
         self.assertIn("LIMIT %(param_1)s", sql)
+
+    def test_claimed_records_are_excluded_from_another_claim_while_lease_is_active(self) -> None:
+        record = make_candidate_record(record_id=1, requested_at=datetime(2026, 5, 7, 8, tzinfo=UTC), missing_price=True)
+
+        class FakeSession:
+            def __init__(self):
+                self.records = [record]
+
+            async def scalars(self, statement):
+                class FakeScalars:
+                    def __init__(self, rows):
+                        self._rows = rows
+
+                    def all(self_inner):
+                        return list(self_inner._rows)
+
+                return FakeScalars(self.records)
+
+            async def flush(self):
+                return None
+
+        session = FakeSession()
+
+        first_claim = asyncio.run(
+            claim_lot_enrichment_candidates(session, current_time=datetime(2026, 5, 7, 12, tzinfo=UTC), limit=10)
+        )
+        second_claim = asyncio.run(
+            claim_lot_enrichment_candidates(session, current_time=datetime(2026, 5, 7, 12, tzinfo=UTC), limit=10)
+        )
+
+        self.assertEqual([row.id for row in first_claim], [1])
+        self.assertEqual(second_claim, [])
+        self.assertIsNotNone(record.enrichment_claimed_at)
+        self.assertEqual(record.enrichment_claimed_by, "auction-enrichment-worker")
+        self.assertIsNotNone(record.enrichment_claim_expires_at)
+
+    def test_expired_leases_can_be_reclaimed(self) -> None:
+        record = make_candidate_record(record_id=1, requested_at=datetime(2026, 5, 7, 8, tzinfo=UTC), missing_price=True)
+
+        class FakeSession:
+            def __init__(self):
+                self.records = [record]
+
+            async def scalars(self, statement):
+                class FakeScalars:
+                    def __init__(self, rows):
+                        self._rows = rows
+
+                    def all(self_inner):
+                        return list(self_inner._rows)
+
+                return FakeScalars(self.records)
+
+            async def flush(self):
+                return None
+
+        session = FakeSession()
+        now = datetime(2026, 5, 7, 12, tzinfo=UTC)
+        asyncio.run(claim_lot_enrichment_candidates(session, current_time=now, limit=10))
+        record.enrichment_claim_expires_at = datetime(2026, 5, 7, 11, tzinfo=UTC)
+
+        reclaimed = asyncio.run(claim_lot_enrichment_candidates(session, current_time=now, limit=10))
+
+        self.assertEqual([row.id for row in reclaimed], [1])
+
+    def test_claim_limit_and_order_work(self) -> None:
+        first = make_candidate_record(record_id=1, requested_at=datetime(2026, 5, 7, 8, tzinfo=UTC), missing_price=True)
+        second = make_candidate_record(record_id=2, requested_at=datetime(2026, 5, 7, 9, tzinfo=UTC), missing_price=True)
+        third = make_candidate_record(record_id=3, requested_at=datetime(2026, 5, 7, 10, tzinfo=UTC), missing_price=True)
+
+        class FakeSession:
+            async def scalars(self, statement):
+                class FakeScalars:
+                    def all(self_inner):
+                        return [third, first, second]
+
+                return FakeScalars()
+
+            async def flush(self):
+                return None
+
+        claimed = asyncio.run(
+            claim_lot_enrichment_candidates(FakeSession(), current_time=datetime(2026, 5, 7, 12, tzinfo=UTC), limit=2)
+        )
+
+        self.assertEqual([row.id for row in claimed], [1, 2])
 
     def test_dry_run_lot_enrichment_candidates_uses_selected_records_only(self) -> None:
         selected = [make_candidate_record(record_id=1, requested_at=datetime(2026, 5, 7, 8, tzinfo=UTC), missing_price=True)]
@@ -376,6 +478,9 @@ class LotEnrichmentRequirementTests(unittest.TestCase):
 
                 return FakeScalars()
 
+            async def flush(self):
+                return None
+
         with patch("app.services.lot_enrichment.ensure_lot_detail_cache") as ensure_detail:
             result = asyncio.run(execute_lot_enrichment_candidates(FakeSession(), limit=10))
 
@@ -383,6 +488,7 @@ class LotEnrichmentRequirementTests(unittest.TestCase):
         self.assertEqual(result.processed_count, 1)
         self.assertEqual(result.fetched_count, 0)
         self.assertEqual(result.cleared_count, 1)
+        self.assertIsNone(record.enrichment_claimed_at)
 
     def test_execute_lot_enrichment_candidates_calls_detail_refresh_for_missing_evidence(self) -> None:
         record = make_candidate_record(record_id=1, requested_at=datetime(2026, 5, 7, 8, tzinfo=UTC), missing_price=True)
@@ -407,6 +513,9 @@ class LotEnrichmentRequirementTests(unittest.TestCase):
 
                 return FakeScalars()
 
+            async def flush(self):
+                return None
+
         with patch("app.services.lot_enrichment.ensure_lot_detail_cache", return_value=detail_cache) as ensure_detail:
             result = asyncio.run(execute_lot_enrichment_candidates(FakeSession(), limit=10))
 
@@ -414,6 +523,7 @@ class LotEnrichmentRequirementTests(unittest.TestCase):
         self.assertEqual(result.processed_count, 1)
         self.assertEqual(result.fetched_count, 1)
         self.assertEqual(result.candidate_record_ids, [1])
+        self.assertIsNone(record.enrichment_claimed_at)
 
     def test_failed_enrichment_schedules_later_retry(self) -> None:
         record = make_candidate_record(record_id=1, requested_at=datetime(2026, 5, 7, 8, tzinfo=UTC), missing_price=True)
@@ -429,6 +539,9 @@ class LotEnrichmentRequirementTests(unittest.TestCase):
 
                 return FakeScalars()
 
+            async def flush(self):
+                return None
+
         with patch("app.services.lot_enrichment.ensure_lot_detail_cache", return_value=None):
             result = asyncio.run(execute_lot_enrichment_candidates(FakeSession(), limit=10))
 
@@ -438,6 +551,7 @@ class LotEnrichmentRequirementTests(unittest.TestCase):
         self.assertIsNotNone(record.next_enrichment_attempt_at)
         self.assertEqual(record.last_enrichment_error, "detail_refresh_failed")
         self.assertIsNotNone(record.enrichment_requested_at)
+        self.assertIsNone(record.enrichment_claimed_at)
 
     def test_successful_sufficient_enrichment_clears_retry_bookkeeping(self) -> None:
         record = make_candidate_record(record_id=1, requested_at=datetime(2026, 5, 7, 8, tzinfo=UTC), missing_price=True)
@@ -462,6 +576,9 @@ class LotEnrichmentRequirementTests(unittest.TestCase):
 
                 return FakeScalars()
 
+            async def flush(self):
+                return None
+
         with patch("app.services.lot_enrichment.ensure_lot_detail_cache", return_value=detail_cache):
             result = asyncio.run(execute_lot_enrichment_candidates(FakeSession(), limit=10))
 
@@ -470,6 +587,7 @@ class LotEnrichmentRequirementTests(unittest.TestCase):
         self.assertIsNone(record.enrichment_requested_at)
         self.assertIsNone(record.next_enrichment_attempt_at)
         self.assertIsNone(record.last_enrichment_error)
+        self.assertIsNone(record.enrichment_claimed_at)
 
     def test_successful_but_still_insufficient_enrichment_keeps_marker_and_schedules_retry(self) -> None:
         record = make_candidate_record(record_id=1, requested_at=datetime(2026, 5, 7, 8, tzinfo=UTC), missing_price=True)
@@ -486,6 +604,9 @@ class LotEnrichmentRequirementTests(unittest.TestCase):
 
                 return FakeScalars()
 
+            async def flush(self):
+                return None
+
         with patch("app.services.lot_enrichment.ensure_lot_detail_cache", return_value=detail_cache):
             result = asyncio.run(execute_lot_enrichment_candidates(FakeSession(), limit=10))
 
@@ -494,6 +615,7 @@ class LotEnrichmentRequirementTests(unittest.TestCase):
         self.assertIsNotNone(record.enrichment_requested_at)
         self.assertIsNotNone(record.next_enrichment_attempt_at)
         self.assertIsNotNone(record.last_enrichment_error)
+        self.assertIsNone(record.enrichment_claimed_at)
 
     def test_attempt_count_increments_only_when_detail_refresh_is_attempted(self) -> None:
         record = make_candidate_record(record_id=1, requested_at=datetime(2026, 5, 7, 8, tzinfo=UTC))
@@ -508,6 +630,9 @@ class LotEnrichmentRequirementTests(unittest.TestCase):
                         return [record]
 
                 return FakeScalars()
+
+            async def flush(self):
+                return None
 
         with patch("app.services.lot_enrichment.ensure_lot_detail_cache") as ensure_detail:
             result = asyncio.run(execute_lot_enrichment_candidates(FakeSession(), limit=10))

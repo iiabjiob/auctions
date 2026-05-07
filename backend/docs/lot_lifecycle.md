@@ -54,5 +54,8 @@ Failed or still-incomplete attempts now set a conservative retry schedule on the
 - `enrichment_attempt_count`
 - `next_enrichment_attempt_at`
 - `last_enrichment_error`
+- `enrichment_claimed_at`
+- `enrichment_claimed_by`
+- `enrichment_claim_expires_at`
 
-Candidate selection ignores lots whose next retry is still in the future, so the worker does not hammer the same lots repeatedly.
+Candidate selection ignores lots whose next retry is still in the future or whose lease is still active, so the worker does not hammer the same lots repeatedly and concurrent workers do not process the same lot at the same time. The lease is intentionally short and bounded; if a worker dies, the claim expires and another worker can reclaim the lot later.
