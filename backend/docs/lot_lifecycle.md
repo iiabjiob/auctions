@@ -21,6 +21,14 @@ Ownership is split by concern:
 - The grid only reads local persisted state.
 - External sources are ingestion/enrichment dependencies, not part of the user-facing workflow.
 
+## Presentation contract
+
+- The grid list endpoints read local persisted catalog data only.
+- Opening the detail pane reads the cached local workspace view first.
+- Live refresh is explicit: the UI must ask for it, and the backend may then refresh detail from the source.
+- Background enrichment is worker-controlled and does not run just because a user opens the grid or detail pane.
+- Direct source detail endpoints remain explicit source-fetch routes and are not part of normal grid browsing.
+
 `stale` means the persisted score identity is no longer current and the lot needs rescoring.
 `archived` is terminal.
 

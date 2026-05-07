@@ -4,7 +4,8 @@ import hashlib
 import json
 import unittest
 from datetime import UTC, datetime
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 from urllib.error import HTTPError
 
 from app.models.auction import AuctionLotDetailCache, AuctionLotRecord
@@ -15,6 +16,7 @@ from app.services.auction_workspace import (
     _bounded_detail_payload,
     _lot_detail_response_from_cache,
     _lot_detail_payload_with_price_schedule_state,
+    get_lot_workspace,
     ensure_lot_detail_cache,
     get_cached_lot_detail_cache,
 )
@@ -24,6 +26,7 @@ class FakeSession:
     def __init__(self, detail_cache=None):
         self.detail_cache = detail_cache
         self.added = []
+        self.commits = 0
 
     async def scalar(self, statement):
         return self.detail_cache
@@ -33,6 +36,9 @@ class FakeSession:
 
     async def flush(self):
         return None
+
+    async def commit(self):
+        self.commits += 1
 
 
 class ForbiddenDetailProvider:
@@ -222,6 +228,42 @@ class AuctionWorkspaceDetailFetchTests(unittest.IsolatedAsyncioTestCase):
             detail_cache = await ensure_lot_detail_cache(FakeSession(existing_cache), record)
 
         self.assertIs(detail_cache, existing_cache)
+
+    async def test_workspace_open_uses_cached_detail_without_source_refresh(self) -> None:
+        record = AuctionLotRecord(
+            id=1,
+            source_code="tbankrot",
+            auction_external_id="auction-1",
+            lot_external_id="lot-1",
+            content_hash="hash",
+            datagrid_row={},
+            normalized_item={},
+        )
+        detail_cache = AuctionLotDetailCache(
+            lot_record_id=1,
+            content_hash="hash",
+            lot_detail={"lot": {"price_schedule": []}, "_price_schedule_loaded": False},
+            auction_detail=None,
+            documents=[],
+        )
+        session = FakeSession(detail_cache)
+        workspace = SimpleNamespace(marker="workspace")
+
+        with (
+            patch("app.services.auction_workspace.find_lot_record", AsyncMock(return_value=record)),
+            patch("app.services.auction_workspace.get_cached_lot_detail_cache", AsyncMock(return_value=detail_cache)) as get_cached_detail,
+            patch("app.services.auction_workspace.ensure_lot_detail_cache", AsyncMock()) as refresh_detail,
+            patch("app.services.auction_workspace.ensure_work_item", AsyncMock(return_value=SimpleNamespace(lot_record_id=1))),
+            patch("app.services.auction_workspace.build_workspace_response", AsyncMock(return_value=workspace)),
+            patch("app.services.auction_workspace.get_source_provider") as get_source_provider,
+        ):
+            response = await get_lot_workspace(session, source="tbankrot", lot_id="lot-1", refresh=False, include_detail=True)
+
+        self.assertIs(response, workspace)
+        get_cached_detail.assert_awaited_once_with(session, record)
+        refresh_detail.assert_not_awaited()
+        get_source_provider.assert_not_called()
+        self.assertEqual(session.commits, 1)
 
     async def test_cached_detail_lookup_does_not_fetch_source(self) -> None:
         record = AuctionLotRecord(
