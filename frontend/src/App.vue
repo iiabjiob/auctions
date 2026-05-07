@@ -37,6 +37,10 @@ import {
   commitAuctionGridEdits,
   type AuctionGridCellEdit,
 } from './datagrid/auctionGridEdits'
+import {
+  requestAuctionGridRedo,
+  requestAuctionGridUndo,
+} from './datagrid/auctionGridHistory'
 import { useAuthStore } from './stores/auth'
 import { workspaceDataGridTheme } from './theme/dataGridTheme'
 
@@ -4781,7 +4785,88 @@ function stopDetailResize() {
   saveDetailPaneWidth()
 }
 
+function isTextEditingTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) return false
+  return Boolean(
+    target.closest('input, textarea, select, [contenteditable="true"], [contenteditable="plaintext-only"]'),
+  )
+}
+
+function isAuctionGridShortcutTarget(event: KeyboardEvent) {
+  if (event.isComposing) return false
+  if (isTextEditingTarget(event.target)) return false
+  const gridSurface = gridSurfaceRef.value
+  if (!gridSurface) return false
+  return event.target instanceof Node && gridSurface.contains(event.target)
+}
+
+function isUndoShortcut(event: KeyboardEvent) {
+  if (event.ctrlKey || event.metaKey) {
+    return event.key.toLowerCase() === 'z' && !event.shiftKey
+  }
+  return false
+}
+
+function isRedoShortcut(event: KeyboardEvent) {
+  if (event.ctrlKey || event.metaKey) {
+    const key = event.key.toLowerCase()
+    return key === 'y' || (key === 'z' && event.shiftKey)
+  }
+  return false
+}
+
+async function refreshAuctionGridAfterHistoryMutation(datasetVersion: number) {
+  latestAuctionGridDatasetVersion.value = datasetVersion
+  console.debug('[auction-grid] history datasetVersion updated', datasetVersion)
+  await softRefreshCatalogRows({ dimViewport: false, range: resolveCatalogReloadRange() })
+}
+
+function handleAuctionGridUndoRedo(event: KeyboardEvent) {
+  if (!isAuctionGridShortcutTarget(event)) return false
+
+  if (isUndoShortcut(event)) {
+    event.preventDefault()
+    event.stopPropagation()
+    console.debug('[auction-grid] history undo triggered')
+    void (async () => {
+      try {
+        const response = await requestAuctionGridUndo<ApiLotRow>({
+          postJson: postAuctionServerGridJson,
+          debug: true,
+        })
+        if (response.updatedRows.length === 0) return
+        await refreshAuctionGridAfterHistoryMutation(response.datasetVersion)
+      } catch (error) {
+        console.warn('[auction-grid] history undo failed', error)
+      }
+    })()
+    return true
+  }
+
+  if (isRedoShortcut(event)) {
+    event.preventDefault()
+    event.stopPropagation()
+    console.debug('[auction-grid] history redo triggered')
+    void (async () => {
+      try {
+        const response = await requestAuctionGridRedo<ApiLotRow>({
+          postJson: postAuctionServerGridJson,
+          debug: true,
+        })
+        if (response.updatedRows.length === 0) return
+        await refreshAuctionGridAfterHistoryMutation(response.datasetVersion)
+      } catch (error) {
+        console.warn('[auction-grid] history redo failed', error)
+      }
+    })()
+    return true
+  }
+
+  return false
+}
+
 function handleGlobalKeydown(event: KeyboardEvent) {
+  if (handleAuctionGridUndoRedo(event)) return
   if (analysisConfigDialog.snapshot.value.isOpen) {
     if (['Escape', 'Esc'].includes(event.key)) {
       event.preventDefault()
