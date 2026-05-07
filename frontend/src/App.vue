@@ -718,6 +718,8 @@ const LOADING_SKELETON_MIN_ROWS = 16
 const LOADING_SKELETON_TOOLBAR_HEIGHT = 42
 const LOADING_SKELETON_HEADER_HEIGHT = 34
 const LOADING_SKELETON_ROW_HEIGHT = 26
+const CATALOG_QUERY_PLACEHOLDER_SHOW_DELAY_MS = 180
+const CATALOG_QUERY_PLACEHOLDER_MIN_VISIBLE_MS = 140
 const detailPaneWidth = ref(readStoredDetailPaneWidth())
 const gridRef = ref<DataGridExposed<GridLotRow> | null>(null)
 const gridSurfaceRef = ref<HTMLElement | null>(null)
@@ -725,6 +727,8 @@ const gridColumnWidths = ref<GridColumnWidthsState>({})
 const gridRowsById = shallowRef(new Map<string, GridLotRow>())
 const loadedStatusValues = shallowRef<string[]>([])
 const gridSavedViewRestored = ref(false)
+const catalogGridHasLoadedOnce = ref(false)
+const catalogQueryPlaceholderVisible = ref(false)
 const gridRowRevision = ref(0)
 const latestAuctionGridDatasetVersion = ref<number | null>(null)
 const loadingSkeletonVisibleRows = ref(LOADING_SKELETON_MIN_ROWS)
@@ -751,6 +755,10 @@ let catalogViewportDimRequests = 0
 let catalogViewportDimShowTimer: ReturnType<typeof window.setTimeout> | null = null
 let catalogViewportDimHideTimer: ReturnType<typeof window.setTimeout> | null = null
 let catalogViewportDimVisibleAt = 0
+let catalogQueryPlaceholderRequests = 0
+let catalogQueryPlaceholderShowTimer: ReturnType<typeof window.setTimeout> | null = null
+let catalogQueryPlaceholderHideTimer: ReturnType<typeof window.setTimeout> | null = null
+let catalogQueryPlaceholderVisibleAt = 0
 let catalogNextViewportPullShouldDim = false
 let keepCatalogEditErrorOnNextPull = false
 const catalogFetchRequests = new Map<string, Promise<LotsResponse>>()
@@ -845,7 +853,6 @@ type GridWorkSnapshot = {
 const savedGridWorkSnapshots = new Map<string, string>()
 const optimisticGridRows = new Map<string, GridLotRow>()
 const loadedGridRowIds = new Set<string>()
-
 const workDraft = reactive<WorkDraft>(emptyWorkDraft())
 const emptyAnalysisConfigDraft = (): AnalysisConfigDraft => ({
   categoryRules: [],
@@ -2646,10 +2653,60 @@ function endCatalogViewportDim(active: boolean) {
   }, hideDelayMs)
 }
 
+function beginCatalogQueryPlaceholder() {
+  if (!catalogGridHasLoadedOnce.value && allRows.value.length === 0) return false
+
+  catalogQueryPlaceholderRequests += 1
+  if (catalogQueryPlaceholderHideTimer !== null) {
+    window.clearTimeout(catalogQueryPlaceholderHideTimer)
+    catalogQueryPlaceholderHideTimer = null
+  }
+  if (!catalogQueryPlaceholderVisible.value && catalogQueryPlaceholderShowTimer === null) {
+    catalogQueryPlaceholderShowTimer = window.setTimeout(() => {
+      catalogQueryPlaceholderShowTimer = null
+      if (catalogQueryPlaceholderRequests <= 0) return
+
+      catalogQueryPlaceholderVisibleAt = window.performance.now()
+      catalogQueryPlaceholderVisible.value = true
+    }, CATALOG_QUERY_PLACEHOLDER_SHOW_DELAY_MS)
+  } else if (catalogQueryPlaceholderVisible.value) {
+    catalogQueryPlaceholderVisibleAt = window.performance.now()
+  }
+  return true
+}
+
+function endCatalogQueryPlaceholder(active: boolean) {
+  if (!active) return
+
+  catalogQueryPlaceholderRequests = Math.max(0, catalogQueryPlaceholderRequests - 1)
+  if (catalogQueryPlaceholderRequests > 0) return
+
+  if (catalogQueryPlaceholderShowTimer !== null) {
+    window.clearTimeout(catalogQueryPlaceholderShowTimer)
+    catalogQueryPlaceholderShowTimer = null
+  }
+  if (!catalogQueryPlaceholderVisible.value) return
+
+  const visibleForMs = window.performance.now() - catalogQueryPlaceholderVisibleAt
+  const hideDelayMs = Math.max(0, CATALOG_QUERY_PLACEHOLDER_MIN_VISIBLE_MS - visibleForMs)
+  catalogQueryPlaceholderHideTimer = window.setTimeout(() => {
+    catalogQueryPlaceholderHideTimer = null
+    if (catalogQueryPlaceholderRequests === 0) {
+      catalogQueryPlaceholderVisible.value = false
+    }
+  }, hideDelayMs)
+}
+
 function clearCatalogViewportDim() {
   catalogViewportDimRequests = 0
+  catalogQueryPlaceholderRequests = 0
   catalogNextViewportPullShouldDim = false
   catalogViewportDimmed.value = false
+  catalogQueryPlaceholderVisible.value = false
+  if (catalogQueryPlaceholderShowTimer !== null) {
+    window.clearTimeout(catalogQueryPlaceholderShowTimer)
+    catalogQueryPlaceholderShowTimer = null
+  }
   if (catalogViewportDimShowTimer !== null) {
     window.clearTimeout(catalogViewportDimShowTimer)
     catalogViewportDimShowTimer = null
@@ -2657,6 +2714,10 @@ function clearCatalogViewportDim() {
   if (catalogViewportDimHideTimer !== null) {
     window.clearTimeout(catalogViewportDimHideTimer)
     catalogViewportDimHideTimer = null
+  }
+  if (catalogQueryPlaceholderHideTimer !== null) {
+    window.clearTimeout(catalogQueryPlaceholderHideTimer)
+    catalogQueryPlaceholderHideTimer = null
   }
 }
 
@@ -2686,6 +2747,7 @@ function createCatalogDataSource(): CatalogDataSource {
         loading.value = true
       }
       const dimActive = dimViewport && beginCatalogViewportDim()
+      const queryPlaceholderActive = dimViewport && beginCatalogQueryPlaceholder()
       if (!isBackgroundPrefetch) {
         if (keepCatalogEditErrorOnNextPull) {
           keepCatalogEditErrorOnNextPull = false
@@ -2703,8 +2765,10 @@ function createCatalogDataSource(): CatalogDataSource {
       } finally {
         if (!isBackgroundPrefetch && requestSeq === catalogPullRequestSeq) {
           loading.value = false
+          catalogGridHasLoadedOnce.value = true
         }
         endCatalogViewportDim(dimActive)
+        endCatalogQueryPlaceholder(queryPlaceholderActive)
         if (!isBackgroundPrefetch) {
           scheduleGridSummaryRefresh()
         }
@@ -2783,7 +2847,6 @@ async function softRefreshCatalogRows(options: {
 
   const reloadSeq = catalogSoftReloadSeq + 1
   catalogSoftReloadSeq = reloadSeq
-  const snapshot = catalogRowModel.value.getSnapshot()
   const range = options.range ?? resolveCatalogReloadRange()
   const dimActive = options.dimViewport === true && beginCatalogViewportDim()
   try {
@@ -2825,6 +2888,7 @@ function resetCatalogRowModel() {
   projectedRowsForSummary.value = []
   gridSummaryReady.value = false
   gridSavedViewRestored.value = false
+  catalogGridHasLoadedOnce.value = false
   lastGridServerQuerySignature = ''
   catalogRowModel.value = createCatalogRowModel()
 }
@@ -4216,6 +4280,7 @@ function resetCatalogState() {
   detailLiveRefreshing.value = false
   backgroundStatus.value = 'Ожидаем фоновое обновление'
   resetWorkDraft()
+  catalogGridHasLoadedOnce.value = false
 }
 
 function updateLoadingSkeletonRows() {
@@ -4596,7 +4661,12 @@ onUnmounted(() => {
       :class="['grid-surface', { 'grid-surface--query-busy': catalogViewportDimmed }]"
       :aria-busy="loading || catalogViewportDimmed"
     >
-      <div v-if="loading && allRows.length === 0" class="loading-state" role="status" aria-live="polite">
+      <div
+        v-if="loading && allRows.length === 0 && !catalogGridHasLoadedOnce"
+        class="loading-state"
+        role="status"
+        aria-live="polite"
+      >
         <div class="table-skeleton" :style="{ '--skeleton-columns': loadingSkeletonTemplate }">
           <div class="table-skeleton__toolbar">
             <span class="table-skeleton__status">Загружаю лоты</span>
@@ -4626,6 +4696,7 @@ onUnmounted(() => {
       </div>
       <DataGrid
         v-else-if="catalogRowModel"
+        v-show="catalogGridHasLoadedOnce || !loading || allRows.length > 0"
         ref="gridRef"
         :rows="EMPTY_GRID_ROWS"
         :row-model="catalogRowModel"
@@ -4648,6 +4719,14 @@ onUnmounted(() => {
         @update:column-widths="persistGridColumnWidths"
         @update:state="persistGridSavedView"
       />
+      <div
+        v-if="catalogQueryPlaceholderVisible && catalogGridHasLoadedOnce"
+        class="grid-query-placeholder"
+        role="status"
+        aria-live="polite"
+      >
+        <span>Обновляем срез</span>
+      </div>
     </section>
 
     <aside
