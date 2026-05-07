@@ -7,12 +7,15 @@ from app.api.deps import get_current_user
 from app.infrastructure.db.database import get_db
 from app.models import UserModel
 from app.schemas.auction_grid import (
+    AuctionLotsGridEditRequest,
+    AuctionLotsGridEditResponse,
     AuctionLotsGridHistogramRequest,
     AuctionLotsGridHistogramResponse,
     AuctionLotsGridPullRequest,
     AuctionLotsGridPullResponse,
 )
 from app.services.auction_grid import get_auction_lots_grid_histogram, pull_auction_lots_grid
+from app.services.auction_grid_edits import AuctionGridEditConflictError, commit_auction_lot_grid_edits
 from app.services.auction_grid_state import DEFAULT_GRID_WORKSPACE_ID
 
 
@@ -48,3 +51,38 @@ async def get_auction_lots_histogram(
         return await get_auction_lots_grid_histogram(session, payload)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.post("/edits", response_model=AuctionLotsGridEditResponse)
+async def commit_auction_lots_edits(
+    payload: AuctionLotsGridEditRequest,
+    workspace_id: str | None = Header(default=None, alias="X-Workspace-Id"),
+    grid_session_id: str | None = Header(default=None, alias="X-Grid-Session-Id"),
+    session: AsyncSession = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
+) -> AuctionLotsGridEditResponse:
+    try:
+        response = await commit_auction_lot_grid_edits(
+            session,
+            payload,
+            workspace_id=workspace_id or DEFAULT_GRID_WORKSPACE_ID,
+            user_id=current_user.id,
+            session_id=grid_session_id,
+        )
+        await session.commit()
+        return response
+    except AuctionGridEditConflictError as error:
+        await session.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={"message": str(error), "currentDatasetVersion": error.current_version},
+        ) from error
+    except ValueError as error:
+        await session.rollback()
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except LookupError as error:
+        await session.rollback()
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except Exception:
+        await session.rollback()
+        raise

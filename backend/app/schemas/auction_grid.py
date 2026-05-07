@@ -81,3 +81,25 @@ class AuctionLotsGridHistogramResponse(BaseModel):
 
     column_id: str = Field(alias="columnId")
     entries: list[LotDatagridHistogramEntry]
+
+
+class AuctionLotsGridCellEdit(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    row_id: str = Field(alias="rowId")
+    column_id: str = Field(alias="columnId")
+    value: Any = None
+
+
+class AuctionLotsGridEditRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    base_version: int = Field(alias="baseVersion", ge=0)
+    edits: list[AuctionLotsGridCellEdit] = Field(min_length=1)
+
+
+class AuctionLotsGridEditResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    dataset_version: int = Field(alias="datasetVersion")
+    updated_rows: list[AuctionLotsGridPullRow] = Field(alias="updatedRows")
