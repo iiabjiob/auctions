@@ -398,6 +398,16 @@ type LotHistogramPayload = {
   grid_filter: DataGridFilterSnapshot | null
 }
 
+type GridChangeFeedResponse = {
+  datasetVersion: number
+  changes: Array<{
+    type: 'row_updated' | 'row_inserted' | 'row_deleted' | 'invalidation'
+    rowId: string | null
+    payload: Record<string, unknown>
+  }>
+  hasMore: boolean
+}
+
 type GridLotRow = {
   id: string
   rowRevision: number
@@ -666,6 +676,9 @@ const GRID_SAVED_VIEW_STORAGE_KEY = 'auction-grid-saved-view-v2'
 const GRID_COLUMN_WIDTHS_STORAGE_KEY = 'auction-grid-column-widths-v1'
 const SERVER_FILTERS_STORAGE_KEY = 'auction-server-filters'
 const USE_AUCTION_SERVER_GRID = import.meta.env.VITE_AUCTION_SERVER_GRID !== 'false'
+const AUCTION_GRID_CHANGES_TABLE_ID = 'auction-lots'
+const AUCTION_GRID_CHANGES_POLL_INTERVAL_MS = 3_000
+const AUCTION_GRID_CHANGES_REFRESH_DEBOUNCE_MS = 300
 const CATALOG_TOTAL_ROW_LIMIT = 1_000_000
 const CATALOG_SERVER_FETCH_LIMIT = 10_000
 const CATALOG_ROW_CACHE_LIMIT = 20_000
@@ -718,6 +731,7 @@ const gridRowsById = shallowRef(new Map<string, GridLotRow>())
 const loadedStatusValues = shallowRef<string[]>([])
 const gridSavedViewRestored = ref(false)
 const gridRowRevision = ref(0)
+const latestAuctionGridDatasetVersion = ref<number | null>(null)
 const loadingSkeletonVisibleRows = ref(LOADING_SKELETON_MIN_ROWS)
 let gridSavedViewApplying = false
 let suppressGridCellChangeDepth = 0
@@ -746,6 +760,10 @@ let catalogNextViewportPullShouldDim = false
 let keepCatalogEditErrorOnNextPull = false
 const catalogFetchRequests = new Map<string, Promise<LotsResponse>>()
 let sourcesLoadRequest: Promise<void> | null = null
+let auctionGridChangesPollTimer: ReturnType<typeof window.setTimeout> | null = null
+let auctionGridChangesRefreshTimer: ReturnType<typeof window.setTimeout> | null = null
+let auctionGridChangesPolling = false
+let auctionGridChangesRefreshInFlight = false
 let gridSurfaceResizeObserver: ResizeObserver | null = null
 
 const DEFAULT_SERVER_FILTERS: ServerQuickFiltersState = {
@@ -2567,13 +2585,15 @@ function createAuctionServerCatalogDataSource(): CatalogAuctionServerDataSource 
       gridRowRevision.value = nextRevision
       return nextRevision
     },
-    onPullCompleted({ rows, total }) {
+    onPullCompleted({ rows, total, datasetVersion }) {
+      latestAuctionGridDatasetVersion.value = datasetVersion
       catalogTotal.value = total
       rememberLoadedRows(rows)
       lastLoadedAt.value = new Date().toLocaleString('ru-RU')
       void ensureAuctionSourcesLoaded().catch((error) => {
         console.warn('[auction-grid] failed to load source options', error)
       })
+      startAuctionGridChangePolling()
     },
     debug: true,
   })
@@ -3745,6 +3765,103 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T
 }
 
+function shouldPollAuctionGridChanges() {
+  return (
+    USE_AUCTION_SERVER_GRID &&
+    isAuthenticated.value &&
+    !document.hidden &&
+    latestAuctionGridDatasetVersion.value !== null
+  )
+}
+
+function startAuctionGridChangePolling(delay = AUCTION_GRID_CHANGES_POLL_INTERVAL_MS) {
+  if (!shouldPollAuctionGridChanges() || auctionGridChangesPollTimer !== null) return
+
+  auctionGridChangesPollTimer = window.setTimeout(() => {
+    auctionGridChangesPollTimer = null
+    void pollAuctionGridChanges()
+  }, delay)
+}
+
+function stopAuctionGridChangePolling() {
+  if (auctionGridChangesPollTimer !== null) {
+    window.clearTimeout(auctionGridChangesPollTimer)
+    auctionGridChangesPollTimer = null
+  }
+  if (auctionGridChangesRefreshTimer !== null) {
+    window.clearTimeout(auctionGridChangesRefreshTimer)
+    auctionGridChangesRefreshTimer = null
+  }
+}
+
+function resetAuctionGridChangePolling() {
+  stopAuctionGridChangePolling()
+  latestAuctionGridDatasetVersion.value = null
+  auctionGridChangesPolling = false
+  auctionGridChangesRefreshInFlight = false
+}
+
+async function pollAuctionGridChanges() {
+  if (!shouldPollAuctionGridChanges()) return
+  if (auctionGridChangesPolling) {
+    startAuctionGridChangePolling()
+    return
+  }
+
+  const sinceVersion = latestAuctionGridDatasetVersion.value
+  if (sinceVersion === null) return
+
+  auctionGridChangesPolling = true
+  try {
+    const params = new URLSearchParams({
+      tableId: AUCTION_GRID_CHANGES_TABLE_ID,
+      sinceVersion: String(sinceVersion),
+    })
+    const response = await fetchJson<GridChangeFeedResponse>(`/api/changes?${params.toString()}`)
+    const currentVersion = latestAuctionGridDatasetVersion.value ?? 0
+    if (response.changes.length > 0 || response.datasetVersion > currentVersion) {
+      scheduleAuctionGridChangeRefresh()
+    }
+  } catch (error) {
+    if (isAuthenticated.value && !document.hidden) {
+      console.warn('[auction-grid] change polling failed', error)
+    }
+  } finally {
+    auctionGridChangesPolling = false
+    startAuctionGridChangePolling()
+  }
+}
+
+function scheduleAuctionGridChangeRefresh() {
+  if (!USE_AUCTION_SERVER_GRID || auctionGridChangesRefreshInFlight || auctionGridChangesRefreshTimer !== null) return
+
+  auctionGridChangesRefreshTimer = window.setTimeout(() => {
+    auctionGridChangesRefreshTimer = null
+    void refreshAuctionGridAfterChange()
+  }, AUCTION_GRID_CHANGES_REFRESH_DEBOUNCE_MS)
+}
+
+async function refreshAuctionGridAfterChange() {
+  if (!isAuthenticated.value || document.hidden || !catalogRowModel.value) return
+  auctionGridChangesRefreshInFlight = true
+  try {
+    await softRefreshCatalogRows({
+      dimViewport: false,
+      range: resolveCatalogReloadRange(),
+    })
+  } finally {
+    auctionGridChangesRefreshInFlight = false
+  }
+}
+
+function handleAuctionGridVisibilityChange() {
+  if (document.hidden) {
+    stopAuctionGridChangePolling()
+    return
+  }
+  startAuctionGridChangePolling(0)
+}
+
 async function loadPresets() {
   if (!isAuthenticated.value) return
 
@@ -4364,6 +4481,7 @@ function closeLotDetails() {
 }
 
 function resetCatalogState() {
+  resetAuctionGridChangePolling()
   catalogRowModel.value?.dispose()
   catalogRowModel.value = null
   clearCatalogViewportDim()
@@ -4575,6 +4693,7 @@ watch(isAuthenticated, (authenticated) => {
     void loadLots()
     void loadPresets()
     startAuctionEvents()
+    startAuctionGridChangePolling(0)
     void nextTick(() => startGridSurfaceResizeObserver())
     return
   }
@@ -4589,10 +4708,12 @@ onMounted(() => {
     void loadLots()
     void loadPresets()
     startAuctionEvents()
+    startAuctionGridChangePolling(0)
     void nextTick(() => startGridSurfaceResizeObserver())
   }
   window.addEventListener('resize', updateLoadingSkeletonRows)
   document.addEventListener('keydown', handleGlobalKeydown, true)
+  document.addEventListener('visibilitychange', handleAuctionGridVisibilityChange)
 })
 onUnmounted(() => {
   detailAbortController?.abort()
@@ -4605,7 +4726,9 @@ onUnmounted(() => {
   stopDetailResize()
   window.removeEventListener('resize', updateLoadingSkeletonRows)
   document.removeEventListener('keydown', handleGlobalKeydown, true)
+  document.removeEventListener('visibilitychange', handleAuctionGridVisibilityChange)
   stopAuctionEvents()
+  resetAuctionGridChangePolling()
   if (rowUpdateFrame !== null) {
     window.cancelAnimationFrame(rowUpdateFrame)
     rowUpdateFrame = null
