@@ -25,3 +25,12 @@ Ownership is split by concern:
 `archived` is terminal.
 
 The helpers in `app.services.auction_lifecycle` are intentionally conservative and derived from already-persisted local data.
+
+Enrichment is driven by evidence requirements, not by whether the UI detail card was opened. The first-pass scorer only needs a small local evidence set:
+
+- price facts
+- location facts
+- category facts
+- deadline facts
+
+If those are present in persisted local data, the lot does not need enrichment. Optional detail-only facts like documents, media, and description improve ranking quality later, but they are not hard requirements for the first pass.
