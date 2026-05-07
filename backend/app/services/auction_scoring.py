@@ -60,6 +60,7 @@ class RecordScoringRuntimeInput:
     lot_evidence_hash: str
     normalized_item: dict[str, Any]
     record_status: str | None
+    record_current_status: str | None
     record_initial_price: str | None
     record_application_deadline: str | None
     record_current_price: Decimal | None
@@ -92,6 +93,7 @@ class RecordScoringRuntimeInput:
             "lot_evidence_hash": self.lot_evidence_hash,
             "normalized_item": self.normalized_item,
             "record_status": self.record_status,
+            "record_current_status": self.record_current_status,
             "record_initial_price": self.record_initial_price,
             "record_content_hash": self.record_content_hash,
             "detail_content_hash": self.detail_content_hash,
@@ -276,6 +278,7 @@ def recalculate_record_rating_from_runtime_input(
         location_coordinates=runtime_input.record_location_coordinates,
         category=runtime_input.record_category,
         model_category=runtime_input.record_model_category,
+        current_status=runtime_input.record_current_status,
         has_documents=runtime_input.record_has_documents,
         has_photos=runtime_input.record_has_photos,
         analysis_legal_risk=runtime_input.record_legal_risk,
@@ -365,6 +368,7 @@ def build_record_scoring_runtime_input(
         lot_evidence_hash=build_lot_evidence_hash(evidence),
         normalized_item=record.normalized_item,
         record_status=record.status,
+        record_current_status=evidence.category.status or record.status,
         record_initial_price=record.initial_price,
         record_application_deadline=row.application_deadline,
         record_current_price=evidence.price.current_price,
@@ -533,6 +537,7 @@ def _calculate_record_rating(
     economy: LotEconomyResponse,
     *,
     application_deadline: str | None,
+    current_status: str | None,
     location_region: str | None,
     location_city: str | None,
     location_address: str | None,
@@ -549,7 +554,7 @@ def _calculate_record_rating(
     base_score = 35
     dimensions = _new_score_dimensions()
     reasons = ["Базовая оценка по статусу, данным площадки и ручной экономике"]
-    status = (record.status or row.status or "").lower()
+    status = (current_status or record.status or row.status or "").lower()
 
     if "приём" in status or "прием" in status:
         dimensions["urgency"].add(20, "Идет прием заявок")

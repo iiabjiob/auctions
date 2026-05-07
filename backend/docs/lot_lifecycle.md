@@ -82,7 +82,6 @@ Scoring is also moving through a transition layer. The public runtime scoring pa
 
 The remaining legacy fallback surface is now intentionally small and mainly limited to:
 
-- status text when the adapter does not provide a value
 - a few `build_lot_analysis(...)` fallback reads that still rely on the legacy row/detail payload shape
 - `row.location_coordinates` as a last resort for the delivery-distance penalty
 

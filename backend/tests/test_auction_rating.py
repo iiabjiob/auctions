@@ -233,6 +233,26 @@ class AuctionRatingTests(unittest.TestCase):
         self.assertIn("Есть срок окончания заявок", record.score_breakdown["dimensions"]["urgency"]["reasons"])
         self.assertEqual(rating.input_hash, record.score_input_hash)
 
+    def test_record_scoring_runtime_input_uses_status_as_primary_source(self) -> None:
+        record = make_record(lot_name="Товар")
+        record.datagrid_row["status"] = "Лот отменен"
+        record.normalized_item["lot"]["status"] = "Лот отменен"
+
+        runtime_input = build_record_scoring_runtime_input(record, None, None)
+        runtime_input.record_current_status = "Идет прием заявок"
+
+        adapter_rating = recalculate_record_rating_from_runtime_input(record, None, runtime_input, force=True)
+        adapter_breakdown = dict(record.score_breakdown)
+        legacy_rating = recalculate_record_rating(record, None, None)
+
+        self.assertEqual(legacy_rating.score, 0)
+        self.assertEqual(legacy_rating.level, "low")
+        self.assertEqual(adapter_rating.score, 63)
+        self.assertEqual(adapter_rating.level, "medium")
+        self.assertIn("Идет прием заявок", adapter_breakdown["reasons"])
+        self.assertNotEqual(adapter_rating.input_hash, legacy_rating.input_hash)
+        self.assertEqual(legacy_rating.input_hash, record.score_input_hash)
+
     def test_record_scoring_runtime_input_uses_current_price_as_primary_source(self) -> None:
         record = make_record(lot_name="Экскаватор гусеничный")
         record.initial_price = None
