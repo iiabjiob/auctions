@@ -4,6 +4,7 @@ import unittest
 import asyncio
 from datetime import UTC, datetime
 from decimal import Decimal
+from unittest.mock import patch
 
 from sqlalchemy.dialects import postgresql
 
@@ -12,6 +13,7 @@ from app.schemas.auctions import LotDatagridRow, LotFreshness, LotImage, LotRati
 from app.services.lot_evidence import build_lot_evidence
 from app.services.lot_enrichment import (
     build_lot_enrichment_candidate_statement,
+    execute_lot_enrichment_candidates,
     dry_run_lot_enrichment_candidates,
     classify_lot_enrichment,
     collect_lot_enrichment_candidates,
@@ -342,6 +344,45 @@ class LotEnrichmentRequirementTests(unittest.TestCase):
         self.assertEqual(result.candidate_record_ids, [1])
         self.assertEqual(result.ready_for_scoring_count, 0)
         self.assertEqual(result.needs_enrichment_count, 1)
+
+    def test_execute_lot_enrichment_candidates_skips_locally_sufficient_candidates(self) -> None:
+        record = make_candidate_record(record_id=1, requested_at=datetime(2026, 5, 7, 8, tzinfo=UTC))
+
+        class FakeSession:
+            async def scalars(self, statement):
+                class FakeScalars:
+                    def all(self_inner):
+                        return [record]
+
+                return FakeScalars()
+
+        with patch("app.services.lot_enrichment.ensure_lot_detail_cache") as ensure_detail:
+            result = asyncio.run(execute_lot_enrichment_candidates(FakeSession(), limit=10))
+
+        ensure_detail.assert_not_called()
+        self.assertEqual(result.processed_count, 1)
+        self.assertEqual(result.fetched_count, 0)
+        self.assertEqual(result.cleared_count, 1)
+
+    def test_execute_lot_enrichment_candidates_calls_detail_refresh_for_missing_evidence(self) -> None:
+        record = make_candidate_record(record_id=1, requested_at=datetime(2026, 5, 7, 8, tzinfo=UTC), missing_price=True)
+        detail_cache = make_detail_cache()
+
+        class FakeSession:
+            async def scalars(self, statement):
+                class FakeScalars:
+                    def all(self_inner):
+                        return [record]
+
+                return FakeScalars()
+
+        with patch("app.services.lot_enrichment.ensure_lot_detail_cache", return_value=detail_cache) as ensure_detail:
+            result = asyncio.run(execute_lot_enrichment_candidates(FakeSession(), limit=10))
+
+        ensure_detail.assert_awaited_once()
+        self.assertEqual(result.processed_count, 1)
+        self.assertEqual(result.fetched_count, 1)
+        self.assertEqual(result.candidate_record_ids, [1])
 
 
 if __name__ == "__main__":

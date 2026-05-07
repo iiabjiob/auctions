@@ -45,3 +45,5 @@ This slice classifies lots as locally scorable or needing enrichment. When a sou
 The next step is candidate selection only: a query can list lots with `enrichment_requested_at` set, ordered by the request time, so a future worker can consume them without inventing a new scheduling system. This slice still does not fetch detail data.
 
 There is now a dry-run execution path that loads those candidates, evaluates local evidence, and returns processing metadata. It still does not fetch external detail data or mutate lots beyond the scheduling marker that was already written at source sync time.
+
+The real execution path now routes through the existing `ensure_lot_detail_cache(...)` service. The worker does not implement its own detail fetcher; it only consumes the existing cache-refresh boundary, keeps the candidate limit small, and clears the request marker only when the refreshed local evidence is sufficient.

@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.models.auction import AuctionLotDetailCache, AuctionLotRecord, AuctionSourceState
 from app.schemas.lot_evidence import LotEvidence
 from app.services.lot_evidence import build_lot_evidence
+from app.services.auction_workspace import ensure_lot_detail_cache
 
 
 class LotEnrichmentRequirementEvaluation(BaseModel):
@@ -29,6 +30,18 @@ class LotEnrichmentDryRunResult(BaseModel):
     ready_for_scoring_count: int
     candidate_record_ids: list[int] = Field(default_factory=list)
     candidate_row_ids: list[str] = Field(default_factory=list)
+
+
+class LotEnrichmentExecutionResult(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    candidate_count: int
+    processed_count: int
+    fetched_count: int
+    cleared_count: int
+    still_missing_count: int
+    skipped_count: int
+    candidate_record_ids: list[int] = Field(default_factory=list)
 
 
 TERMINAL_LOT_STATUS_MARKERS: tuple[str, ...] = (
@@ -148,6 +161,57 @@ async def dry_run_lot_enrichment_candidates(
         ready_for_scoring_count=len(candidates) - needs_enrichment_count,
         candidate_record_ids=candidate_record_ids,
         candidate_row_ids=[row_id for row_id in candidate_row_ids if isinstance(row_id, str) and row_id],
+    )
+
+
+async def execute_lot_enrichment_candidates(
+    session: AsyncSession,
+    *,
+    source_code: str | None = None,
+    limit: int = DEFAULT_ENRICHMENT_CANDIDATE_LIMIT,
+) -> LotEnrichmentExecutionResult:
+    candidates = await list_lot_enrichment_candidates(session, source_code=source_code, limit=limit)
+    processed_count = 0
+    fetched_count = 0
+    cleared_count = 0
+    still_missing_count = 0
+    skipped_count = 0
+    candidate_record_ids: list[int] = []
+
+    for record in candidates:
+        processed_count += 1
+        if record.id is None:
+            skipped_count += 1
+            continue
+        candidate_record_ids.append(record.id)
+        evaluation_before = classify_lot_enrichment(record)
+        if not evaluation_before.needs_enrichment:
+            if schedule_lot_enrichment(record, evaluation_before):
+                cleared_count += 1
+            else:
+                skipped_count += 1
+            continue
+
+        detail_cache = await ensure_lot_detail_cache(session, record, refresh=True)
+        fetched_count += 1
+        evaluation_after = evaluate_lot_enrichment_requirements(build_lot_evidence(record, detail_cache))
+        if evaluation_after.needs_enrichment:
+            if not schedule_lot_enrichment(record, evaluation_after):
+                skipped_count += 1
+            still_missing_count += 1
+            continue
+
+        if schedule_lot_enrichment(record, evaluation_after):
+            cleared_count += 1
+
+    return LotEnrichmentExecutionResult(
+        candidate_count=len(candidates),
+        processed_count=processed_count,
+        fetched_count=fetched_count,
+        cleared_count=cleared_count,
+        still_missing_count=still_missing_count,
+        skipped_count=skipped_count,
+        candidate_record_ids=candidate_record_ids,
     )
 
 
