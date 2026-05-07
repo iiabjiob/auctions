@@ -36,4 +36,6 @@ The first safe source/list wiring point is the existing `content_changed` branch
 
 The first safe manual/workspace wiring point is `update_lot_work_item(...)`: when a scoring-relevant persisted field changes, call `invalidate_lot_score(record, reason=manual_economics_changed)` before the scorer runs. Non-scoring fields like freeform comments should not invalidate the score identity.
 
+The score input hash must include every persisted manual/workspace field that can affect scoring, including `final_decision`, `decision_status`, `exclude_from_analysis`, `exclusion_reason`, `category_override`, manual economics fields, and manual analogs. UI-only fields such as comments, assignee, and other non-scoring annotations stay out of the hash.
+
 The intended future wiring points are source sync, detail enrichment, manual economics updates, profile/config edits, and TTL-based freshness checks. For now the helper only clears the persisted score identity so the worker can pick the record up again without dropping the previous UI-facing score payload.

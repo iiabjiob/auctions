@@ -137,6 +137,51 @@ class AuctionRatingTests(unittest.TestCase):
         self.assertEqual(first_rating.input_hash, second_rating.input_hash)
         self.assertEqual(second_rating.breakdown["score"], second_rating.score)
 
+    def test_rating_input_hash_includes_manual_scoring_inputs(self) -> None:
+        record = make_record(lot_name="Экскаватор гусеничный")
+        detail_cache = make_detail_cache()
+        base_work_item = make_work_item()
+
+        baseline_hash = build_record_score_input_hash(record, detail_cache, base_work_item)
+        manual_variants = [
+            ("decision_status", "bid"),
+            ("final_decision", "approved"),
+            ("exclude_from_analysis", True),
+            ("exclusion_reason", "Manual exclusion"),
+            ("category_override", "Спецтехника"),
+            ("max_purchase_price", Decimal("1800000")),
+            ("market_value", Decimal("2500000")),
+            ("platform_fee", Decimal("10000")),
+            ("delivery_cost", Decimal("20000")),
+            ("dismantling_cost", Decimal("30000")),
+            ("repair_cost", Decimal("40000")),
+            ("storage_cost", Decimal("50000")),
+            ("legal_cost", Decimal("60000")),
+            ("other_costs", Decimal("70000")),
+            ("target_profit", Decimal("80000")),
+            ("analogs", [{"title": "Similar lot", "price": Decimal("123456")}]),
+        ]
+
+        for field, value in manual_variants:
+            with self.subTest(field=field):
+                work_item = make_work_item()
+                setattr(work_item, field, value)
+                self.assertNotEqual(
+                    baseline_hash,
+                    build_record_score_input_hash(record, detail_cache, work_item),
+                )
+
+    def test_rating_input_hash_ignores_ui_only_manual_fields(self) -> None:
+        record = make_record(lot_name="Экскаватор гусеничный")
+        detail_cache = make_detail_cache()
+        work_item = make_work_item()
+
+        baseline_hash = build_record_score_input_hash(record, detail_cache, work_item)
+        work_item.inspection_result = "Нужна повторная проверка"
+        work_item.inspection_at = None
+
+        self.assertEqual(baseline_hash, build_record_score_input_hash(record, detail_cache, work_item))
+
     def test_recalculate_skips_when_input_hash_is_unchanged_and_score_state_is_complete(self) -> None:
         record = make_record(lot_name="Экскаватор гусеничный")
         detail_cache = make_detail_cache()

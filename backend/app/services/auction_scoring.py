@@ -868,6 +868,7 @@ def _normalize_score_payload(value: Any) -> Any:
     if isinstance(value, AuctionLotWorkItem):
         return {
             "decision_status": value.decision_status,
+            "final_decision": value.final_decision,
             "exclude_from_analysis": value.exclude_from_analysis,
             "exclusion_reason": value.exclusion_reason,
             "category_override": value.category_override,
