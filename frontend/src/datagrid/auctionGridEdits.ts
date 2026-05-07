@@ -60,15 +60,7 @@ export async function commitAuctionGridEdits<TApiRow>(options: {
   baseVersion: number
   edits: readonly AuctionGridCellEdit[]
   signal?: AbortSignal
-  debug?: boolean
 }) {
-  if (options.debug) {
-    console.debug('[auction-grid] edits', {
-      baseVersion: options.baseVersion,
-      editCount: options.edits.length,
-    })
-  }
-
   const response = await options.postJson<AuctionGridEditResponse<TApiRow>>(
     '/api/auction-lots/edits',
     {
@@ -78,9 +70,6 @@ export async function commitAuctionGridEdits<TApiRow>(options: {
     options.signal,
   )
 
-  if (options.debug) {
-    console.debug('[auction-grid] edits datasetVersion', response.datasetVersion)
-  }
   return response
 }
 

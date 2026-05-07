@@ -527,28 +527,6 @@ type CatalogCommitEditsResult = {
   rejected?: Array<{ rowId: string | number; reason?: string }>
 }
 
-type CatalogWorkspaceBatchEdit = {
-  source: string
-  lot_id: string
-  auction_id: string | null
-  payload: ReturnType<typeof buildGridWorkPayload>
-}
-
-type CatalogWorkspaceBatchCommitResponse = {
-  committed?: Array<{
-    source: string
-    lot_id: string
-    auction_id: string | null
-    workspace: LotWorkspaceResponse
-  }>
-  rejected?: Array<{
-    source: string
-    lot_id: string
-    auction_id: string | null
-    error: string
-  }>
-}
-
 type CatalogServerGridEditContext = {
   rowId: string | number
   currentRow: GridLotRow
@@ -693,8 +671,6 @@ const DETAIL_PANE_WIDTH_STORAGE_KEY = 'auction-detail-pane-width'
 const GRID_SAVED_VIEW_STORAGE_KEY = 'auction-grid-saved-view-v2'
 const GRID_COLUMN_WIDTHS_STORAGE_KEY = 'auction-grid-column-widths-v1'
 const SERVER_FILTERS_STORAGE_KEY = 'auction-server-filters'
-const USE_AUCTION_SERVER_GRID = import.meta.env.VITE_AUCTION_SERVER_GRID !== 'false'
-const USE_AUCTION_SERVER_GRID_EDITS = USE_AUCTION_SERVER_GRID && import.meta.env.VITE_AUCTION_SERVER_GRID_EDITS !== 'false'
 const AUCTION_GRID_CHANGES_TABLE_ID = 'auction-lots'
 const AUCTION_GRID_CHANGES_POLL_INTERVAL_MS = 3_000
 const AUCTION_GRID_CHANGES_REFRESH_DEBOUNCE_MS = 300
@@ -867,7 +843,6 @@ type GridWorkSnapshot = {
 }
 
 const savedGridWorkSnapshots = new Map<string, string>()
-const pendingGridSaveTimers = new Map<string, ReturnType<typeof window.setTimeout>>()
 const optimisticGridRows = new Map<string, GridLotRow>()
 
 const workDraft = reactive<WorkDraft>(emptyWorkDraft())
@@ -2464,93 +2439,12 @@ function hasGridFilterModel(filterModel: DataGridFilterSnapshot | null | undefin
   )
 }
 
-function buildLotsUrl(
-  options: {
-    offset?: number
-    limit?: number
-    sortModel?: readonly DataGridSortState[]
-    filterModel?: DataGridFilterSnapshot | null
-  } = {},
-) {
-  const limit = Math.max(1, Math.min(options.limit ?? CATALOG_SERVER_FETCH_LIMIT, CATALOG_SERVER_FETCH_LIMIT))
-  const offset = Math.max(0, options.offset ?? 0)
-  const params = new URLSearchParams({
-    period: filters.period,
-    source: filters.source,
-    offset: String(offset),
-    limit: String(limit),
-    persisted: 'true',
-  })
-
-  const query = filters.query.trim()
-  const minPrice = parseFilterNumber(filters.minPrice)
-  const maxPrice = parseFilterNumber(filters.maxPrice)
-  if (query) params.set('q', query)
-  if (filters.status) params.set('status', filters.status)
-  if (filters.analysisColor) params.set('analysis_color', filters.analysisColor)
-  if (minPrice !== null) params.set('min_price', String(minPrice))
-  if (maxPrice !== null) params.set('max_price', String(maxPrice))
-  if (filters.onlyNew) params.set('only_new', 'true')
-  if (filters.shortlist) params.set('shortlist', 'true')
-  if (filters.minRating > 0) params.set('min_rating', String(filters.minRating))
-
-  const sort = options.sortModel?.[0]
-  if (sort) {
-    params.set('sort_by', sort.key)
-    params.set('sort_direction', sort.direction)
-  }
-  if (options.sortModel?.length) {
-    params.set('sort_model', JSON.stringify(options.sortModel))
-  }
-  if (hasGridFilterModel(options.filterModel)) {
-    params.set('grid_filter', JSON.stringify(options.filterModel))
-  }
-
-  return apiUrl(`/api/v1/auctions/lots?${params.toString()}`)
-}
-
 function isAbortLikeError(error: unknown) {
   return error instanceof DOMException && error.name === 'AbortError'
 }
 
 function isApiRequestStatus(error: unknown, status: number) {
   return error instanceof ApiRequestError && error.status === status
-}
-
-async function fetchCatalogResponse(url: string, signal?: AbortSignal) {
-  return fetch(url, {
-    headers: authHeaders(),
-    signal,
-  })
-}
-
-async function fetchCatalogJson(url: string, signal?: AbortSignal) {
-  const requestKey = `${accessToken.value ?? ''}\n${url}`
-  const existingRequest = catalogFetchRequests.get(requestKey)
-  if (existingRequest) {
-    return existingRequest
-  }
-
-  const request = (async () => {
-    const response = await fetchCatalogResponse(url, signal)
-    if (response.status === 401) {
-      authStore.logout()
-      throw new Error('Сессия истекла. Войдите снова.')
-    }
-    if (!response.ok) {
-      throw new Error(`API вернул ${response.status}`)
-    }
-    return (await response.json()) as LotsResponse
-  })()
-
-  catalogFetchRequests.set(requestKey, request)
-  try {
-    return await request
-  } finally {
-    if (catalogFetchRequests.get(requestKey) === request) {
-      catalogFetchRequests.delete(requestKey)
-    }
-  }
 }
 
 async function ensureAuctionSourcesLoaded() {
@@ -2617,9 +2511,10 @@ function createAuctionServerCatalogDataSource(): CatalogAuctionServerDataSource 
       })
       startAuctionGridChangePolling()
     },
-    debug: true,
   })
 }
+
+const auctionServerDataSource = createAuctionServerCatalogDataSource()
 
 function rememberLoadedRows(rows: GridLotRow[]) {
   const byId = gridRowsById.value
@@ -2661,47 +2556,6 @@ function startUiPerfTrace(name: string, context: Record<string, unknown> = {}) {
   }
 }
 
-async function requestLegacyLotsWindow(request: {
-  start: number
-  end: number
-  signal?: AbortSignal
-  sortModel?: readonly DataGridSortState[]
-  filterModel?: DataGridFilterSnapshot | null
-}) {
-  if (request.signal?.aborted) {
-    throw new DOMException('Request aborted', 'AbortError')
-  }
-  const start = Math.max(0, request.start)
-  const end = Math.max(start, request.end)
-  const data = await fetchCatalogJson(
-    buildLotsUrl({
-      offset: start,
-      limit: end - start + 1,
-      sortModel: request.sortModel,
-      filterModel: request.filterModel,
-    }),
-    request.signal,
-  )
-
-  if (request.signal?.aborted) {
-    throw new DOMException('Request aborted', 'AbortError')
-  }
-
-  const nextRevision = gridRowRevision.value + 1
-  const mappedRows = data.rows.map((row) => mapApiRow(row, nextRevision))
-  sources.value = data.available_sources
-  catalogTotal.value = data.total
-  gridRowRevision.value = nextRevision
-  rememberLoadedRows(mappedRows)
-  lastLoadedAt.value = new Date().toLocaleString('ru-RU')
-  return {
-    rows: mappedRows,
-    total: data.total,
-    start,
-    end,
-  }
-}
-
 async function requestAuctionServerLotsWindow(request: {
   start: number
   end: number
@@ -2709,8 +2563,7 @@ async function requestAuctionServerLotsWindow(request: {
   sortModel?: readonly DataGridSortState[]
   filterModel?: DataGridFilterSnapshot | null
 }) {
-  const adapter = createAuctionServerCatalogDataSource()
-  return adapter.pullWindow({
+  return auctionServerDataSource.pullWindow({
     start: Math.max(0, request.start),
     end: Math.max(Math.max(0, request.start), request.end),
     signal: request.signal,
@@ -2731,68 +2584,13 @@ async function fetchLotsRange(request: {
   if (request.signal?.aborted) {
     throw new DOMException('Request aborted', 'AbortError')
   }
-  if (USE_AUCTION_SERVER_GRID) {
-    return requestAuctionServerLotsWindow({
-      start: Math.max(0, request.start),
-      end: Math.max(Math.max(0, request.start), request.end),
-      signal: request.signal,
-      sortModel: request.sortModel,
-      filterModel: request.filterModel,
-    })
-  }
-  return requestLegacyLotsWindow({
+  return requestAuctionServerLotsWindow({
     start: Math.max(0, request.start),
     end: Math.max(Math.max(0, request.start), request.end),
     signal: request.signal,
     sortModel: request.sortModel,
     filterModel: request.filterModel,
   })
-}
-
-function buildColumnHistogramPayload(request: CatalogColumnHistogramRequest): LotHistogramPayload {
-  const minPrice = parseFilterNumber(filters.minPrice)
-  const maxPrice = parseFilterNumber(filters.maxPrice)
-  return {
-    column_id: request.columnId,
-    options: request.options as Record<string, unknown>,
-    period: filters.period,
-    source: filters.source || null,
-    q: filters.query.trim() || null,
-    status: filters.status || null,
-    analysis_color: filters.analysisColor || null,
-    min_price: minPrice,
-    max_price: maxPrice,
-    only_new: filters.onlyNew,
-    shortlist: filters.shortlist,
-    min_rating: filters.minRating > 0 ? filters.minRating : null,
-    sort_model: request.sortModel,
-    grid_filter: hasGridFilterModel(request.filterModel) ? request.filterModel : null,
-  }
-}
-
-async function fetchColumnHistogram(request: CatalogColumnHistogramRequest): Promise<DataGridColumnHistogram> {
-  const response = await fetch(apiUrl('/api/v1/auctions/lots/histogram'), {
-    method: 'POST',
-    headers: new Headers({
-      ...Object.fromEntries(authHeaders().entries()),
-      'Content-Type': 'application/json',
-    }),
-    body: JSON.stringify(buildColumnHistogramPayload(request)),
-  })
-  if (response.status === 401) {
-    authStore.logout()
-    throw new Error('Сессия истекла. Войдите снова.')
-  }
-  if (!response.ok) {
-    let body: unknown = null
-    try {
-      body = await response.clone().json()
-    } catch {
-      body = null
-    }
-    throw new ApiRequestError(`API вернул ${response.status}`, response.status, body)
-  }
-  return (await response.json()) as DataGridColumnHistogram
 }
 
 function beginCatalogViewportDim() {
@@ -2861,7 +2659,6 @@ function shouldDimCatalogPull(reason: string) {
 }
 
 function createCatalogDataSource(): CatalogDataSource {
-  const auctionServerDataSource = USE_AUCTION_SERVER_GRID ? createAuctionServerCatalogDataSource() : null
   return {
     subscribe(listener) {
       catalogDataSourceListeners.add(listener)
@@ -2886,25 +2683,7 @@ function createCatalogDataSource(): CatalogDataSource {
         }
       }
       try {
-        if (auctionServerDataSource) {
-          return await auctionServerDataSource.pull(request)
-        }
-
-        const result = await fetchLotsRange({
-          start: request.range.start,
-          end: request.range.end,
-          signal: request.signal,
-          sortModel: request.sortModel,
-          filterModel: request.filterModel,
-        })
-        return {
-          rows: result.rows.map((row, index) => ({
-            index: result.start + index,
-            row,
-            rowId: row.id,
-          })),
-          total: result.total,
-        }
+        return await auctionServerDataSource.pull(request)
       } catch (error) {
         if (!isBackgroundPrefetch && !isAbortLikeError(error) && requestSeq === catalogPullRequestSeq) {
           errorMessage.value = error instanceof Error ? error.message : 'Не удалось загрузить лоты'
@@ -2921,10 +2700,7 @@ function createCatalogDataSource(): CatalogDataSource {
       }
     },
     getColumnHistogram(request) {
-      if (auctionServerDataSource) {
-        return auctionServerDataSource.getColumnHistogram?.(request) ?? Promise.resolve([])
-      }
-      return fetchColumnHistogram(request)
+      return auctionServerDataSource.getColumnHistogram?.(request) ?? Promise.resolve([])
     },
     async commitEdits(request) {
       return commitCatalogEdits(request)
@@ -3003,8 +2779,8 @@ async function softRefreshCatalogRows(options: {
     const result = await fetchLotsRange({
       start: range.start,
       end: range.end,
-      sortModel: options.sortModel ?? snapshot.sortModel,
-      filterModel: typeof options.filterModel === 'undefined' ? snapshot.filterModel : options.filterModel,
+      sortModel: options.sortModel,
+      filterModel: options.filterModel,
     })
     if (reloadSeq !== catalogSoftReloadSeq) return
     emitCatalogRowsUpsert(result.rows, result.total, result.start)
@@ -3038,11 +2814,9 @@ function resetCatalogRowModel() {
 
 async function loadLots() {
   if (!isAuthenticated.value) return
-  if (USE_AUCTION_SERVER_GRID) {
-    void ensureAuctionSourcesLoaded().catch((error) => {
-      console.warn('[auction-grid] failed to load source options', error)
-    })
-  }
+  void ensureAuctionSourcesLoaded().catch((error) => {
+    console.warn('[auction-grid] failed to load source options', error)
+  })
   resetCatalogRowModel()
   savedGridWorkSnapshots.clear()
   await ensureGridSavedViewRestored()
@@ -3389,22 +3163,6 @@ function rememberGridWorkSnapshot(row: GridLotRow) {
   savedGridWorkSnapshots.set(row.id, serializeGridWorkState(row))
 }
 
-function buildGridWorkPayload(row: GridLotRow) {
-  return {
-    market_value: row.marketValue,
-    platform_fee: row.platformFee,
-    delivery_cost: row.deliveryCost,
-    dismantling_cost: row.dismantlingCost,
-    repair_cost: row.repairCost,
-    storage_cost: row.storageCost,
-    legal_cost: row.legalCost,
-    other_costs: row.otherCosts,
-    target_profit: row.targetProfit,
-    exclude_from_analysis: row.excludeFromAnalysis,
-    exclusion_reason: row.exclusionReason.trim() || null,
-  }
-}
-
 function normalizeGridRowPatch(row: Partial<GridLotRow>) {
   const normalized: Partial<GridLotRow> = { ...row }
   for (const key of EDITABLE_GRID_NUMERIC_KEYS) {
@@ -3432,11 +3190,7 @@ async function commitCatalogEdits(request: CatalogCommitEditsRequest): Promise<C
       })),
     }
   }
-
-  if (USE_AUCTION_SERVER_GRID_EDITS) {
-    return commitCatalogServerGridEdits(request)
-  }
-  return commitLegacyCatalogEdits(request)
+  return commitCatalogServerGridEdits(request)
 }
 
 async function commitCatalogServerGridEdits(request: CatalogCommitEditsRequest): Promise<CatalogCommitEditsResult> {
@@ -3541,10 +3295,8 @@ async function commitCatalogServerGridEdits(request: CatalogCommitEditsRequest):
       baseVersion,
       edits: cellEdits,
       signal: request.signal,
-      debug: true,
     })
     latestAuctionGridDatasetVersion.value = response.datasetVersion
-    console.debug('[auction-grid] edits datasetVersion updated', response.datasetVersion)
 
     const updatedRows = response.updatedRows.map((entry) => entry.row).filter(Boolean)
     if (updatedRows.length > 0) {
@@ -3608,296 +3360,6 @@ function restoreServerGridEditRows(rowContexts: Map<string, CatalogServerGridEdi
     }
   }
 }
-
-async function commitLegacyCatalogEdits(request: CatalogCommitEditsRequest): Promise<CatalogCommitEditsResult> {
-  const committed: NonNullable<CatalogCommitEditsResult['committed']> = []
-  const rejected: NonNullable<CatalogCommitEditsResult['rejected']> = []
-  const rejectedMessages: string[] = []
-  const rowContexts = new Map<string, {
-    rowId: string | number
-    currentRow: GridLotRow
-    nextRow: GridLotRow
-    requestSnapshot: string
-    payload: ReturnType<typeof buildGridWorkPayload>
-  }>()
-
-  for (const edit of request.edits) {
-    const rowId = String(edit.rowId)
-    const existing = rowContexts.get(rowId)
-    const currentRow = getLatestGridRow(rowId)
-    if (!currentRow?.lotId) {
-      rejected.push({
-        rowId: edit.rowId,
-        reason: 'row not loaded',
-      })
-      rejectedMessages.push(`${rowId}: row not loaded`)
-      continue
-    }
-
-    const nextRow = recomputeGridEconomyFields({
-      ...currentRow,
-      ...normalizeGridRowPatch(edit.data),
-      rowRevision: currentRow.rowRevision,
-    })
-    const requestSnapshot = serializeGridWorkState(nextRow)
-    const previousSnapshot = savedGridWorkSnapshots.get(currentRow.id)
-    if (previousSnapshot === requestSnapshot) {
-      committed.push({ rowId: edit.rowId })
-      continue
-    }
-
-    if (existing) {
-      existing.nextRow = nextRow
-      existing.requestSnapshot = requestSnapshot
-      existing.payload = buildGridWorkPayload(nextRow)
-      continue
-    }
-
-    rowContexts.set(rowId, {
-      rowId: edit.rowId,
-      currentRow,
-      nextRow,
-      requestSnapshot,
-      payload: buildGridWorkPayload(nextRow),
-    })
-  }
-
-    if (rowContexts.size === 0) {
-    if (rejected.length > 0) {
-      errorMessage.value = `Не удалось сохранить изменения из таблицы: ${rejectedMessages.join(', ')}`
-      backgroundStatus.value = 'Ошибка сохранения экономики лотов'
-      keepCatalogEditErrorOnNextPull = true
-    } else {
-      errorMessage.value = ''
-    }
-    return {
-      committed,
-      rejected,
-    }
-  }
-
-  if (rowContexts.size === 1 && request.edits.length === 1) {
-    const context = rowContexts.values().next().value
-    if (!context) {
-      return {
-        committed,
-        rejected,
-      }
-    }
-    try {
-      backgroundStatus.value = `Сохраняю экономику лота ${context.nextRow.lotNumber || context.nextRow.id}`
-      const params = new URLSearchParams()
-      if (context.nextRow.auctionId) params.set('auction_id', context.nextRow.auctionId)
-      const workspace = await fetchJson<LotWorkspaceResponse>(
-        `/api/v1/auctions/${context.nextRow.source}/lots/${encodeURIComponent(context.nextRow.lotId)}/workspace?${params.toString()}`,
-        {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(context.payload),
-          signal: request.signal,
-        },
-      )
-      if (selectedLot.value?.id === context.currentRow.id) {
-        selectedWorkspace.value = workspace
-        hydrateWorkDraft(workspace.work_item)
-      }
-      applyWorkspaceRows([workspace.row], { clearOptimistic: true, refreshSummary: false, patchGrid: false })
-      committed.push({ rowId: context.rowId })
-      backgroundStatus.value = `Экономика обновлена: ${context.nextRow.lotNumber || context.nextRow.id}`
-      errorMessage.value = ''
-    } catch (error) {
-      rejected.push({
-        rowId: context.rowId,
-        reason: error instanceof Error ? error.message : String(error),
-      })
-      errorMessage.value = error instanceof Error ? error.message : 'Не удалось сохранить изменения из таблицы'
-      backgroundStatus.value = `Ошибка сохранения экономики лота ${context.nextRow.lotNumber || context.nextRow.id}`
-      keepCatalogEditErrorOnNextPull = true
-    }
-    return {
-      committed,
-      rejected,
-    }
-  }
-
-  const batchEdits: CatalogWorkspaceBatchEdit[] = Array.from(rowContexts.values(), (context) => ({
-    source: context.currentRow.source,
-    lot_id: context.currentRow.lotId as string,
-    auction_id: context.currentRow.auctionId,
-    payload: context.payload,
-  }))
-
-  try {
-    backgroundStatus.value = `Сохраняю ${batchEdits.length} лотов`
-    const response = await fetchJson<CatalogWorkspaceBatchCommitResponse>('/api/v1/auctions/lots/workspace/batch', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ edits: batchEdits }),
-      signal: request.signal,
-    })
-
-    const contextByKey = new Map(
-      Array.from(rowContexts.values(), (context) => [`${context.currentRow.source}::${context.currentRow.lotId}`, context] as const),
-    )
-    const committedByKey = new Map(
-      (response.committed ?? []).map((entry) => [`${entry.source}::${entry.lot_id}`, entry.workspace] as const),
-    )
-    for (const [rowId, context] of rowContexts) {
-      const workspace = committedByKey.get(`${context.currentRow.source}::${context.currentRow.lotId}`)
-      if (!workspace) continue
-      if (selectedLot.value?.id === context.currentRow.id) {
-        selectedWorkspace.value = workspace
-        hydrateWorkDraft(workspace.work_item)
-      }
-      applyWorkspaceRows([workspace.row], { clearOptimistic: true, refreshSummary: false, patchGrid: false })
-      committed.push({ rowId: context.rowId })
-    }
-
-    const rejectedEntries = response.rejected ?? []
-    if (rejectedEntries.length > 0 || rejected.length > 0) {
-      for (const entry of rejectedEntries) {
-        const context = contextByKey.get(`${entry.source}::${entry.lot_id}`)
-        if (!context) {
-          rejectedMessages.push(entry.error)
-          continue
-        }
-        rejected.push({
-          rowId: context.rowId,
-          reason: entry.error,
-        })
-        const backendRow = gridRowsById.value.get(context.currentRow.id) ?? null
-        if (backendRow) {
-          optimisticGridRows.delete(context.currentRow.id)
-          patchGridRowsInDataGrid([backendRow])
-          rememberGridWorkSnapshot(backendRow)
-          if (selectedLot.value?.id === context.currentRow.id) {
-            selectedLot.value = backendRow
-          }
-        }
-        rejectedMessages.push(`${context.currentRow.lotNumber || context.currentRow.id}: ${entry.error}`)
-      }
-      for (const entry of rejected) {
-        const context = Array.from(rowContexts.values()).find((candidate) => candidate.rowId === entry.rowId)
-        if (!context) continue
-        const backendRow = gridRowsById.value.get(context.currentRow.id) ?? null
-        if (backendRow) {
-          optimisticGridRows.delete(context.currentRow.id)
-          patchGridRowsInDataGrid([backendRow])
-          rememberGridWorkSnapshot(backendRow)
-        }
-      }
-      if (rejectedMessages.length > 0) {
-        errorMessage.value = `Не удалось сохранить ${rejectedMessages.length} строк: ${rejectedMessages.join(', ')}`
-        backgroundStatus.value = `Частично сохранено: ${committed.length} из ${rowContexts.size}`
-        keepCatalogEditErrorOnNextPull = true
-      }
-    } else {
-      errorMessage.value = ''
-      backgroundStatus.value = `Сохранено ${committed.length} лотов`
-    }
-  } catch (error) {
-    for (const context of rowContexts.values()) {
-      const backendRow = gridRowsById.value.get(context.currentRow.id) ?? null
-      if (backendRow) {
-        optimisticGridRows.delete(context.currentRow.id)
-        patchGridRowsInDataGrid([backendRow])
-        rememberGridWorkSnapshot(backendRow)
-      }
-    }
-    rejected.push(
-      ...Array.from(rowContexts.values(), (context) => ({
-        rowId: context.rowId,
-        reason: error instanceof Error ? error.message : String(error),
-      })),
-    )
-    errorMessage.value = error instanceof Error ? error.message : 'Не удалось сохранить изменения из таблицы'
-    backgroundStatus.value = `Ошибка сохранения экономики ${rowContexts.size} лотов`
-    keepCatalogEditErrorOnNextPull = true
-  }
-
-  return {
-    committed,
-    rejected,
-  }
-}
-
-function queueGridRowSave(rowId: string) {
-  const existingTimer = pendingGridSaveTimers.get(rowId)
-  if (existingTimer) {
-    clearTimeout(existingTimer)
-  }
-  const timer = window.setTimeout(() => {
-    pendingGridSaveTimers.delete(rowId)
-    void saveGridRow(rowId)
-  }, 450)
-  pendingGridSaveTimers.set(rowId, timer)
-}
-
-async function saveGridRow(rowId: string) {
-  const trace = startUiPerfTrace('saveGridRow', { rowId })
-  const row = getLatestGridRow(rowId)
-  if (!row?.lotId) {
-    trace.end({ stage: 'no-row-or-lot-id' })
-    return
-  }
-  const requestSnapshot = serializeGridWorkState(row)
-  const shouldRestoreGridFocus = !catalogRowModel.value
-  const saveStartFocusAnchor = shouldRestoreGridFocus
-    ? captureGridFocusAnchor(row.id, document.activeElement === document.body)
-    : null
-  try {
-    backgroundStatus.value = `Сохраняю экономику лота ${row.lotNumber || row.id}`
-    const params = new URLSearchParams()
-    if (row.auctionId) params.set('auction_id', row.auctionId)
-    const workspace = await fetchJson<LotWorkspaceResponse>(
-      `/api/v1/auctions/${row.source}/lots/${encodeURIComponent(row.lotId)}/workspace?${params.toString()}`,
-      {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(buildGridWorkPayload(row)),
-      },
-    )
-    if (selectedLot.value?.id === rowId) {
-      selectedWorkspace.value = workspace
-      hydrateWorkDraft(workspace.work_item)
-    }
-    const focusAnchor = shouldRestoreGridFocus
-      ? captureGridFocusAnchor(null, document.activeElement === document.body) ?? saveStartFocusAnchor
-      : null
-    const currentOptimisticRow = optimisticGridRows.get(rowId)
-    const hasNewerOptimisticEdit = Boolean(
-      currentOptimisticRow && serializeGridWorkState(currentOptimisticRow) !== requestSnapshot,
-    )
-    if (!hasNewerOptimisticEdit) {
-      applyWorkspaceRows([workspace.row], { clearOptimistic: true, refreshSummary: false })
-      if (shouldRestoreGridFocus) {
-        void restoreGridFocus(focusAnchor)
-      }
-    }
-    backgroundStatus.value = `Экономика обновлена: ${row.lotNumber || row.id}`
-    trace.end({ hasNewerOptimisticEdit, stage: 'saved' })
-  } catch (error) {
-    const currentOptimisticRow = optimisticGridRows.get(rowId)
-    const hasNewerOptimisticEdit = Boolean(
-      currentOptimisticRow && serializeGridWorkState(currentOptimisticRow) !== requestSnapshot,
-    )
-    if (!hasNewerOptimisticEdit) {
-      optimisticGridRows.delete(rowId)
-      const backendRow = gridRowsById.value.get(rowId) ?? null
-      if (backendRow) {
-        patchGridRowsInDataGrid([backendRow])
-        rememberGridWorkSnapshot(backendRow)
-        if (selectedLot.value?.id === rowId) {
-          selectedLot.value = backendRow
-        }
-      }
-    }
-    errorMessage.value = error instanceof Error ? error.message : 'Не удалось сохранить изменения из таблицы'
-    backgroundStatus.value = `Ошибка сохранения экономики лота ${row.lotNumber || row.id}`
-    trace.end({ stage: 'error', message: error instanceof Error ? error.message : String(error) })
-  }
-}
-
 function parseNumber(value: string | number | null) {
   if (value === null || value === '') return null
   const parsed = Number(value)
@@ -3977,12 +3439,7 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 function shouldPollAuctionGridChanges() {
-  return (
-    USE_AUCTION_SERVER_GRID &&
-    isAuthenticated.value &&
-    !document.hidden &&
-    latestAuctionGridDatasetVersion.value !== null
-  )
+  return isAuthenticated.value && !document.hidden && latestAuctionGridDatasetVersion.value !== null
 }
 
 function startAuctionGridChangePolling(delay = AUCTION_GRID_CHANGES_POLL_INTERVAL_MS) {
@@ -4044,7 +3501,7 @@ async function pollAuctionGridChanges() {
 }
 
 function scheduleAuctionGridChangeRefresh() {
-  if (!USE_AUCTION_SERVER_GRID || auctionGridChangesRefreshInFlight || auctionGridChangesRefreshTimer !== null) return
+  if (auctionGridChangesRefreshInFlight || auctionGridChangesRefreshTimer !== null) return
 
   auctionGridChangesRefreshTimer = window.setTimeout(() => {
     auctionGridChangesRefreshTimer = null
@@ -4817,7 +4274,6 @@ function isRedoShortcut(event: KeyboardEvent) {
 
 async function refreshAuctionGridAfterHistoryMutation(datasetVersion: number) {
   latestAuctionGridDatasetVersion.value = datasetVersion
-  console.debug('[auction-grid] history datasetVersion updated', datasetVersion)
   await softRefreshCatalogRows({ dimViewport: false, range: resolveCatalogReloadRange() })
 }
 
@@ -4827,12 +4283,10 @@ function handleAuctionGridUndoRedo(event: KeyboardEvent) {
   if (isUndoShortcut(event)) {
     event.preventDefault()
     event.stopPropagation()
-    console.debug('[auction-grid] history undo triggered')
     void (async () => {
       try {
         const response = await requestAuctionGridUndo<ApiLotRow>({
           postJson: postAuctionServerGridJson,
-          debug: true,
         })
         if (response.updatedRows.length === 0) return
         await refreshAuctionGridAfterHistoryMutation(response.datasetVersion)
@@ -4846,12 +4300,10 @@ function handleAuctionGridUndoRedo(event: KeyboardEvent) {
   if (isRedoShortcut(event)) {
     event.preventDefault()
     event.stopPropagation()
-    console.debug('[auction-grid] history redo triggered')
     void (async () => {
       try {
         const response = await requestAuctionGridRedo<ApiLotRow>({
           postJson: postAuctionServerGridJson,
-          debug: true,
         })
         if (response.updatedRows.length === 0) return
         await refreshAuctionGridAfterHistoryMutation(response.datasetVersion)
@@ -5058,8 +4510,6 @@ onUnmounted(() => {
     gridSummaryFrame = null
   }
   queuedRowUpdates.clear()
-  pendingGridSaveTimers.forEach((timer) => clearTimeout(timer))
-  pendingGridSaveTimers.clear()
 })
 </script>
 

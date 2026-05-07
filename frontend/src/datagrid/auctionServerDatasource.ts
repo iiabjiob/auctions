@@ -75,7 +75,6 @@ export type CreateAuctionServerDatasourceOptions<TApiRow, TRow> = {
     datasetVersion: number
     rowRevision: number
   }) => void
-  debug?: boolean
 }
 
 export function createAuctionServerDatasource<TApiRow, TRow>(
@@ -91,17 +90,6 @@ export function createAuctionServerDatasource<TApiRow, TRow>(
     const endExclusive = inclusiveEnd + 1
     const filterModel = normalizeFilterModel(request.filterModel, options.hasFilterModel)
     const sortModel = request.sortModel ?? []
-
-    if (options.debug) {
-      console.debug('[auction-grid] pull', {
-        startRow: start,
-        endRow: endExclusive,
-        reason: request.reason,
-        priority: request.priority,
-        sortModel,
-        hasFilterModel: filterModel !== null,
-      })
-    }
 
     const data = await options.postJson<AuctionServerPullResponse<TApiRow>>(
       '/api/auction-lots/pull',
@@ -119,14 +107,10 @@ export function createAuctionServerDatasource<TApiRow, TRow>(
       throw new DOMException('Request aborted', 'AbortError')
     }
 
-    if (options.debug) {
-      console.debug('[auction-grid] datasetVersion', data.datasetVersion)
-    }
-
     const rowRevision = options.allocateRowRevision()
     const rows = data.rows.map((entry) => options.mapRow(entry.row, rowRevision))
     const entries = rows.map((row, index) => ({
-      index: start + index,
+      index: data.rows[index]?.index ?? start + index,
       row,
       rowId: data.rows[index]?.id as DataGridRowId,
     }))
