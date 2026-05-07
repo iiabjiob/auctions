@@ -78,6 +78,8 @@ For operational visibility, the backend also exposes a small pipeline counter sn
 
 These counters are local DB snapshots only. They are meant for lightweight diagnostics and do not change any worker behavior.
 
+Scoring is also moving through a transition layer. The current runtime hash path now builds an explicit scoring input adapter from `LotEvidence` plus manual/work-item fields and the active scoring version, but the scorer still maps that adapter back onto the same normalized legacy inputs. That keeps score values stable while the system moves toward a LotEvidence-first scoring model.
+
 Failed or still-incomplete attempts now set a conservative retry schedule on the lot record:
 
 - `last_enrichment_attempt_at`

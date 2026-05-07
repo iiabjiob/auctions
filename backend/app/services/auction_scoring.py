@@ -54,6 +54,43 @@ class ScoreComputation:
     caps: list[ScoreCap]
 
 
+@dataclass(slots=True)
+class RecordScoringRuntimeInput:
+    scoring_version: str
+    lot_evidence_hash: str
+    normalized_item: dict[str, Any]
+    record_status: str | None
+    record_initial_price: str | None
+    record_content_hash: str
+    detail_content_hash: str | None
+    work_item: AuctionLotWorkItem | None
+    profile_identifier: str | None = None
+    category_keywords: dict[str, tuple[str, ...]] | None = None
+    exclusion_keywords: tuple[str, ...] | None = None
+    legal_risk_rules: LegalRiskRules | None = None
+    owner_profile: OwnerScoringProfile | None = None
+    dimension_weights: ScoringDimensionWeights | None = None
+
+    def to_legacy_payload(self) -> dict[str, Any]:
+        return {
+            "scoring_version": self.scoring_version,
+            "mode": "record",
+            "lot_evidence_hash": self.lot_evidence_hash,
+            "normalized_item": self.normalized_item,
+            "record_status": self.record_status,
+            "record_initial_price": self.record_initial_price,
+            "record_content_hash": self.record_content_hash,
+            "detail_content_hash": self.detail_content_hash,
+            "work_item": self.work_item,
+            "profile_identifier": self.profile_identifier,
+            "category_keywords": self.category_keywords,
+            "exclusion_keywords": self.exclusion_keywords,
+            "legal_risk_rules": self.legal_risk_rules,
+            "owner_profile": self.owner_profile,
+            "dimension_weights": self.dimension_weights,
+        }
+
+
 def calculate_list_lot_rating(item: AuctionListItem, price_value: Decimal | None) -> LotRating:
     scoring_time = datetime.now(UTC)
     base_score = 50
@@ -238,9 +275,35 @@ def build_record_score_input_hash(
     dimension_weights: ScoringDimensionWeights | None = None,
     profile_identifier: str | None = None,
 ) -> str:
+    runtime_input = build_record_scoring_runtime_input(
+        record,
+        detail_cache,
+        work_item,
+        category_keywords=category_keywords,
+        exclusion_keywords=exclusion_keywords,
+        legal_risk_rules=legal_risk_rules,
+        owner_profile=owner_profile,
+        dimension_weights=dimension_weights,
+        profile_identifier=profile_identifier,
+    )
+    return build_score_input_hash(**runtime_input.to_legacy_payload())
+
+
+def build_record_scoring_runtime_input(
+    record: AuctionLotRecord,
+    detail_cache: AuctionLotDetailCache | None,
+    work_item: AuctionLotWorkItem | None = None,
+    *,
+    category_keywords: dict[str, tuple[str, ...]] | None = None,
+    exclusion_keywords: tuple[str, ...] | None = None,
+    legal_risk_rules: LegalRiskRules | None = None,
+    owner_profile: OwnerScoringProfile | None = None,
+    dimension_weights: ScoringDimensionWeights | None = None,
+    profile_identifier: str | None = None,
+) -> RecordScoringRuntimeInput:
     evidence = build_lot_evidence(record, detail_cache)
-    return build_score_input_hash(
-        mode="record",
+    return RecordScoringRuntimeInput(
+        scoring_version=SCORING_VERSION,
         lot_evidence_hash=build_lot_evidence_hash(evidence),
         normalized_item=record.normalized_item,
         record_status=record.status,

@@ -14,11 +14,13 @@ from app.services.auction_datagrid_payload import validate_datagrid_row_payload
 from app.services.auction_scoring import (
     SCORING_VERSION,
     build_record_score_input_hash,
+    build_record_scoring_runtime_input,
     invalidate_lot_score,
     recalculate_record_rating,
     record_score_is_current,
 )
 from app.services.auction_scoring_invalidation import SOURCE_CONTENT_CHANGED
+from app.services.lot_evidence import build_lot_evidence, build_lot_evidence_hash
 from app.worker import auction_analysis_worker
 from app.worker.auction_analysis_worker import _build_scoring_candidate_statement
 
@@ -170,6 +172,49 @@ class AuctionRatingTests(unittest.TestCase):
                     baseline_hash,
                     build_record_score_input_hash(record, detail_cache, work_item),
                 )
+
+    def test_record_scoring_runtime_input_matches_legacy_inputs(self) -> None:
+        record = make_record(lot_name="Экскаватор гусеничный")
+        detail_cache = make_detail_cache()
+        work_item = make_work_item()
+
+        adapter = build_record_scoring_runtime_input(record, detail_cache, work_item)
+        payload = adapter.to_legacy_payload()
+
+        self.assertEqual(payload["scoring_version"], SCORING_VERSION)
+        self.assertEqual(payload["mode"], "record")
+        self.assertEqual(payload["lot_evidence_hash"], build_lot_evidence_hash(build_lot_evidence(record, detail_cache)))
+        self.assertEqual(payload["normalized_item"], record.normalized_item)
+        self.assertEqual(payload["record_status"], record.status)
+        self.assertEqual(payload["record_initial_price"], record.initial_price)
+        self.assertEqual(payload["record_content_hash"], record.content_hash)
+        self.assertEqual(payload["detail_content_hash"], detail_cache.content_hash)
+        self.assertIs(payload["work_item"], work_item)
+        self.assertEqual(payload["category_keywords"], None)
+        self.assertEqual(payload["exclusion_keywords"], None)
+
+    def test_record_scoring_runtime_input_handles_missing_evidence_conservatively(self) -> None:
+        record = make_record(lot_name="Экскаватор гусеничный")
+
+        adapter = build_record_scoring_runtime_input(record, None, None)
+        payload = adapter.to_legacy_payload()
+
+        self.assertIsNone(payload["detail_content_hash"])
+        self.assertIsNone(payload["work_item"])
+        self.assertIsNone(payload["profile_identifier"])
+        self.assertEqual(payload["lot_evidence_hash"], build_lot_evidence_hash(build_lot_evidence(record, None)))
+        self.assertEqual(build_record_score_input_hash(record, None, None), build_record_score_input_hash(record, None, None))
+
+    def test_recalculate_record_rating_score_values_remain_unchanged_with_adapter(self) -> None:
+        record = make_record(lot_name="Экскаватор гусеничный")
+        detail_cache = make_detail_cache()
+        work_item = make_work_item()
+
+        rating = recalculate_record_rating(record, detail_cache, work_item)
+
+        self.assertEqual(rating.score, record.rating_score)
+        self.assertEqual(rating.level, record.rating_level)
+        self.assertEqual(rating.input_hash, record.score_input_hash)
 
     def test_rating_input_hash_ignores_ui_only_manual_fields(self) -> None:
         record = make_record(lot_name="Экскаватор гусеничный")
