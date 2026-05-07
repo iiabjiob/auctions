@@ -18,10 +18,14 @@ dependencies = [
     "psycopg[binary]>=3.2.0",
     "python-multipart>=0.0.20",
     "redis>=5.2.0",
+    "affino-grid-backend",
 ]
 
 [tool.uv]
 managed = true
+
+[tool.uv.sources]
+affino-grid-backend = { git = "https://github.com/affinio/datagrid.git", subdirectory = "backend/packages/affino_grid_backend", rev = "main" }
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]

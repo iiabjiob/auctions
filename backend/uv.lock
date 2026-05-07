@@ -3,6 +3,14 @@ revision = 3
 requires-python = ">=3.11"
 
 [[package]]
+name = "affino-grid-backend"
+version = "0.1.0"
+source = { git = "https://github.com/affinio/datagrid.git?subdirectory=backend%2Fpackages%2Faffino_grid_backend&rev=main#6deea924918b43c04362184575692b7e6526a704" }
+dependencies = [
+    { name = "sqlalchemy" },
+]
+
+[[package]]
 name = "alembic"
 version = "1.18.4"
 source = { registry = "https://pypi.org/simple" }
@@ -109,6 +117,7 @@ name = "auctions-backend"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "affino-grid-backend" },
     { name = "alembic" },
     { name = "asyncpg" },
     { name = "fastapi" },
@@ -122,6 +131,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "affino-grid-backend", git = "https://github.com/affinio/datagrid.git?subdirectory=backend%2Fpackages%2Faffino_grid_backend&rev=main" },
     { name = "alembic", specifier = ">=1.12.0" },
     { name = "asyncpg", specifier = ">=0.31.0" },
     { name = "fastapi", specifier = ">=0.122.0" },

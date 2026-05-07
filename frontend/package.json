@@ -17,8 +17,10 @@
   },
   "dependencies": {
     "@affino/combobox-vue": "^0.1.0",
-    "@affino/datagrid-vue": "^0.3.30",
-    "@affino/datagrid-vue-app": "^0.1.45",
+    "@affino/datagrid-server-adapters": "^0.1.0",
+    "@affino/datagrid-server-client": "^0.1.0",
+    "@affino/datagrid-vue": "^0.3.34",
+    "@affino/datagrid-vue-app": "^0.1.47",
     "@affino/dialog-vue": "^1.1.0",
     "@affino/menu-vue": "^2.1.1",
     "@affino/overlay-host": "^1.1.0",
@@ -27,6 +29,11 @@
     "pinia": "^3.0.4",
     "vue": "^3.5.25",
     "vue-router": "^4.6.3"
+  },
+  "pnpm": {
+    "overrides": {
+      "@affino/datagrid-core": "0.3.23"
+    }
   },
   "devDependencies": {
     "@tsconfig/node24": "^24.0.3",
