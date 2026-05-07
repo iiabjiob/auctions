@@ -194,6 +194,8 @@ class AuctionRatingTests(unittest.TestCase):
         self.assertEqual(payload["category_keywords"], None)
         self.assertEqual(payload["exclusion_keywords"], None)
         self.assertEqual(adapter.record_application_deadline, validate_datagrid_row_payload(record.datagrid_row).application_deadline)
+        self.assertEqual(adapter.record_current_price, build_lot_evidence(record, detail_cache).price.current_price)
+        self.assertEqual(adapter.record_market_value, work_item.market_value)
 
     def test_record_scoring_runtime_input_handles_missing_evidence_conservatively(self) -> None:
         record = make_record(lot_name="Экскаватор гусеничный")
@@ -220,6 +222,23 @@ class AuctionRatingTests(unittest.TestCase):
         self.assertEqual(rating.score, 77)
         self.assertEqual(rating.level, "high")
         self.assertIn("Есть срок окончания заявок", record.score_breakdown["dimensions"]["urgency"]["reasons"])
+        self.assertEqual(rating.input_hash, record.score_input_hash)
+
+    def test_record_scoring_runtime_input_uses_current_price_as_primary_source(self) -> None:
+        record = make_record(lot_name="Экскаватор гусеничный")
+        record.initial_price = None
+        record.datagrid_row["current_price"] = None
+        record.datagrid_row["current_price_value"] = None
+        baseline_rating = recalculate_record_rating(record, None, None)
+        runtime_input = build_record_scoring_runtime_input(record, None, None)
+        runtime_input.record_current_price = Decimal("1000000")
+
+        rating = recalculate_record_rating_from_runtime_input(record, None, runtime_input, force=True)
+
+        self.assertEqual(baseline_rating.score, 55)
+        self.assertEqual(rating.score, 63)
+        self.assertEqual(rating.level, "medium")
+        self.assertIn("Цена распознана", record.score_breakdown["dimensions"]["data_quality"]["reasons"])
         self.assertEqual(rating.input_hash, record.score_input_hash)
 
     def test_recalculate_record_rating_score_values_remain_unchanged_with_adapter(self) -> None:

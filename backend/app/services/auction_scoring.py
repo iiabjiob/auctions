@@ -62,6 +62,8 @@ class RecordScoringRuntimeInput:
     record_status: str | None
     record_initial_price: str | None
     record_application_deadline: str | None
+    record_current_price: Decimal | None
+    record_market_value: Decimal | None
     record_content_hash: str
     detail_content_hash: str | None
     work_item: AuctionLotWorkItem | None
@@ -205,7 +207,12 @@ def recalculate_record_rating_from_runtime_input(
     legal_risk_rules = runtime_input.legal_risk_rules
     owner_profile = runtime_input.owner_profile
     dimension_weights = runtime_input.dimension_weights
-    economy = calculate_lot_economy(record, work_item) if work_item else LotEconomyResponse(current_price=parse_price(record.initial_price))
+    economy = calculate_lot_economy(
+        record,
+        work_item,
+        current_price=runtime_input.record_current_price,
+        market_value=runtime_input.record_market_value,
+    )
     row.analysis = build_lot_analysis(
         record,
         row,
@@ -329,6 +336,8 @@ def build_record_scoring_runtime_input(
         record_status=record.status,
         record_initial_price=record.initial_price,
         record_application_deadline=row.application_deadline,
+        record_current_price=evidence.price.current_price,
+        record_market_value=work_item.market_value if work_item and work_item.market_value is not None else None,
         record_content_hash=record.content_hash,
         detail_content_hash=detail_cache.content_hash if detail_cache else None,
         work_item=work_item,
@@ -360,45 +369,51 @@ def build_score_input_hash(**payload: Any) -> str:
     ).hexdigest()
 
 
-def calculate_lot_economy(record: AuctionLotRecord, work_item: AuctionLotWorkItem) -> LotEconomyResponse:
-    current_price = parse_price(record.initial_price)
+def calculate_lot_economy(
+    record: AuctionLotRecord,
+    work_item: AuctionLotWorkItem | None,
+    *,
+    current_price: Decimal | None = None,
+    market_value: Decimal | None = None,
+) -> LotEconomyResponse:
+    current_price = current_price if current_price is not None else parse_price(record.initial_price)
     expense_fields = [
-        work_item.platform_fee,
-        work_item.delivery_cost,
-        work_item.dismantling_cost,
-        work_item.repair_cost,
-        work_item.storage_cost,
-        work_item.legal_cost,
-        work_item.other_costs,
+        work_item.platform_fee if work_item else None,
+        work_item.delivery_cost if work_item else None,
+        work_item.dismantling_cost if work_item else None,
+        work_item.repair_cost if work_item else None,
+        work_item.storage_cost if work_item else None,
+        work_item.legal_cost if work_item else None,
+        work_item.other_costs if work_item else None,
     ]
     expenses = sum((value or Decimal("0") for value in expense_fields), Decimal("0"))
     full_entry_cost = current_price + expenses if current_price is not None else None
     potential_profit = (
-        work_item.market_value - full_entry_cost
-        if work_item.market_value is not None and full_entry_cost is not None
+        (market_value if market_value is not None else (work_item.market_value if work_item else None)) - full_entry_cost
+        if (market_value if market_value is not None else (work_item.market_value if work_item else None)) is not None and full_entry_cost is not None
         else None
     )
     roi = potential_profit / full_entry_cost if potential_profit is not None and full_entry_cost else None
     market_discount = (
-        Decimal("1") - (current_price / work_item.market_value)
-        if current_price is not None and work_item.market_value
+        Decimal("1") - (current_price / (market_value if market_value is not None else (work_item.market_value if work_item else None)))
+        if current_price is not None and (market_value if market_value is not None else (work_item.market_value if work_item else None))
         else None
     )
     max_purchase_price = (
-        work_item.market_value - expenses - (work_item.target_profit or Decimal("0"))
-        if work_item.market_value is not None
+        (market_value if market_value is not None else (work_item.market_value if work_item else None)) - expenses - ((work_item.target_profit if work_item else None) or Decimal("0"))
+        if (market_value if market_value is not None else (work_item.market_value if work_item else None)) is not None
         else None
     )
 
     return LotEconomyResponse(
         current_price=current_price,
-        market_value=work_item.market_value,
+        market_value=market_value if market_value is not None else (work_item.market_value if work_item else None),
         total_expenses=expenses,
         full_entry_cost=full_entry_cost,
         potential_profit=potential_profit,
         roi=roi,
         market_discount=market_discount,
-        target_profit=work_item.target_profit,
+        target_profit=work_item.target_profit if work_item else None,
         max_purchase_price=max_purchase_price,
     )
 
