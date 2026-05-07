@@ -166,11 +166,9 @@ def recalculate_record_rating(
     dimension_weights: ScoringDimensionWeights | None = None,
     force: bool = False,
 ) -> LotRating:
-    scoring_time = datetime.now(UTC)
     if detail_cache is not None:
         sync_record_from_detail_cache(record, detail_cache)
-    row = validate_datagrid_row_payload(record.datagrid_row)
-    input_hash = build_record_score_input_hash(
+    runtime_input = build_record_scoring_runtime_input(
         record,
         detail_cache,
         work_item,
@@ -180,6 +178,19 @@ def recalculate_record_rating(
         owner_profile=owner_profile,
         dimension_weights=dimension_weights,
     )
+    return recalculate_record_rating_from_runtime_input(record, detail_cache, runtime_input, force=force)
+
+
+def recalculate_record_rating_from_runtime_input(
+    record: AuctionLotRecord,
+    detail_cache: AuctionLotDetailCache | None,
+    runtime_input: RecordScoringRuntimeInput,
+    *,
+    force: bool = False,
+) -> LotRating:
+    scoring_time = datetime.now(UTC)
+    row = validate_datagrid_row_payload(record.datagrid_row)
+    input_hash = build_score_input_hash(**runtime_input.to_legacy_payload())
     if not force and record_score_is_current(record, input_hash=input_hash):
         logger.debug(
             "Skipped auction lot score recalculation",
@@ -187,6 +198,12 @@ def recalculate_record_rating(
         )
         return row.rating
 
+    work_item = runtime_input.work_item
+    category_keywords = runtime_input.category_keywords
+    exclusion_keywords = runtime_input.exclusion_keywords
+    legal_risk_rules = runtime_input.legal_risk_rules
+    owner_profile = runtime_input.owner_profile
+    dimension_weights = runtime_input.dimension_weights
     economy = calculate_lot_economy(record, work_item) if work_item else LotEconomyResponse(current_price=parse_price(record.initial_price))
     row.analysis = build_lot_analysis(
         record,

@@ -216,6 +216,18 @@ class AuctionRatingTests(unittest.TestCase):
         self.assertEqual(rating.level, record.rating_level)
         self.assertEqual(rating.input_hash, record.score_input_hash)
 
+    def test_recalculate_record_rating_builds_runtime_adapter_first(self) -> None:
+        record = make_record(lot_name="Экскаватор гусеничный")
+        detail_cache = make_detail_cache()
+        work_item = make_work_item()
+
+        with patch("app.services.auction_scoring.build_record_scoring_runtime_input", wraps=build_record_scoring_runtime_input) as build_runtime_input:
+            rating = recalculate_record_rating(record, detail_cache, work_item)
+
+        build_runtime_input.assert_called_once()
+        self.assertEqual(rating.score, record.rating_score)
+        self.assertEqual(rating.input_hash, record.score_input_hash)
+
     def test_rating_input_hash_ignores_ui_only_manual_fields(self) -> None:
         record = make_record(lot_name="Экскаватор гусеничный")
         detail_cache = make_detail_cache()
