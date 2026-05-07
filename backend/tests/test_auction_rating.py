@@ -17,6 +17,7 @@ from app.services.auction_scoring import (
     build_record_scoring_runtime_input,
     invalidate_lot_score,
     recalculate_record_rating,
+    recalculate_record_rating_from_runtime_input,
     record_score_is_current,
 )
 from app.services.auction_scoring_invalidation import SOURCE_CONTENT_CHANGED
@@ -192,6 +193,7 @@ class AuctionRatingTests(unittest.TestCase):
         self.assertIs(payload["work_item"], work_item)
         self.assertEqual(payload["category_keywords"], None)
         self.assertEqual(payload["exclusion_keywords"], None)
+        self.assertEqual(adapter.record_application_deadline, validate_datagrid_row_payload(record.datagrid_row).application_deadline)
 
     def test_record_scoring_runtime_input_handles_missing_evidence_conservatively(self) -> None:
         record = make_record(lot_name="Экскаватор гусеничный")
@@ -204,6 +206,21 @@ class AuctionRatingTests(unittest.TestCase):
         self.assertIsNone(payload["profile_identifier"])
         self.assertEqual(payload["lot_evidence_hash"], build_lot_evidence_hash(build_lot_evidence(record, None)))
         self.assertEqual(build_record_score_input_hash(record, None, None), build_record_score_input_hash(record, None, None))
+
+    def test_record_scoring_runtime_input_uses_deadline_as_primary_source(self) -> None:
+        record = make_record(lot_name="Экскаватор гусеничный")
+        baseline_rating = recalculate_record_rating(record, None, None)
+        runtime_input = build_record_scoring_runtime_input(record, None, None)
+        runtime_input.record_application_deadline = "08.05.2026 12:00"
+        record.datagrid_row["application_deadline"] = "09.05.2026 12:00"
+
+        rating = recalculate_record_rating_from_runtime_input(record, None, runtime_input, force=True)
+
+        self.assertEqual(baseline_rating.score, 63)
+        self.assertEqual(rating.score, 77)
+        self.assertEqual(rating.level, "high")
+        self.assertIn("Есть срок окончания заявок", record.score_breakdown["dimensions"]["urgency"]["reasons"])
+        self.assertEqual(rating.input_hash, record.score_input_hash)
 
     def test_recalculate_record_rating_score_values_remain_unchanged_with_adapter(self) -> None:
         record = make_record(lot_name="Экскаватор гусеничный")

@@ -61,6 +61,7 @@ class RecordScoringRuntimeInput:
     normalized_item: dict[str, Any]
     record_status: str | None
     record_initial_price: str | None
+    record_application_deadline: str | None
     record_content_hash: str
     detail_content_hash: str | None
     work_item: AuctionLotWorkItem | None
@@ -240,6 +241,7 @@ def recalculate_record_rating_from_runtime_input(
         detail_cache,
         work_item,
         economy,
+        application_deadline=runtime_input.record_application_deadline,
         owner_profile=owner_profile,
         dimension_weights=dimension_weights,
     )
@@ -319,12 +321,14 @@ def build_record_scoring_runtime_input(
     profile_identifier: str | None = None,
 ) -> RecordScoringRuntimeInput:
     evidence = build_lot_evidence(record, detail_cache)
+    row = validate_datagrid_row_payload(record.datagrid_row)
     return RecordScoringRuntimeInput(
         scoring_version=SCORING_VERSION,
         lot_evidence_hash=build_lot_evidence_hash(evidence),
         normalized_item=record.normalized_item,
         record_status=record.status,
         record_initial_price=record.initial_price,
+        record_application_deadline=row.application_deadline,
         record_content_hash=record.content_hash,
         detail_content_hash=detail_cache.content_hash if detail_cache else None,
         work_item=work_item,
@@ -471,6 +475,7 @@ def _calculate_record_rating(
     work_item: AuctionLotWorkItem | None,
     economy: LotEconomyResponse,
     *,
+    application_deadline: str | None,
     owner_profile: OwnerScoringProfile | None,
     dimension_weights: ScoringDimensionWeights | None,
 ) -> ScoreComputation:
@@ -492,7 +497,7 @@ def _calculate_record_rating(
         dimensions["data_quality"].add(8, "Цена распознана")
         reasons.append("Цена распознана")
 
-    deadline = _parse_deadline(row.application_deadline)
+    deadline = _parse_deadline(application_deadline or row.application_deadline)
     if deadline:
         dimensions["urgency"].add(4, "Есть срок окончания заявок")
         remaining_hours = (deadline - datetime.now()).total_seconds() / 3600
