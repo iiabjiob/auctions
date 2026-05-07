@@ -200,6 +200,11 @@ class AuctionRatingTests(unittest.TestCase):
         self.assertEqual(adapter.record_location_city, build_lot_evidence(record, detail_cache).location.city)
         self.assertEqual(adapter.record_category, build_lot_evidence(record, detail_cache).category.category)
         self.assertEqual(adapter.record_model_category, build_lot_evidence(record, detail_cache).category.model_category)
+        self.assertEqual(adapter.record_has_documents, build_lot_evidence(record, detail_cache).legal.has_documents)
+        self.assertEqual(adapter.record_has_photos, build_lot_evidence(record, detail_cache).legal.has_photos)
+        self.assertEqual(adapter.record_legal_risk, "medium")
+        self.assertFalse(adapter.record_is_excluded)
+        self.assertIsNone(adapter.record_exclusion_keyword)
 
     def test_record_scoring_runtime_input_handles_missing_evidence_conservatively(self) -> None:
         record = make_record(lot_name="Экскаватор гусеничный")
@@ -290,6 +295,30 @@ class AuctionRatingTests(unittest.TestCase):
         self.assertIn("Категория соответствует профилю", preferred_record.score_breakdown["dimensions"]["owner_fit"]["reasons"])
         self.assertIn("Регион вне целевого профиля", fallback_record.score_breakdown["dimensions"]["owner_fit"]["reasons"])
         self.assertIn("Категория вне целевого профиля", fallback_record.score_breakdown["dimensions"]["owner_fit"]["reasons"])
+
+    def test_record_scoring_runtime_input_uses_legal_document_media_as_primary_source(self) -> None:
+        record = make_record(lot_name="Товар")
+        detail_cache = make_detail_cache()
+        detail_cache.lot_detail["lot"]["description"] = "Лот в залоге"
+
+        runtime_input = build_record_scoring_runtime_input(record, detail_cache, None)
+        legacy_detail_cache = make_detail_cache()
+        legacy_detail_cache.lot_detail["lot"]["description"] = "Нейтральное описание"
+        legacy_detail_cache.documents = []
+
+        adapter_hash_before_legacy = recalculate_record_rating_from_runtime_input(record, legacy_detail_cache, runtime_input, force=True).input_hash
+        adapter_breakdown = record.score_breakdown
+        adapter_rating = recalculate_record_rating_from_runtime_input(record, legacy_detail_cache, runtime_input, force=True)
+        legacy_rating = recalculate_record_rating(record, legacy_detail_cache, None)
+
+        self.assertEqual(adapter_rating.score, 44)
+        self.assertEqual(adapter_rating.level, "low")
+        self.assertEqual(legacy_rating.score, 55)
+        self.assertEqual(legacy_rating.level, "medium")
+        self.assertIn("Есть документы", adapter_breakdown["dimensions"]["data_quality"]["reasons"])
+        self.assertIn("Есть фото или фотоархив", adapter_breakdown["dimensions"]["data_quality"]["reasons"])
+        self.assertIn("Высокий юридический риск ограничивает рейтинг", adapter_breakdown["reasons"])
+        self.assertNotEqual(adapter_hash_before_legacy, legacy_rating.input_hash)
 
     def test_recalculate_record_rating_score_values_remain_unchanged_with_adapter(self) -> None:
         record = make_record(lot_name="Экскаватор гусеничный")

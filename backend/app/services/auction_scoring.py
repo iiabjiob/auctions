@@ -70,6 +70,11 @@ class RecordScoringRuntimeInput:
     record_location_coordinates: str | None
     record_category: str | None
     record_model_category: str | None
+    record_has_documents: bool | None
+    record_has_photos: bool | None
+    record_legal_risk: str | None
+    record_is_excluded: bool | None
+    record_exclusion_keyword: str | None
     record_content_hash: str
     detail_content_hash: str | None
     work_item: AuctionLotWorkItem | None
@@ -229,6 +234,16 @@ def recalculate_record_rating_from_runtime_input(
         exclusion_keywords=exclusion_keywords,
         legal_risk_rules=legal_risk_rules,
     )
+    if runtime_input.record_has_documents is not None:
+        row.analysis.has_documents = runtime_input.record_has_documents
+    if runtime_input.record_has_photos is not None:
+        row.analysis.has_photos = runtime_input.record_has_photos
+    if runtime_input.record_legal_risk is not None:
+        row.analysis.legal_risk = runtime_input.record_legal_risk
+    if runtime_input.record_is_excluded is not None:
+        row.analysis.is_excluded = runtime_input.record_is_excluded
+    if runtime_input.record_exclusion_keyword is not None:
+        row.analysis.exclusion_keyword = runtime_input.record_exclusion_keyword
     row.model_category = row.analysis.category or row.model_category
     row.category = row.category or row.model_category
     row.market_value = work_item.market_value if work_item and work_item.market_value is not None else row.market_value
@@ -261,6 +276,8 @@ def recalculate_record_rating_from_runtime_input(
         location_coordinates=runtime_input.record_location_coordinates,
         category=runtime_input.record_category,
         model_category=runtime_input.record_model_category,
+        has_documents=runtime_input.record_has_documents,
+        has_photos=runtime_input.record_has_photos,
         owner_profile=owner_profile,
         dimension_weights=dimension_weights,
     )
@@ -356,6 +373,11 @@ def build_record_scoring_runtime_input(
         record_location_coordinates=evidence.location.coordinates,
         record_category=evidence.category.category,
         record_model_category=evidence.category.model_category,
+        record_has_documents=evidence.legal.has_documents,
+        record_has_photos=evidence.legal.has_photos,
+        record_legal_risk="high" if evidence.legal.legal_risk_signals else "medium",
+        record_is_excluded=bool(evidence.legal.exclusion_signals),
+        record_exclusion_keyword=evidence.legal.exclusion_signals[0] if evidence.legal.exclusion_signals else None,
         record_content_hash=record.content_hash,
         detail_content_hash=detail_cache.content_hash if detail_cache else None,
         work_item=work_item,
@@ -515,6 +537,8 @@ def _calculate_record_rating(
     location_coordinates: str | None,
     category: str | None,
     model_category: str | None,
+    has_documents: bool | None,
+    has_photos: bool | None,
     owner_profile: OwnerScoringProfile | None,
     dimension_weights: ScoringDimensionWeights | None,
 ) -> ScoreComputation:
@@ -545,7 +569,14 @@ def _calculate_record_rating(
             reasons.append("До окончания заявок меньше 48 часов")
 
     documents = detail_cache.documents if detail_cache else []
-    if documents:
+    if has_documents is not None:
+        if has_documents:
+            dimensions["data_quality"].add(6, "Есть документы")
+            reasons.append("Есть документы")
+        elif detail_cache:
+            dimensions["data_quality"].add(-10, "Документы не найдены")
+            reasons.append("Документы не найдены")
+    elif documents:
         dimensions["data_quality"].add(6, "Есть документы")
         reasons.append("Есть документы")
     elif detail_cache:
@@ -553,7 +584,14 @@ def _calculate_record_rating(
         reasons.append("Документы не найдены")
 
     media_documents = [document for document in documents if is_media_document(document)]
-    if media_documents:
+    if has_photos is not None:
+        if has_photos:
+            dimensions["data_quality"].add(6, "Есть фото или фотоархив")
+            reasons.append("Есть фото или фотоархив")
+        elif detail_cache:
+            dimensions["data_quality"].add(-5, "Фото не найдены")
+            reasons.append("Фото не найдены")
+    elif media_documents:
         dimensions["data_quality"].add(6, "Есть фото или фотоархив")
         reasons.append("Есть фото или фотоархив")
     elif detail_cache:
