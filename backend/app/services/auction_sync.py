@@ -25,6 +25,8 @@ from app.services.auction_catalog import build_datagrid_row
 from app.services.auction_grid_state import bump_auction_lot_dataset_version
 from app.services.auction_sources import get_source_provider
 from app.services.auction_scoring import recalculate_record_rating
+from app.services.auction_scoring_invalidation import SOURCE_CONTENT_CHANGED
+from app.services.auction_scoring import invalidate_lot_score
 from app.services.auction_workspace import ensure_lot_detail_cache, ensure_work_item
 
 
@@ -167,7 +169,7 @@ async def sync_source_lots(
                 is_new=record.is_new,
                 published_at=publication_at,
             )
-            preserved_scoring = _record_scoring_payload(record) if not content_changed and not status_changed else None
+            preserved_scoring = _record_scoring_payload(record) if content_changed else None
             if preserved_scoring is not None:
                 next_row["rating"] = preserved_scoring["rating"]
 
@@ -177,16 +179,21 @@ async def sync_source_lots(
             record.lot_name = item.lot.name
             record.status = item.lot.status
             record.initial_price = item.lot.initial_price
-            record.rating_score = snapshot.datagrid_row["rating"]["score"]
-            record.rating_level = snapshot.datagrid_row["rating"]["level"]
-            record.scoring_version = _rating_scoring_version(snapshot.datagrid_row)
-            record.scored_at = _rating_scored_at(snapshot.datagrid_row)
-            record.score_input_hash = _rating_input_hash(snapshot.datagrid_row)
-            record.score_breakdown = _rating_breakdown(snapshot.datagrid_row)
             record.datagrid_row = next_row
             record.normalized_item = snapshot.normalized_item
+            if content_changed:
+                invalidate_lot_score(record, reason=SOURCE_CONTENT_CHANGED)
+            else:
+                record.rating_score = snapshot.datagrid_row["rating"]["score"]
+                record.rating_level = snapshot.datagrid_row["rating"]["level"]
+                record.scoring_version = _rating_scoring_version(snapshot.datagrid_row)
+                record.scored_at = _rating_scored_at(snapshot.datagrid_row)
+                record.score_input_hash = _rating_input_hash(snapshot.datagrid_row)
+                record.score_breakdown = _rating_breakdown(snapshot.datagrid_row)
+
             if preserved_scoring is not None:
                 _apply_record_scoring(record, preserved_scoring)
+                record.score_input_hash = None
 
             if status_changed:
                 record.status_changed_at = now
