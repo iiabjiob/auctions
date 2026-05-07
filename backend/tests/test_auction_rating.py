@@ -338,6 +338,29 @@ class AuctionRatingTests(unittest.TestCase):
         self.assertIn("Лот исключен из анализа", record.score_breakdown["reasons"])
         self.assertEqual(legacy_rating.input_hash, adapter_rating.input_hash)
 
+    def test_build_lot_analysis_prefers_adapter_category_and_risk_values(self) -> None:
+        record = make_record(lot_name="Объект")
+        detail_cache = make_detail_cache()
+        detail_cache.lot_detail["lot"]["category"] = "Недвижимость"
+        detail_cache.lot_detail["lot"]["description"] = "квартира в залоге"
+
+        runtime_input = build_record_scoring_runtime_input(record, detail_cache, None)
+        runtime_input.record_category = "Спецтехника"
+        runtime_input.record_model_category = "Спецтехника"
+        runtime_input.record_legal_risk = "low"
+        runtime_input.record_is_excluded = True
+        runtime_input.record_exclusion_keyword = "manual"
+
+        rating = recalculate_record_rating_from_runtime_input(record, detail_cache, runtime_input, force=True)
+        analysis = validate_datagrid_row_payload(record.datagrid_row).analysis
+
+        self.assertEqual(analysis.category, "Спецтехника")
+        self.assertEqual(analysis.legal_risk, "low")
+        self.assertTrue(analysis.is_excluded)
+        self.assertEqual(analysis.exclusion_keyword, "manual")
+        self.assertEqual(rating.input_hash, build_record_score_input_hash(record, detail_cache, None))
+        self.assertEqual(rating.scoring_version, SCORING_VERSION)
+
     def test_record_scoring_runtime_input_uses_documents_and_photos_as_primary_source(self) -> None:
         record = make_record(lot_name="Экскаватор гусеничный")
         detail_cache = make_detail_cache()

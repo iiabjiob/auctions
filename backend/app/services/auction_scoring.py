@@ -237,17 +237,15 @@ def recalculate_record_rating_from_runtime_input(
         legal_risk_rules=legal_risk_rules,
         has_documents=runtime_input.record_has_documents,
         has_photos=runtime_input.record_has_photos,
+        category=runtime_input.record_category,
+        legal_risk=runtime_input.record_legal_risk,
+        is_excluded=runtime_input.record_is_excluded,
+        exclusion_keyword=runtime_input.record_exclusion_keyword,
     )
     if runtime_input.record_has_documents is not None:
         row.analysis.has_documents = runtime_input.record_has_documents
     if runtime_input.record_has_photos is not None:
         row.analysis.has_photos = runtime_input.record_has_photos
-    if runtime_input.record_legal_risk is not None:
-        row.analysis.legal_risk = runtime_input.record_legal_risk
-    if runtime_input.record_is_excluded is not None:
-        row.analysis.is_excluded = runtime_input.record_is_excluded
-    if runtime_input.record_exclusion_keyword is not None:
-        row.analysis.exclusion_keyword = runtime_input.record_exclusion_keyword
     row.model_category = row.analysis.category or row.model_category
     row.category = row.category or row.model_category
     row.market_value = work_item.market_value if work_item and work_item.market_value is not None else row.market_value

@@ -119,18 +119,28 @@ def build_lot_analysis(
     legal_risk_rules: LegalRiskRules | None = None,
     has_documents: bool | None = None,
     has_photos: bool | None = None,
+    category: str | None = None,
+    legal_risk: str | None = None,
+    is_excluded: bool | None = None,
+    exclusion_keyword: str | None = None,
 ) -> LotAnalysis:
     analysis_time = now or datetime.now(UTC)
     search_text = _build_search_text(record, detail_cache)
     category_override = (work_item.category_override or "").strip() if work_item and work_item.category_override else None
-    category, matched_keyword = _match_category(search_text, category_keywords or DEFAULT_CATEGORY_KEYWORDS)
-    if category_override:
-        category = category_override
+    matched_keyword: str | None = None
+    if category is None:
+        category, matched_keyword = _match_category(search_text, category_keywords or DEFAULT_CATEGORY_KEYWORDS)
+        if category_override:
+            category = category_override
+            matched_keyword = None
+    elif category_override and category != category_override:
         matched_keyword = None
-    exclusion_keyword = _match_keyword(search_text, exclusion_keywords or DEFAULT_EXCLUSION_KEYWORDS)
-    if work_item and work_item.exclude_from_analysis:
-        exclusion_keyword = (work_item.exclusion_reason or "").strip() or "manual"
-    legal_risk = _resolve_legal_risk(search_text, category, legal_risk_rules or DEFAULT_LEGAL_RISK_RULES)
+    if exclusion_keyword is None:
+        exclusion_keyword = _match_keyword(search_text, exclusion_keywords or DEFAULT_EXCLUSION_KEYWORDS)
+        if work_item and work_item.exclude_from_analysis:
+            exclusion_keyword = (work_item.exclusion_reason or "").strip() or "manual"
+    if legal_risk is None:
+        legal_risk = _resolve_legal_risk(search_text, category, legal_risk_rules or DEFAULT_LEGAL_RISK_RULES)
     if has_documents is None:
         has_documents = bool(detail_cache and detail_cache.documents)
     has_row_photos = _has_real_row_photos(row)
@@ -159,6 +169,9 @@ def build_lot_analysis(
     if legal_risk == "high":
         reasons.append("Обнаружены маркеры высокого юридического риска")
 
+    if is_excluded is None:
+        is_excluded = bool(exclusion_keyword)
+
     if exclusion_keyword:
         status = "excluded"
         color = "gray"
@@ -185,7 +198,7 @@ def build_lot_analysis(
         label=label,
         category=category,
         matched_keyword=matched_keyword,
-        is_excluded=bool(exclusion_keyword),
+        is_excluded=bool(is_excluded),
         exclusion_keyword=exclusion_keyword,
         legal_risk=legal_risk,
         completeness=completeness,
