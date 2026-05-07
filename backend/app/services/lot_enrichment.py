@@ -20,12 +20,24 @@ class LotEnrichmentRequirementEvaluation(BaseModel):
     reason_category: str = "ready_for_scoring"
 
 
+class LotEnrichmentDryRunResult(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    candidate_count: int
+    processed_count: int
+    needs_enrichment_count: int
+    ready_for_scoring_count: int
+    candidate_record_ids: list[int] = Field(default_factory=list)
+    candidate_row_ids: list[str] = Field(default_factory=list)
+
+
 TERMINAL_LOT_STATUS_MARKERS: tuple[str, ...] = (
     "архив",
     "archived",
     "заверш",
     "отмен",
 )
+DEFAULT_ENRICHMENT_CANDIDATE_LIMIT = 50
 
 
 def evaluate_lot_enrichment_requirements(evidence: LotEvidence) -> LotEnrichmentRequirementEvaluation:
@@ -78,7 +90,7 @@ async def list_lot_enrichment_candidates(
     session: AsyncSession,
     *,
     source_code: str | None = None,
-    limit: int = 50,
+    limit: int = DEFAULT_ENRICHMENT_CANDIDATE_LIMIT,
 ) -> list[AuctionLotRecord]:
     statement = build_lot_enrichment_candidate_statement(source_code=source_code, limit=limit)
     records = (await session.scalars(statement)).all()
@@ -88,7 +100,7 @@ async def list_lot_enrichment_candidates(
 def collect_lot_enrichment_candidates(
     records: Sequence[AuctionLotRecord],
     *,
-    limit: int | None = 50,
+    limit: int | None = DEFAULT_ENRICHMENT_CANDIDATE_LIMIT,
 ) -> list[AuctionLotRecord]:
     eligible = [record for record in records if _is_enrichment_candidate(record)]
     eligible.sort(key=_candidate_sort_key)
@@ -116,6 +128,27 @@ def schedule_lot_enrichment(
         return False
     record.enrichment_requested_at = None
     return True
+
+
+async def dry_run_lot_enrichment_candidates(
+    session: AsyncSession,
+    *,
+    source_code: str | None = None,
+    limit: int = DEFAULT_ENRICHMENT_CANDIDATE_LIMIT,
+) -> LotEnrichmentDryRunResult:
+    candidates = await list_lot_enrichment_candidates(session, source_code=source_code, limit=limit)
+    evaluations = [classify_lot_enrichment(record) for record in candidates]
+    needs_enrichment_count = sum(1 for evaluation in evaluations if evaluation.needs_enrichment)
+    candidate_record_ids = [record.id for record in candidates if record.id is not None]
+    candidate_row_ids = [record.datagrid_row.get("row_id") for record in candidates if isinstance(record.datagrid_row, dict)]
+    return LotEnrichmentDryRunResult(
+        candidate_count=len(candidates),
+        processed_count=len(candidates),
+        needs_enrichment_count=needs_enrichment_count,
+        ready_for_scoring_count=len(candidates) - needs_enrichment_count,
+        candidate_record_ids=candidate_record_ids,
+        candidate_row_ids=[row_id for row_id in candidate_row_ids if isinstance(row_id, str) and row_id],
+    )
 
 
 def _is_enrichment_candidate(record: AuctionLotRecord) -> bool:

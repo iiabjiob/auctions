@@ -43,3 +43,5 @@ This slice classifies lots as locally scorable or needing enrichment. When a sou
 - it does not open the UI detail card or call external sources
 
 The next step is candidate selection only: a query can list lots with `enrichment_requested_at` set, ordered by the request time, so a future worker can consume them without inventing a new scheduling system. This slice still does not fetch detail data.
+
+There is now a dry-run execution path that loads those candidates, evaluates local evidence, and returns processing metadata. It still does not fetch external detail data or mutate lots beyond the scheduling marker that was already written at source sync time.

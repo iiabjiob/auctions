@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+import asyncio
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -11,6 +12,7 @@ from app.schemas.auctions import LotDatagridRow, LotFreshness, LotImage, LotRati
 from app.services.lot_evidence import build_lot_evidence
 from app.services.lot_enrichment import (
     build_lot_enrichment_candidate_statement,
+    dry_run_lot_enrichment_candidates,
     classify_lot_enrichment,
     collect_lot_enrichment_candidates,
     evaluate_lot_enrichment_requirements,
@@ -187,8 +189,9 @@ def make_candidate_record(
     record_id: int,
     requested_at: datetime | None,
     status: str = "Идет прием заявок",
+    missing_price: bool = False,
 ) -> AuctionLotRecord:
-    record = make_list_only_record()
+    record = make_list_only_record(missing_price=missing_price)
     record.id = record_id
     record.status = status
     record.enrichment_requested_at = requested_at
@@ -320,6 +323,25 @@ class LotEnrichmentRequirementTests(unittest.TestCase):
         self.assertIn("auction_lot_records.source_code = %(source_code_1)s", sql)
         self.assertIn("ORDER BY auction_lot_records.enrichment_requested_at ASC", sql)
         self.assertIn("LIMIT %(param_1)s", sql)
+
+    def test_dry_run_lot_enrichment_candidates_uses_selected_records_only(self) -> None:
+        selected = [make_candidate_record(record_id=1, requested_at=datetime(2026, 5, 7, 8, tzinfo=UTC), missing_price=True)]
+
+        class FakeSession:
+            async def scalars(self, statement):
+                class FakeScalars:
+                    def all(self_inner):
+                        return selected
+
+                return FakeScalars()
+
+        result = asyncio.run(dry_run_lot_enrichment_candidates(FakeSession(), limit=10))
+
+        self.assertEqual(result.candidate_count, 1)
+        self.assertEqual(result.processed_count, 1)
+        self.assertEqual(result.candidate_record_ids, [1])
+        self.assertEqual(result.ready_for_scoring_count, 0)
+        self.assertEqual(result.needs_enrichment_count, 1)
 
 
 if __name__ == "__main__":
