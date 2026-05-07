@@ -66,6 +66,18 @@ There is also a conservative TTL refresh policy for active, high-value lots. If 
 
 This is still scheduling only. The worker continues to use the same existing detail-cache service when it eventually refreshes the lot.
 
+For operational visibility, the backend also exposes a small pipeline counter snapshot:
+
+- `enrichment_requested`: lots marked for enrichment
+- `enrichment_due_now`: requested lots that are eligible to be claimed now
+- `enrichment_claimed_active`: lots with an active enrichment lease
+- `enrichment_retry_waiting`: requested lots waiting for backoff
+- `enrichment_failed_with_error`: lots with a recorded enrichment failure message
+- `scoring_stale_or_incomplete`: lots whose persisted score identity is stale or incomplete
+- `scored_current`: lots whose persisted score identity is current
+
+These counters are local DB snapshots only. They are meant for lightweight diagnostics and do not change any worker behavior.
+
 Failed or still-incomplete attempts now set a conservative retry schedule on the lot record:
 
 - `last_enrichment_attempt_at`

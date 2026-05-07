@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from app.api.v1.health.router import router as health_router
+from app.api.v1.health.pipeline_router import router as health_pipeline_router
 from app.api.v1.auth.router import router as auth_router
 from app.api.v1.auctions.router import router as auctions_router
 from app.api.v1.filter_presets.router import router as filter_presets_router
@@ -79,6 +80,7 @@ if allowed_origins:
 # Routers
 logger.info("Registering REST API routers")
 app.include_router(health_router)
+app.include_router(health_pipeline_router)
 app.include_router(auth_router)
 app.include_router(filter_presets_router)
 app.include_router(auctions_router)
