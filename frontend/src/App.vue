@@ -31,6 +31,12 @@ import {
   type AuctionServerDatasource,
   type AuctionServerGridFilters,
 } from './datagrid/auctionServerDatasource'
+import {
+  AUCTION_GRID_EDITABLE_COLUMN_IDS,
+  buildAuctionGridCellEditsFromPatch,
+  commitAuctionGridEdits,
+  type AuctionGridCellEdit,
+} from './datagrid/auctionGridEdits'
 import { useAuthStore } from './stores/auth'
 import { workspaceDataGridTheme } from './theme/dataGridTheme'
 
@@ -539,6 +545,14 @@ type CatalogWorkspaceBatchCommitResponse = {
   }>
 }
 
+type CatalogServerGridEditContext = {
+  rowId: string | number
+  currentRow: GridLotRow
+  nextRow: GridLotRow
+  requestSnapshot: string
+  cellEdits: AuctionGridCellEdit[]
+}
+
 type CatalogDataSource = DataGridDataSource<GridLotRow> & {
   commitEdits?(request: CatalogCommitEditsRequest): Promise<CatalogCommitEditsResult>
 }
@@ -676,6 +690,7 @@ const GRID_SAVED_VIEW_STORAGE_KEY = 'auction-grid-saved-view-v2'
 const GRID_COLUMN_WIDTHS_STORAGE_KEY = 'auction-grid-column-widths-v1'
 const SERVER_FILTERS_STORAGE_KEY = 'auction-server-filters'
 const USE_AUCTION_SERVER_GRID = import.meta.env.VITE_AUCTION_SERVER_GRID !== 'false'
+const USE_AUCTION_SERVER_GRID_EDITS = USE_AUCTION_SERVER_GRID && import.meta.env.VITE_AUCTION_SERVER_GRID_EDITS !== 'false'
 const AUCTION_GRID_CHANGES_TABLE_ID = 'auction-lots'
 const AUCTION_GRID_CHANGES_POLL_INTERVAL_MS = 3_000
 const AUCTION_GRID_CHANGES_REFRESH_DEBOUNCE_MS = 300
@@ -806,19 +821,7 @@ const emptyWorkDraft = (): WorkDraft => ({
   target_profit: '',
 })
 
-const EDITABLE_GRID_COLUMN_KEYS = new Set([
-  'marketValue',
-  'platformFee',
-  'deliveryCost',
-  'dismantlingCost',
-  'repairCost',
-  'storageCost',
-  'legalCost',
-  'otherCosts',
-  'targetProfit',
-  'excludeFromAnalysis',
-  'exclusionReason',
-])
+const EDITABLE_GRID_COLUMN_KEYS = AUCTION_GRID_EDITABLE_COLUMN_IDS
 
 const EDITABLE_GRID_NUMERIC_KEYS = [
   'marketValue',
@@ -2432,6 +2435,17 @@ function authHeaders() {
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
 
+class ApiRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly body: unknown,
+  ) {
+    super(message)
+    this.name = 'ApiRequestError'
+  }
+}
+
 function apiUrl(path: string) {
   if (/^https?:\/\//i.test(path)) return path
   return `${API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`
@@ -2493,6 +2507,10 @@ function buildLotsUrl(
 
 function isAbortLikeError(error: unknown) {
   return error instanceof DOMException && error.name === 'AbortError'
+}
+
+function isApiRequestStatus(error: unknown, status: number) {
+  return error instanceof ApiRequestError && error.status === status
 }
 
 async function fetchCatalogResponse(url: string, signal?: AbortSignal) {
@@ -2762,7 +2780,13 @@ async function fetchColumnHistogram(request: CatalogColumnHistogramRequest): Pro
     throw new Error('Сессия истекла. Войдите снова.')
   }
   if (!response.ok) {
-    throw new Error(`API вернул ${response.status}`)
+    let body: unknown = null
+    try {
+      body = await response.clone().json()
+    } catch {
+      body = null
+    }
+    throw new ApiRequestError(`API вернул ${response.status}`, response.status, body)
   }
   return (await response.json()) as DataGridColumnHistogram
 }
@@ -3405,6 +3429,183 @@ async function commitCatalogEdits(request: CatalogCommitEditsRequest): Promise<C
     }
   }
 
+  if (USE_AUCTION_SERVER_GRID_EDITS) {
+    return commitCatalogServerGridEdits(request)
+  }
+  return commitLegacyCatalogEdits(request)
+}
+
+async function commitCatalogServerGridEdits(request: CatalogCommitEditsRequest): Promise<CatalogCommitEditsResult> {
+  const committed: NonNullable<CatalogCommitEditsResult['committed']> = []
+  const rejected: NonNullable<CatalogCommitEditsResult['rejected']> = []
+  const rejectedMessages: string[] = []
+  const baseVersion = latestAuctionGridDatasetVersion.value
+  const rowContexts = new Map<string, CatalogServerGridEditContext>()
+
+  if (baseVersion === null) {
+    const reason = 'datasetVersion is not loaded yet'
+    errorMessage.value = 'Таблица еще не получила версию данных. Обновляю строки.'
+    backgroundStatus.value = 'Ожидаю актуальную версию таблицы'
+    await softRefreshCatalogRows({ dimViewport: false, range: resolveCatalogReloadRange() })
+    return {
+      rejected: request.edits.map((edit) => ({
+        rowId: edit.rowId,
+        reason,
+      })),
+    }
+  }
+
+  for (const edit of request.edits) {
+    const rowId = String(edit.rowId)
+    const currentRow = getLatestGridRow(rowId)
+    if (!currentRow) {
+      rejected.push({
+        rowId: edit.rowId,
+        reason: 'row not loaded',
+      })
+      rejectedMessages.push(`${rowId}: row not loaded`)
+      continue
+    }
+
+    const existing = rowContexts.get(rowId)
+    const normalizedPatch = normalizeGridRowPatch(edit.data)
+    const nextRow = recomputeGridEconomyFields({
+      ...(existing?.nextRow ?? currentRow),
+      ...normalizedPatch,
+      rowRevision: currentRow.rowRevision,
+    })
+    const requestSnapshot = serializeGridWorkState(nextRow)
+    const previousSnapshot = savedGridWorkSnapshots.get(currentRow.id)
+    if (!existing && previousSnapshot === requestSnapshot) {
+      committed.push({ rowId: edit.rowId })
+      continue
+    }
+
+    const cellEdits = buildAuctionGridCellEditsFromPatch(currentRow.id, normalizedPatch as Record<string, unknown>)
+    if (cellEdits.length === 0) {
+      rejected.push({
+        rowId: edit.rowId,
+        reason: 'no editable workspace columns',
+      })
+      rejectedMessages.push(`${rowId}: no editable workspace columns`)
+      continue
+    }
+
+    if (existing) {
+      const cellsByColumn = new Map(existing.cellEdits.map((cell) => [cell.columnId, cell]))
+      for (const cell of cellEdits) {
+        cellsByColumn.set(cell.columnId, cell)
+      }
+      existing.nextRow = nextRow
+      existing.requestSnapshot = requestSnapshot
+      existing.cellEdits = [...cellsByColumn.values()]
+      continue
+    }
+
+    rowContexts.set(rowId, {
+      rowId: edit.rowId,
+      currentRow,
+      nextRow,
+      requestSnapshot,
+      cellEdits,
+    })
+  }
+
+  if (rowContexts.size === 0) {
+    if (rejected.length > 0) {
+      errorMessage.value = `Не удалось сохранить изменения из таблицы: ${rejectedMessages.join(', ')}`
+      backgroundStatus.value = 'Ошибка сохранения экономики лотов'
+      keepCatalogEditErrorOnNextPull = true
+    } else {
+      errorMessage.value = ''
+    }
+    return {
+      committed,
+      rejected,
+    }
+  }
+
+  const cellEdits = Array.from(rowContexts.values()).flatMap((context) => context.cellEdits)
+  try {
+    const firstContext = rowContexts.values().next().value
+    backgroundStatus.value =
+      rowContexts.size === 1
+        ? `Сохраняю экономику лота ${firstContext?.nextRow.lotNumber || firstContext?.nextRow.id}`
+        : `Сохраняю ${rowContexts.size} лотов`
+    const response = await commitAuctionGridEdits<ApiLotRow>({
+      postJson: postAuctionServerGridJson,
+      baseVersion,
+      edits: cellEdits,
+      signal: request.signal,
+      debug: true,
+    })
+    latestAuctionGridDatasetVersion.value = response.datasetVersion
+    console.debug('[auction-grid] edits datasetVersion updated', response.datasetVersion)
+
+    const updatedRows = response.updatedRows.map((entry) => entry.row).filter(Boolean)
+    if (updatedRows.length > 0) {
+      applyWorkspaceRows(updatedRows, { clearOptimistic: true, refreshSummary: false })
+      syncSelectedWorkDraftFromGridRows(updatedRows)
+    } else {
+      await softRefreshCatalogRows({ dimViewport: false, range: resolveCatalogReloadRange() })
+    }
+    for (const context of rowContexts.values()) {
+      committed.push({ rowId: context.rowId, revision: response.datasetVersion })
+    }
+    errorMessage.value = ''
+    backgroundStatus.value =
+      rowContexts.size === 1
+        ? `Экономика обновлена: ${firstContext?.nextRow.lotNumber || firstContext?.nextRow.id}`
+        : `Сохранено ${committed.length} лотов`
+    scheduleGridSummaryRefresh()
+  } catch (error) {
+    restoreServerGridEditRows(rowContexts)
+    const conflict = isApiRequestStatus(error, 409)
+    const reason = conflict
+      ? 'datasetVersion conflict'
+      : error instanceof Error
+        ? error.message
+        : String(error)
+    rejected.push(
+      ...Array.from(rowContexts.values(), (context) => ({
+        rowId: context.rowId,
+        reason,
+      })),
+    )
+
+    if (conflict) {
+      const message = 'Данные изменились на сервере. Таблица обновлена, повторите правку.'
+      backgroundStatus.value = 'Конфликт версии данных таблицы'
+      keepCatalogEditErrorOnNextPull = true
+      await softRefreshCatalogRows({ dimViewport: false, range: resolveCatalogReloadRange() })
+      errorMessage.value = message
+    } else {
+      errorMessage.value = error instanceof Error ? error.message : 'Не удалось сохранить изменения из таблицы'
+      backgroundStatus.value = `Ошибка сохранения экономики ${rowContexts.size} лотов`
+      keepCatalogEditErrorOnNextPull = true
+    }
+  }
+
+  return {
+    committed,
+    rejected,
+  }
+}
+
+function restoreServerGridEditRows(rowContexts: Map<string, CatalogServerGridEditContext>) {
+  for (const context of rowContexts.values()) {
+    const backendRow = gridRowsById.value.get(context.currentRow.id) ?? null
+    if (!backendRow) continue
+    optimisticGridRows.delete(context.currentRow.id)
+    patchGridRowsInDataGrid([backendRow])
+    rememberGridWorkSnapshot(backendRow)
+    if (selectedLot.value?.id === context.currentRow.id) {
+      selectedLot.value = backendRow
+    }
+  }
+}
+
+async function commitLegacyCatalogEdits(request: CatalogCommitEditsRequest): Promise<CatalogCommitEditsResult> {
   const committed: NonNullable<CatalogCommitEditsResult['committed']> = []
   const rejected: NonNullable<CatalogCommitEditsResult['rejected']> = []
   const rejectedMessages: string[] = []
@@ -3757,7 +3958,13 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
     throw new Error('Сессия истекла. Войдите снова.')
   }
   if (!response.ok) {
-    throw new Error(`API вернул ${response.status}`)
+    let body: unknown = null
+    try {
+      body = await response.clone().json()
+    } catch {
+      body = null
+    }
+    throw new ApiRequestError(`API вернул ${response.status}`, response.status, body)
   }
   if (response.status === 204) {
     return undefined as T
@@ -4144,6 +4351,30 @@ function hydrateWorkDraft(workItem: LotWorkItem | null) {
   workDraft.legal_cost = normalizeDraftNumber(workItem.legal_cost)
   workDraft.other_costs = normalizeDraftNumber(workItem.other_costs)
   workDraft.target_profit = normalizeDraftNumber(workItem.target_profit)
+}
+
+function hydrateGridEditableWorkDraft(row: GridLotRow) {
+  workDraft.exclude_from_analysis = row.excludeFromAnalysis
+  workDraft.exclusion_reason = row.exclusionReason
+  workDraft.market_value = normalizeDraftNumber(row.marketValue)
+  workDraft.platform_fee = normalizeDraftNumber(row.platformFee)
+  workDraft.delivery_cost = normalizeDraftNumber(row.deliveryCost)
+  workDraft.dismantling_cost = normalizeDraftNumber(row.dismantlingCost)
+  workDraft.repair_cost = normalizeDraftNumber(row.repairCost)
+  workDraft.storage_cost = normalizeDraftNumber(row.storageCost)
+  workDraft.legal_cost = normalizeDraftNumber(row.legalCost)
+  workDraft.other_costs = normalizeDraftNumber(row.otherCosts)
+  workDraft.target_profit = normalizeDraftNumber(row.targetProfit)
+}
+
+function syncSelectedWorkDraftFromGridRows(rows: ApiLotRow[]) {
+  const selectedWorkspaceRowId = selectedWorkspace.value?.row.row_id
+  if (!selectedWorkspaceRowId || !rows.some((row) => row.row_id === selectedWorkspaceRowId)) return
+
+  const selectedRow = gridRowsById.value.get(selectedWorkspaceRowId) ?? selectedLot.value
+  if (selectedRow) {
+    hydrateGridEditableWorkDraft(selectedRow)
+  }
 }
 
 function normalizeDraftNumber(value: string | number | null | undefined) {
