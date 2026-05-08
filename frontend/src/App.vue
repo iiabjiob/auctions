@@ -689,8 +689,8 @@ const AUCTION_GRID_CHANGES_REFRESH_DEBOUNCE_MS = 300
 const CATALOG_TOTAL_ROW_LIMIT = 1_000_000
 const CATALOG_SERVER_FETCH_LIMIT = 10_000
 const CATALOG_ROW_CACHE_LIMIT = 20_000
-const CATALOG_VIEWPORT_ROW_OVERSCAN = 48
-const CATALOG_VIEWPORT_COLUMN_OVERSCAN = 8
+const CATALOG_VIEWPORT_ROW_OVERSCAN = 18
+const CATALOG_VIEWPORT_COLUMN_OVERSCAN = 2
 const CATALOG_ROW_MODEL_PREFETCH_TRIGGER_VIEWPORT_FACTOR = 1
 const CATALOG_ROW_MODEL_PREFETCH_WINDOW_VIEWPORT_FACTOR = 1
 const CATALOG_ROW_MODEL_PREFETCH_MIN_BATCH_SIZE = 128
@@ -4079,15 +4079,6 @@ async function restoreGridFocus(anchor: GridFocusAnchor | null) {
   if (!anchor) return
 
   await nextTick()
-  if (catalogRowModel.value) {
-    window.requestAnimationFrame(() => {
-      const gridRoot = getGridRootElement()
-      if (gridRoot) {
-        focusGridElement(gridRoot)
-      }
-    })
-    return
-  }
   window.requestAnimationFrame(() => {
     const api = gridRef.value?.getApi()
     const selectionSnapshot = remapGridSelectionSnapshot(anchor)
@@ -4100,11 +4091,13 @@ async function restoreGridFocus(anchor: GridFocusAnchor | null) {
     }
 
     window.requestAnimationFrame(() => {
-      const gridRoot = getGridRootElement()
-      if (!gridRoot) return
+      window.requestAnimationFrame(() => {
+        const gridRoot = getGridRootElement()
+        if (!gridRoot) return
 
-      const target = findGridFocusTarget(anchor, gridRoot) ?? gridRoot
-      focusGridElement(target)
+        const target = findGridFocusTarget(anchor, gridRoot) ?? gridRoot
+        focusGridElement(target)
+      })
     })
   })
 }
@@ -4732,84 +4725,88 @@ onUnmounted(() => {
     <p v-if="errorMessage" class="error-banner">{{ errorMessage }}</p>
 
     <section
-      ref="gridSurfaceRef"
-      :class="['grid-surface', { 'grid-surface--query-busy': catalogViewportDimmed }]"
-      :aria-busy="loading || catalogViewportDimmed"
+      class="workspace-split"
+      :class="{ 'workspace-split--with-detail': selectedLot }"
+      :style="selectedLot ? { '--detail-pane-width': `${detailPaneWidth}px` } : undefined"
     >
-      <div
-        v-if="loading && allRows.length === 0 && !catalogGridHasLoadedOnce"
-        class="loading-state"
-        role="status"
-        aria-live="polite"
+      <section
+        ref="gridSurfaceRef"
+        :class="['grid-surface', { 'grid-surface--query-busy': catalogViewportDimmed }]"
+        :aria-busy="loading || catalogViewportDimmed"
       >
-        <div class="table-skeleton" :style="{ '--skeleton-columns': loadingSkeletonTemplate }">
-          <div class="table-skeleton__toolbar">
-            <span class="table-skeleton__status">Загружаю лоты</span>
-            <span class="table-skeleton__pill"></span>
-            <span class="table-skeleton__pill table-skeleton__pill--short"></span>
-          </div>
-          <div class="table-skeleton__viewport">
-            <div class="table-skeleton__head" :style="{ gridTemplateColumns: loadingSkeletonTemplate }">
-              <span v-for="column in loadingSkeletonColumns" :key="column.key">
-                {{ column.label }}
-              </span>
+        <div
+          v-if="loading && allRows.length === 0 && !catalogGridHasLoadedOnce"
+          class="loading-state"
+          role="status"
+          aria-live="polite"
+        >
+          <div class="table-skeleton" :style="{ '--skeleton-columns': loadingSkeletonTemplate }">
+            <div class="table-skeleton__toolbar">
+              <span class="table-skeleton__status">Загружаю лоты</span>
+              <span class="table-skeleton__pill"></span>
+              <span class="table-skeleton__pill table-skeleton__pill--short"></span>
             </div>
-            <div class="table-skeleton__body">
-              <div
-                v-for="rowIndex in loadingSkeletonRows"
-                :key="rowIndex"
-                class="table-skeleton__row"
-                :style="{ gridTemplateColumns: loadingSkeletonTemplate, '--row-delay': `${rowIndex * 38}ms` }"
-              >
-                <span v-for="column in loadingSkeletonColumns" :key="column.key" class="table-skeleton__cell">
-                  <i :style="{ width: column.placeholderWidth }"></i>
+            <div class="table-skeleton__viewport">
+              <div class="table-skeleton__head" :style="{ gridTemplateColumns: loadingSkeletonTemplate }">
+                <span v-for="column in loadingSkeletonColumns" :key="column.key">
+                  {{ column.label }}
                 </span>
+              </div>
+              <div class="table-skeleton__body">
+                <div
+                  v-for="rowIndex in loadingSkeletonRows"
+                  :key="rowIndex"
+                  class="table-skeleton__row"
+                  :style="{ gridTemplateColumns: loadingSkeletonTemplate, '--row-delay': `${rowIndex * 38}ms` }"
+                >
+                  <span v-for="column in loadingSkeletonColumns" :key="column.key" class="table-skeleton__cell">
+                    <i :style="{ width: column.placeholderWidth }"></i>
+                  </span>
+                </div>
               </div>
             </div>
           </div>
         </div>
-      </div>
-      <DataGrid
-        v-else-if="catalogRowModel"
-        v-show="catalogGridHasLoadedOnce || !loading || allRows.length > 0"
-        ref="gridRef"
-        :rows="EMPTY_GRID_ROWS"
-        :row-model="catalogRowModel"
-        :columns="columns"
-        :column-widths="gridColumnWidths"
-        :base-row-height="26"
-        :toolbar-modules="toolbarModules"
-        :theme="workspaceDataGridTheme"
-        :is-cell-editable="isGridCellEditable"
-        :virtualization="catalogVirtualizationOptions"
-        :advanced-filter="advancedFilterOptions"
-        :column-layout="columnLayoutOptions"
-        fill-handle
-        range-move
-        layout-mode="fill"
-        :row-selection="false"
-        :cell-menu="true"
-        :chrome="{ toolbarPlacement: 'integrated', density: 'compact', toolbarGap: 0, workspaceGap: 8 }"
-        :history="{ enabled: true, shortcuts: 'grid', controls: 'external-only' }"
-        @update:column-widths="persistGridColumnWidths"
-        @update:state="persistGridSavedView"
-      />
-      <div
-        v-if="catalogQueryPlaceholderVisible && catalogGridHasLoadedOnce"
-        class="grid-query-placeholder"
-        role="status"
-        aria-live="polite"
-      >
-        <span>Обновляем срез</span>
-      </div>
-    </section>
+        <DataGrid
+          v-else-if="catalogRowModel"
+          v-show="catalogGridHasLoadedOnce || !loading || allRows.length > 0"
+          ref="gridRef"
+          :rows="EMPTY_GRID_ROWS"
+          :row-model="catalogRowModel"
+          :columns="columns"
+          :column-widths="gridColumnWidths"
+          :base-row-height="26"
+          :toolbar-modules="toolbarModules"
+          :theme="workspaceDataGridTheme"
+          :is-cell-editable="isGridCellEditable"
+          :virtualization="catalogVirtualizationOptions"
+          :advanced-filter="advancedFilterOptions"
+          :column-layout="columnLayoutOptions"
+          fill-handle
+          range-move
+          layout-mode="fill"
+          :row-selection="false"
+          :cell-menu="true"
+          :chrome="{ toolbarPlacement: 'integrated', density: 'compact', toolbarGap: 0, workspaceGap: 8 }"
+          :history="{ enabled: true, shortcuts: 'grid', controls: 'external-only' }"
+          @update:column-widths="persistGridColumnWidths"
+          @update:state="persistGridSavedView"
+        />
+        <div
+          v-if="catalogQueryPlaceholderVisible && catalogGridHasLoadedOnce"
+          class="grid-query-placeholder"
+          role="status"
+          aria-live="polite"
+        >
+          <span>Обновляем срез</span>
+        </div>
+      </section>
 
-    <aside
-      v-if="selectedLot"
-      class="side-pane side-pane--detail"
-      :style="{ width: `${detailPaneWidth}px` }"
-      aria-label="Детальная информация о лоте"
-    >
+      <aside
+        v-if="selectedLot"
+        class="side-pane side-pane--detail"
+        aria-label="Детальная информация о лоте"
+      >
       <button
         class="side-pane-resizer"
         type="button"
@@ -5141,7 +5138,8 @@ onUnmounted(() => {
           Аукцион
         </a>
       </footer>
-    </aside>
+      </aside>
+    </section>
 
     <Teleport to="#affino-dialog-host">
       <transition name="dialog-layer">
