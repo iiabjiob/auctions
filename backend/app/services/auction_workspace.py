@@ -45,6 +45,7 @@ from app.services.auction_scoring import (
     recalculate_record_rating,
     sync_record_from_detail_cache,
 )
+from app.services.lot_decision_report import generate_and_persist_lot_decision_report_snapshot
 from app.services.auction_scoring_invalidation import DETAIL_CONTENT_CHANGED, MANUAL_ECONOMICS_CHANGED
 from app.services.auction_sources import get_source_provider
 
@@ -110,6 +111,7 @@ async def get_lot_workspace(
             owner_profile=runtime_config.owner_profile,
             dimension_weights=runtime_config.dimension_weights,
         )
+        await generate_and_persist_lot_decision_report_snapshot(session, record, detail_cache, work_item)
         await bump_auction_lot_dataset_version(
             session,
             record,
@@ -169,6 +171,7 @@ async def refresh_lot_workspace_live(
         owner_profile=runtime_config.owner_profile,
         dimension_weights=runtime_config.dimension_weights,
     )
+    await generate_and_persist_lot_decision_report_snapshot(session, record, detail_cache, work_item)
     await bump_auction_lot_dataset_version(
         session,
         record,
@@ -236,6 +239,7 @@ async def update_lot_work_item(
         owner_profile=runtime_config.owner_profile,
         dimension_weights=runtime_config.dimension_weights,
     )
+    await generate_and_persist_lot_decision_report_snapshot(session, record, detail_cache, work_item)
     if updates:
         await bump_auction_lot_dataset_version(
             session,

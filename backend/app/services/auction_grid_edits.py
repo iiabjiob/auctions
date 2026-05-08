@@ -20,8 +20,12 @@ from app.schemas.auction_grid import (
 from app.services.auction_analysis_config import auction_analysis_config_service
 from app.services.auction_datagrid_payload import validate_datagrid_row_payload
 from app.services.auction_grid_state import AUCTION_LOTS_TABLE_ID, DEFAULT_GRID_WORKSPACE_ID, auction_lot_grid_row_id
-from app.services.auction_scoring import recalculate_record_rating, sync_record_from_detail_cache
+from app.services.auction_scoring import (
+    recalculate_record_rating,
+    sync_record_from_detail_cache,
+)
 from app.services.auction_workspace import ensure_work_item
+from app.services.lot_decision_report import generate_and_persist_lot_decision_report_snapshot
 from app.services.grid_state import (
     bump_dataset_version,
     clear_redo_grid_operations,
@@ -181,6 +185,7 @@ async def _commit_auction_lot_grid_operations(
             owner_profile=runtime_config.owner_profile,
             dimension_weights=runtime_config.dimension_weights,
         )
+        await generate_and_persist_lot_decision_report_snapshot(session, record, detail_cache, work_item)
         updated_records[stable_row_id] = record
 
     resulting_version = await bump_dataset_version(session, workspace_id, AUCTION_LOTS_TABLE_ID)

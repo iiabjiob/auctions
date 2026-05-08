@@ -69,6 +69,7 @@ class AuctionLotRecord(Base):
     source_state: Mapped[AuctionSourceState] = relationship(back_populates="lots")
     observations: Mapped[list["AuctionLotObservation"]] = relationship(back_populates="lot")
     ai_analyses: Mapped[list["AuctionLotAiAnalysis"]] = relationship(back_populates="lot")
+    decision_reports: Mapped[list["AuctionLotDecisionReport"]] = relationship(back_populates="lot")
 
 
 class AuctionLotObservation(Base):
@@ -147,6 +148,26 @@ class AuctionLotWorkItem(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
+
+
+class AuctionLotDecisionReport(Base):
+    __tablename__ = "auction_lot_decision_reports"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    lot_record_id: Mapped[int] = mapped_column(ForeignKey("auction_lot_records.id"), nullable=False, index=True)
+    profile_hash: Mapped[str | None] = mapped_column(String(64), index=True)
+    report_payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    decision_level: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    recommendation: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    notification_should_send: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+    report_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    lot: Mapped[AuctionLotRecord] = relationship(back_populates="decision_reports")
 
 
 class AuctionLotAiAnalysis(Base):

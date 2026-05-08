@@ -6,7 +6,15 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from app.models.auction import AuctionLotDetailCache, AuctionLotRecord, AuctionLotWorkItem
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.auction import (
+    AuctionLotDecisionReport,
+    AuctionLotDetailCache,
+    AuctionLotRecord,
+    AuctionLotWorkItem,
+)
 from app.schemas.lot_decision_report import (
     ActionRecommendation,
     DecisionLevel,
@@ -187,6 +195,72 @@ def evaluate_lot_notification_eligibility(
     )
 
 
+def build_lot_decision_report_snapshot_hash(report: LotDecisionReport) -> str:
+    payload = report.model_dump(mode="json", exclude_none=True, exclude={"generated_at"})
+    return _stable_hash(payload)
+
+
+async def upsert_lot_decision_report_snapshot(
+    session: AsyncSession,
+    report: LotDecisionReport,
+) -> AuctionLotDecisionReport:
+    profile_hash = report.profile_hash
+    statement = select(AuctionLotDecisionReport).where(
+        AuctionLotDecisionReport.lot_record_id == report.record_id,
+    )
+    if profile_hash is None:
+        statement = statement.where(AuctionLotDecisionReport.profile_hash.is_(None))
+    else:
+        statement = statement.where(AuctionLotDecisionReport.profile_hash == profile_hash)
+
+    existing = await session.scalar(statement)
+    payload = report.model_dump(mode="json")
+    eligibility = evaluate_lot_notification_eligibility(report)
+    report_hash = build_lot_decision_report_snapshot_hash(report)
+    values = {
+        "lot_record_id": report.record_id,
+        "profile_hash": profile_hash,
+        "report_payload": payload,
+        "decision_level": report.decision_level.value,
+        "recommendation": report.recommendation.value,
+        "notification_should_send": eligibility.should_notify,
+        "report_hash": report_hash,
+        "generated_at": report.generated_at,
+        "updated_at": datetime.now(UTC),
+    }
+
+    if existing is None:
+        snapshot = AuctionLotDecisionReport(created_at=datetime.now(UTC), **values)
+        session.add(snapshot)
+        await session.flush()
+        return snapshot
+
+    for field, value in values.items():
+        setattr(existing, field, value)
+    await session.flush()
+    return existing
+
+
+async def generate_and_persist_lot_decision_report_snapshot(
+    session: AsyncSession,
+    record: AuctionLotRecord,
+    detail_cache: AuctionLotDetailCache | None = None,
+    work_item: AuctionLotWorkItem | None = None,
+    profile: LotScoringProfile | None = None,
+) -> AuctionLotDecisionReport | None:
+    if not hasattr(session, "add") or not hasattr(session, "flush"):
+        return None
+    if getattr(record, "rating_score", None) is None or getattr(record, "rating_level", None) is None:
+        return None
+    report = build_lot_decision_report(
+        record,
+        detail_cache=detail_cache,
+        work_item=work_item,
+        profile=profile,
+    )
+    return await upsert_lot_decision_report_snapshot(session, report)
+
+
 def _decision_level(
     record: AuctionLotRecord,
     work_item: AuctionLotWorkItem | None,
@@ -197,7 +271,7 @@ def _decision_level(
     decision = _manual_decision(work_item)
     final_decision = _manual_final_decision(work_item)
     has_profile_blockers = bool(profile_fit and profile_fit.blockers)
-    is_excluded = bool(work_item and work_item.exclude_from_analysis)
+    is_excluded = bool(work_item and getattr(work_item, "exclude_from_analysis", False))
     score = int(record.rating_score or 0)
 
     if is_excluded or decision == "reject" or final_decision in {"reject", "rejected", "no"}:
@@ -230,7 +304,7 @@ def _recommendation(
 ) -> ActionRecommendation:
     if decision_level == DecisionLevel.IGNORE:
         return ActionRecommendation.IGNORE
-    if work_item and work_item.max_purchase_price is not None:
+    if work_item and getattr(work_item, "max_purchase_price", None) is not None:
         return ActionRecommendation.PREPARE_BID
     if not has_documents and decision_level in {DecisionLevel.WATCH, DecisionLevel.INSPECT, DecisionLevel.CALCULATE}:
         return ActionRecommendation.REQUEST_DOCS
@@ -280,7 +354,7 @@ def _next_actions(
                 deadline=deadline,
             )
         )
-    if decision_level == DecisionLevel.BID_CANDIDATE and work_item and work_item.max_purchase_price is not None:
+    if decision_level == DecisionLevel.BID_CANDIDATE and work_item and getattr(work_item, "max_purchase_price", None) is not None:
         actions.append(
             LotDecisionNextAction(
                 action=ActionRecommendation.PREPARE_BID,
@@ -361,11 +435,11 @@ def _decision_risks(
     has_documents: bool,
 ) -> list[LotDecisionRisk]:
     risks: list[LotDecisionRisk] = []
-    if work_item and work_item.exclude_from_analysis:
+    if work_item and getattr(work_item, "exclude_from_analysis", False):
         risks.append(
             LotDecisionRisk(
                 code="manual.excluded",
-                message=work_item.exclusion_reason or "Lot is manually excluded from analysis",
+                message=getattr(work_item, "exclusion_reason", None) or "Lot is manually excluded from analysis",
                 level="high",
             )
         )
@@ -438,11 +512,11 @@ def _is_near_deadline(
 
 
 def _manual_decision(work_item: AuctionLotWorkItem | None) -> str:
-    return (work_item.decision_status or "").strip().lower() if work_item else ""
+    return (getattr(work_item, "decision_status", None) or "").strip().lower() if work_item else ""
 
 
 def _manual_final_decision(work_item: AuctionLotWorkItem | None) -> str:
-    return (work_item.final_decision or "").strip().lower() if work_item and work_item.final_decision else ""
+    return (getattr(work_item, "final_decision", None) or "").strip().lower() if work_item else ""
 
 
 def _recommendation_label(recommendation: ActionRecommendation) -> str:

@@ -21,6 +21,7 @@ from app.services.auction_scoring import (
 )
 from app.services.auction_sources import SOURCE_PROVIDERS
 from app.schemas.scoring_profile import LotScoringProfile
+from app.services.lot_decision_report import generate_and_persist_lot_decision_report_snapshot
 from app.services.scoring_profile_store import scoring_profile_store_service
 
 
@@ -106,6 +107,13 @@ async def analyze_all_lots(limit: int | None = None) -> dict[str, int]:
                         owner_profile=runtime_config.owner_profile,
                         dimension_weights=runtime_config.dimension_weights,
                         **profile_kwargs,
+                    )
+                    await generate_and_persist_lot_decision_report_snapshot(
+                        session,
+                        record,
+                        detail_cache,
+                        work_item,
+                        profile=active_scoring_profile,
                     )
                     after = _visible_score_payload(record.datagrid_row)
                     if after == before:

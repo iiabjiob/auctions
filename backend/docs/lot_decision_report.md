@@ -103,6 +103,23 @@ Eligibility is intentionally conservative:
 - `cooldown_key` stays stable for the same lot/profile so a future sender can
   rate-limit repeated alerts
 
+`auction_lot_decision_reports` stores the latest local decision report snapshot
+for fast UI and future Telegram reads. It stores:
+- `lot_record_id`
+- nullable `profile_hash`
+- `report_payload`
+- `decision_level`
+- `recommendation`
+- `notification_should_send`
+- `report_hash`
+- `generated_at`
+
+The table is latest-snapshot only. It has one no-profile snapshot per lot and
+one snapshot per lot/profile hash. `upsert_lot_decision_report_snapshot(...)`
+updates the existing row or creates it when missing. `report_hash` is computed
+from meaningful report content and excludes `generated_at`, so unchanged report
+content keeps a stable hash across regeneration.
+
 The report is a presentation and delivery contract, not a scoring engine. It
 must not change score values or scoring formulas. Telegram should later render
 messages from this report or a derivative notification contract, but sending and

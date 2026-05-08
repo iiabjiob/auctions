@@ -1,5 +1,6 @@
 from app.models.auction import (
     AuctionLotAiAnalysis,
+    AuctionLotDecisionReport,
     AuctionLotDetailCache,
     AuctionLotDetailObservation,
     AuctionLotObservation,
@@ -16,6 +17,7 @@ from app.models.user import UserModel
 __all__ = [
 	"AuctionLotDetailCache",
 	"AuctionLotAiAnalysis",
+	"AuctionLotDecisionReport",
 	"AuctionLotDetailObservation",
 	"AuctionLotObservation",
 	"AuctionLotRecord",

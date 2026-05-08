@@ -34,6 +34,7 @@ from app.services.auction_scoring import recalculate_record_rating
 from app.services.auction_scoring_invalidation import SOURCE_CONTENT_CHANGED
 from app.services.auction_scoring import invalidate_lot_score
 from app.services.auction_workspace import ensure_lot_detail_cache, ensure_work_item
+from app.services.lot_decision_report import generate_and_persist_lot_decision_report_snapshot
 
 
 settings = get_settings()
@@ -328,6 +329,7 @@ async def _sync_detail_if_needed(
         owner_profile=runtime_config.owner_profile,
         dimension_weights=runtime_config.dimension_weights,
     )
+    await generate_and_persist_lot_decision_report_snapshot(session, record, detail_cache, work_item)
     ttl_evaluation = evaluate_lot_ttl_refresh(record, detail_cache, current_time=observed_at)
     schedule_lot_ttl_refresh(record, ttl_evaluation, requested_at=observed_at)
     return detail_sync_count + 1
@@ -351,6 +353,7 @@ async def _recalculate_record_with_cached_inputs(
         owner_profile=runtime_config.owner_profile,
         dimension_weights=runtime_config.dimension_weights,
     )
+    await generate_and_persist_lot_decision_report_snapshot(session, record, detail_cache, work_item)
 
 
 async def _find_lot_record(
