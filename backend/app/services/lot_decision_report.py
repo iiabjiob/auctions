@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 
 from app.models.auction import AuctionLotDetailCache, AuctionLotRecord, AuctionLotWorkItem
 from app.schemas.lot_decision_report import (
     ActionRecommendation,
     DecisionLevel,
+    LotEconomicsDecision,
     LotDecisionNextAction,
     LotDecisionReason,
     LotDecisionReport,
@@ -20,6 +22,16 @@ from app.services.scoring_profile_fit import evaluate_lot_profile_fit
 
 
 NEAR_DEADLINE_HOURS = 72
+DEFAULT_TARGET_ROI = Decimal("0.25")
+ECONOMICS_COST_FIELDS = (
+    "platform_fee",
+    "delivery_cost",
+    "dismantling_cost",
+    "repair_cost",
+    "storage_cost",
+    "legal_cost",
+    "other_costs",
+)
 
 
 def build_lot_decision_report(
@@ -30,6 +42,12 @@ def build_lot_decision_report(
 ) -> LotDecisionReport:
     row = validate_datagrid_row_payload(record.datagrid_row)
     evidence = build_lot_evidence(record, detail_cache)
+    economics = calculate_lot_economics_decision(
+        record,
+        detail_cache=detail_cache,
+        work_item=work_item,
+        profile=profile,
+    )
     profile_fit = evaluate_lot_profile_fit(evidence, profile) if profile is not None else None
     profile_hash = build_lot_scoring_profile_hash(profile) if profile is not None else None
     reasons = _decision_reasons(record, profile_fit=profile_fit)
@@ -77,12 +95,67 @@ def build_lot_decision_report(
         rating_level=record.rating_level,
         profile_hash=profile_hash,
         profile_fit_summary=_profile_fit_summary(profile_fit),
+        economics=economics,
         decision_level=decision_level,
         recommendation=recommendation,
         reasons=tuple(reasons),
         risks=tuple(risks),
         next_actions=tuple(next_actions),
         generated_at=datetime.now(UTC),
+    )
+
+
+def calculate_lot_economics_decision(
+    record: AuctionLotRecord,
+    detail_cache: AuctionLotDetailCache | None = None,
+    work_item: AuctionLotWorkItem | None = None,
+    profile: LotScoringProfile | None = None,
+    *,
+    target_roi: Decimal | None = None,
+) -> LotEconomicsDecision:
+    row = validate_datagrid_row_payload(record.datagrid_row)
+    evidence = build_lot_evidence(record, detail_cache)
+    current_price = evidence.price.current_price or row.current_price_value or evidence.price.initial_price
+    market_value = _first_decimal(
+        _work_item_decimal(work_item, "market_value"),
+        row.market_value,
+        evidence.price.market_value,
+    )
+    expected_costs, has_cost_inputs = _expected_costs(work_item, row)
+    resolved_target_roi = _resolve_target_roi(profile=profile, target_roi=target_roi)
+    missing_inputs = _economics_missing_inputs(
+        current_price=current_price,
+        market_value=market_value,
+        has_cost_inputs=has_cost_inputs,
+    )
+
+    if market_value is None:
+        return LotEconomicsDecision(
+            current_price=current_price,
+            market_value=None,
+            expected_costs=expected_costs,
+            target_roi=resolved_target_roi,
+            max_buy_price=None,
+            estimated_profit=None,
+            confidence="low",
+            missing_inputs=tuple(missing_inputs),
+        )
+
+    max_buy_price = (market_value - expected_costs) / (Decimal("1") + resolved_target_roi)
+    if max_buy_price < 0:
+        max_buy_price = Decimal("0")
+    estimated_profit = market_value - expected_costs - current_price if current_price is not None else None
+    confidence = "high" if current_price is not None and has_cost_inputs else "medium"
+
+    return LotEconomicsDecision(
+        current_price=current_price,
+        market_value=market_value,
+        expected_costs=expected_costs,
+        target_roi=resolved_target_roi,
+        max_buy_price=max_buy_price,
+        estimated_profit=estimated_profit,
+        confidence=confidence,
+        missing_inputs=tuple(missing_inputs),
     )
 
 
@@ -353,3 +426,57 @@ def _recommendation_label(recommendation: ActionRecommendation) -> str:
         ActionRecommendation.CALCULATE_MAX_BID: "Calculate max bid",
         ActionRecommendation.PREPARE_BID: "Prepare bid",
     }[recommendation]
+
+
+def _resolve_target_roi(
+    *,
+    profile: LotScoringProfile | None,
+    target_roi: Decimal | None,
+) -> Decimal:
+    if target_roi is not None:
+        return target_roi
+    if profile is not None and profile.minimum_roi is not None:
+        return profile.minimum_roi
+    return DEFAULT_TARGET_ROI
+
+
+def _expected_costs(work_item: AuctionLotWorkItem | None, row: Any) -> tuple[Decimal, bool]:
+    values = [
+        _first_decimal(
+            _work_item_decimal(work_item, field),
+            getattr(row, field, None),
+        )
+        for field in ECONOMICS_COST_FIELDS
+    ]
+    provided_values = [value for value in values if value is not None]
+    return sum(provided_values, Decimal("0")), bool(provided_values)
+
+
+def _work_item_decimal(work_item: AuctionLotWorkItem | None, field: str) -> Decimal | None:
+    if work_item is None:
+        return None
+    value = getattr(work_item, field, None)
+    return value if isinstance(value, Decimal) else None
+
+
+def _first_decimal(*values: object) -> Decimal | None:
+    for value in values:
+        if isinstance(value, Decimal):
+            return value
+    return None
+
+
+def _economics_missing_inputs(
+    *,
+    current_price: Decimal | None,
+    market_value: Decimal | None,
+    has_cost_inputs: bool,
+) -> list[str]:
+    missing: list[str] = []
+    if current_price is None:
+        missing.append("current_price")
+    if market_value is None:
+        missing.append("market_value")
+    if not has_cost_inputs:
+        missing.append("expected_costs")
+    return missing

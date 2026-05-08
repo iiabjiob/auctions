@@ -12,8 +12,8 @@ This slice is local-only:
 - it does not change frontend behavior
 
 The contract captures the already-known lot identity, display fields, current
-rating, optional profile-fit context, decision level, recommendation, reasons,
-risks, next actions, and generation time.
+rating, optional profile-fit context, optional economics decision, decision
+level, recommendation, reasons, risks, next actions, and generation time.
 
 `decision_level` uses this stable vocabulary:
 - `ignore`
@@ -53,6 +53,29 @@ Current conservative derivation rules:
 - missing local documents add a `request_docs` next action
 - inspect/calculate/bid-candidate reports include practical inspection and
   max-bid actions where applicable
+
+`LotEconomicsDecision` is the local max-buy economics contract attached to a
+decision report. It includes:
+- current price
+- market value
+- expected costs
+- target ROI
+- max buy price
+- estimated profit
+- confidence
+- missing inputs
+
+Use `calculate_lot_economics_decision(...)` to build it from local data. The
+helper prefers manual/work-item economics where they exist: work-item market
+value overrides scraped/local market value, and work-item fee/cost fields are
+summed into expected costs. The helper does not invent market value. If market
+value is missing, `max_buy_price` and `estimated_profit` stay empty, confidence
+is `low`, and `missing_inputs` includes `market_value`.
+
+The max-buy calculation is conservative and explainable:
+`max_buy_price = (market_value - expected_costs) / (1 + target_roi)`.
+`target_roi` comes from an explicit helper argument, then profile
+`minimum_roi`, then the local default.
 
 The report is a presentation and delivery contract, not a scoring engine. It
 must not change score values or scoring formulas. Telegram should later render

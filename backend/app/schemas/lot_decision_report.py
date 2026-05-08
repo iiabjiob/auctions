@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime
+from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Literal
 
@@ -50,6 +51,19 @@ class LotDecisionNextAction(BaseModel):
     deadline: str | None = None
 
 
+class LotEconomicsDecision(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    current_price: Decimal | None = None
+    market_value: Decimal | None = None
+    expected_costs: Decimal = Decimal("0")
+    target_roi: Decimal
+    max_buy_price: Decimal | None = None
+    estimated_profit: Decimal | None = None
+    confidence: Literal["low", "medium", "high"] = "low"
+    missing_inputs: tuple[str, ...] = Field(default_factory=tuple)
+
+
 class LotDecisionReport(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -69,6 +83,7 @@ class LotDecisionReport(BaseModel):
 
     profile_hash: str | None = None
     profile_fit_summary: str | None = None
+    economics: LotEconomicsDecision | None = None
 
     decision_level: DecisionLevel
     recommendation: ActionRecommendation
