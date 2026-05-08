@@ -73,6 +73,44 @@ services:
     networks:
       - net
 
+  auction-enrichment-worker:
+    build:
+      context: .
+      dockerfile: .devcontainer/Dockerfile
+      tags:
+        - auctions-dev:latest
+    container_name: auctions-enrichment-worker-dev
+    working_dir: /workspace/backend
+    command: uv run python -m app.worker.auction_enrichment_worker
+    volumes:
+      - .:/workspace
+    env_file:
+      - ./backend/.env.dev
+    depends_on:
+      - db
+      - redis
+    networks:
+      - net
+
+  telegram-sender-worker:
+    build:
+      context: .
+      dockerfile: .devcontainer/Dockerfile
+      tags:
+        - auctions-dev:latest
+    container_name: auctions-telegram-sender-worker-dev
+    working_dir: /workspace/backend
+    command: uv run python -m app.worker.telegram_sender_worker
+    volumes:
+      - .:/workspace
+    env_file:
+      - ./backend/.env.dev
+    depends_on:
+      - db
+      - redis
+    networks:
+      - net
+
 volumes:
   db_data_dev:
   redis_data_dev:

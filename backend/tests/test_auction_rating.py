@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime, timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -435,8 +436,8 @@ class AuctionRatingTests(unittest.TestCase):
         record = make_record(lot_name="Экскаватор гусеничный")
         baseline_rating = recalculate_record_rating(record, None, None)
         runtime_input = build_record_scoring_runtime_input(record, None, None)
-        runtime_input.record_application_deadline = "08.05.2026 12:00"
-        record.datagrid_row["application_deadline"] = "09.05.2026 12:00"
+        runtime_input.record_application_deadline = (datetime.now() + timedelta(hours=24)).strftime("%d.%m.%Y %H:%M")
+        record.datagrid_row["application_deadline"] = "31.12.2026 12:00"
 
         rating = recalculate_record_rating_from_runtime_input(record, None, runtime_input, force=True)
 

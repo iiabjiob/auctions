@@ -20,4 +20,6 @@ Clean monorepo starter for:
 3. Start the stack:
    `docker compose -f docker-compose.prod.yml up -d --build`
 
-The production stack includes `db`, `redis`, `migrations`, `backend`, `auction-worker`, and `nginx`.
+The production stack includes `db`, `redis`, `migrations`, `backend`, auction sync/analysis/enrichment workers, `telegram-sender-worker`, and `nginx`.
+
+Telegram delivery is dry-run by default. To send real messages, set `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, and `TELEGRAM_SENDER_DRY_RUN=False`.

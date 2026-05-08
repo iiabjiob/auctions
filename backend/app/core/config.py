@@ -65,6 +65,9 @@ class Settings(BaseSettings):
     auction_analysis_event_chunk_size: int = 25
     auction_analysis_event_pause_seconds: float = 0.1
     auction_analysis_use_active_scoring_profile: bool = False
+    auction_enrichment_enabled: bool = True
+    auction_enrichment_interval_seconds: int = 60 * 10
+    auction_enrichment_batch_size: int = 50
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
     telegram_sender_dry_run: bool = True

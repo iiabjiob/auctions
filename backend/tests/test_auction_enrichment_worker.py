@@ -19,7 +19,7 @@ class FakeSessionContext:
 
 
 class AuctionEnrichmentWorkerTests(unittest.IsolatedAsyncioTestCase):
-    async def test_worker_uses_candidate_scan_without_detail_fetches(self) -> None:
+    async def test_enrichment_batch_uses_candidate_scan_without_detail_fetches(self) -> None:
         result_payload = {
             "candidate_count": 1,
             "processed_count": 1,
@@ -41,10 +41,30 @@ class AuctionEnrichmentWorkerTests(unittest.IsolatedAsyncioTestCase):
             ) as execute_enrichment,
             patch("app.services.auction_workspace.ensure_lot_detail_cache", AsyncMock()) as fetch_detail,
         ):
-            result = await auction_enrichment_worker.run_worker()
+            result = await auction_enrichment_worker.run_enrichment_batch()
 
         execute_enrichment.assert_awaited_once_with(fake_session, limit=50)
         fetch_detail.assert_not_called()
+        self.assertEqual(result, result_payload)
+
+    async def test_worker_run_once_returns_batch_result(self) -> None:
+        result_payload = {
+            "candidate_count": 0,
+            "processed_count": 0,
+            "fetched_count": 0,
+            "cleared_count": 0,
+            "still_missing_count": 0,
+            "skipped_count": 0,
+            "candidate_record_ids": [],
+        }
+
+        with patch(
+            "app.worker.auction_enrichment_worker.run_enrichment_batch",
+            AsyncMock(return_value=result_payload),
+        ) as run_batch:
+            result = await auction_enrichment_worker.run_worker(run_once=True)
+
+        run_batch.assert_awaited_once()
         self.assertEqual(result, result_payload)
 
 

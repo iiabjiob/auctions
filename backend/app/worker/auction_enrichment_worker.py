@@ -12,15 +12,33 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
-async def run_worker() -> dict[str, object]:
-    logger.info("Auction enrichment worker started")
+async def run_enrichment_batch() -> dict[str, object]:
     async with AsyncSessionLocal() as session:
         result = await execute_lot_enrichment_candidates(
             session,
-            limit=DEFAULT_ENRICHMENT_CANDIDATE_LIMIT,
+            limit=settings.auction_enrichment_batch_size or DEFAULT_ENRICHMENT_CANDIDATE_LIMIT,
         )
     logger.info("Auction enrichment completed: %s", result.model_dump(mode="json"))
     return result.model_dump(mode="json")
+
+
+async def run_worker(*, run_once: bool = False) -> dict[str, object] | None:
+    logger.info("Auction enrichment worker started")
+    try:
+        while True:
+            if not settings.auction_enrichment_enabled:
+                if run_once:
+                    return None
+                await asyncio.sleep(max(1, settings.auction_enrichment_interval_seconds))
+                continue
+
+            result = await run_enrichment_batch()
+            if run_once:
+                return result
+            await asyncio.sleep(max(1, settings.auction_enrichment_interval_seconds))
+    except asyncio.CancelledError:
+        logger.info("Auction enrichment worker shutdown requested")
+        raise
 
 
 def main() -> None:
