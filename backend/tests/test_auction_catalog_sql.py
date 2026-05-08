@@ -102,6 +102,95 @@ class AuctionCatalogSqlTests(unittest.TestCase):
         self.assertIn("%квартира%", compiled.params.values())
         self.assertNotIn("LIMIT", sql)
 
+    def test_grid_number_filter_sanitizes_currency_text_before_cast(self) -> None:
+        statement = _build_persisted_lots_statement(
+            LotDatagridFilters(source="tbankrot"),
+            ("tbankrot",),
+            grid_filter={
+                "columnFilters": {
+                    "marketValue": {"kind": "predicate", "operator": "lt", "value": 10_000_000},
+                },
+                "advancedFilters": {},
+            },
+        )
+        compiled = statement.compile(dialect=postgresql.dialect())
+        sql = str(compiled)
+
+        self.assertIn("regexp_replace", sql)
+        self.assertIn("[^0-9,.-]+", compiled.params.values())
+        self.assertIn("market_value", compiled.params.values())
+
+    def test_grid_number_value_set_filter_sanitizes_currency_text_before_cast(self) -> None:
+        predicate = _grid_filter_predicate(
+            {
+                "columnFilters": {
+                    "marketValue": {"kind": "valueSet", "tokens": ["number:3826824.00"]},
+                },
+                "advancedFilters": {},
+            }
+        )
+
+        self.assertIsNotNone(predicate)
+        compiled = predicate.compile(dialect=postgresql.dialect())
+        sql = str(compiled)
+
+        self.assertIn("regexp_replace", sql)
+        self.assertIn("[^0-9,.-]+", compiled.params.values())
+        self.assertIn("market_value", compiled.params.values())
+
+    def test_grid_number_value_set_filter_uses_single_in_predicate(self) -> None:
+        predicate = _grid_filter_predicate(
+            {
+                "columnFilters": {
+                    "marketValue": {
+                        "kind": "valueSet",
+                        "tokens": ["number:1000000", "number:2000000", "number:3000000"],
+                    },
+                },
+                "advancedFilters": {},
+            }
+        )
+
+        self.assertIsNotNone(predicate)
+        compiled = predicate.compile(dialect=postgresql.dialect())
+        sql = str(compiled)
+
+        self.assertIn(" IN ", sql)
+        self.assertEqual(sql.count("regexp_replace("), 1)
+
+    def test_grid_roi_filter_uses_computed_economy_expression(self) -> None:
+        predicate = _grid_filter_predicate(
+            {
+                "columnFilters": {
+                    "roiValue": {"kind": "predicate", "operator": "gte", "value": "0.25"},
+                },
+                "advancedFilters": {},
+            }
+        )
+
+        self.assertIsNotNone(predicate)
+        compiled = predicate.compile(dialect=postgresql.dialect())
+        sql = str(compiled)
+
+        self.assertIn("/", sql)
+        self.assertIn("market_value", compiled.params.values())
+        self.assertIn("current_price_value", compiled.params.values())
+        self.assertIn("platform_fee", compiled.params.values())
+        self.assertNotIn("roi", compiled.params.values())
+
+    def test_grid_roi_sort_uses_computed_economy_expression(self) -> None:
+        statement = _apply_record_sort(
+            _build_persisted_lots_statement(LotDatagridFilters(source="tbankrot"), ("tbankrot",)),
+            sort_model=[{"key": "roiValue", "direction": "desc"}],
+        )
+        compiled = statement.compile(dialect=postgresql.dialect())
+        sql = str(compiled)
+
+        self.assertIn("ORDER BY", sql)
+        self.assertIn("/", sql)
+        self.assertIn("market_value", compiled.params.values())
+        self.assertIn("current_price_value", compiled.params.values())
+
     def test_grid_value_set_string_filter_is_case_insensitive(self) -> None:
         predicate = _grid_filter_predicate(
             {
@@ -117,7 +206,7 @@ class AuctionCatalogSqlTests(unittest.TestCase):
 
         self.assertIn("lower", sql.lower())
         self.assertIn("location", compiled.params.values())
-        self.assertIn("москва", compiled.params.values())
+        self.assertIn(["москва"], compiled.params.values())
 
     def test_grid_advanced_expression_supports_or_groups(self) -> None:
         predicate = _grid_filter_predicate(
@@ -141,6 +230,23 @@ class AuctionCatalogSqlTests(unittest.TestCase):
         self.assertIn(" OR ", sql)
         self.assertIn("auction_lot_records.status", sql)
         self.assertIn("auction_lot_records.rating_score", sql)
+
+    def test_grid_advanced_expression_ignores_invalid_number_value(self) -> None:
+        predicate = _grid_filter_predicate(
+            {
+                "columnFilters": {},
+                "advancedFilters": {},
+                "advancedExpression": {
+                    "kind": "group",
+                    "operator": "and",
+                    "children": [
+                        {"kind": "condition", "key": "ratingScore", "operator": "gte", "value": "not-a-number"},
+                    ],
+                },
+            }
+        )
+
+        self.assertIsNone(predicate)
 
     def test_pagination_uses_total_from_filtered_dataset(self) -> None:
         pagination = _pagination_from_total(25_001, page=999, page_size=10_000)

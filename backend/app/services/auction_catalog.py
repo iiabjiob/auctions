@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, DecimalException
 from typing import Any
 
 from sqlalchemy import Integer, Numeric, String, and_, case, cast, func, not_, or_, select
@@ -511,7 +511,7 @@ def _grid_column_expression(key: str | None):
         "excludeFromAnalysis": (_json_boolean_value("exclude_from_analysis"), "boolean"),
         "exclusionReason": (_json_text_value("exclusion_reason"), "text"),
         "formulaMaxPurchasePrice": (_json_decimal_value("formula_max_purchase_price"), "number"),
-        "fullEntryCost": (_json_decimal_value("full_entry_cost"), "number"),
+        "fullEntryCost": (_grid_full_entry_cost_value(), "number"),
         "initialPrice": (_json_decimal_value("initial_price_value"), "number"),
         "isNew": (AuctionLotRecord.is_new, "boolean"),
         "lastSeenAt": (AuctionLotRecord.last_seen_at, "datetime"),
@@ -525,19 +525,19 @@ def _grid_column_expression(key: str | None):
         "organizer": (_json_text_value("organizer_name"), "text"),
         "otherCosts": (_json_decimal_value("other_costs"), "number"),
         "platformFee": (_json_decimal_value("platform_fee"), "number"),
-        "potentialProfit": (_json_decimal_value("potential_profit"), "number"),
+        "potentialProfit": (_grid_potential_profit_value(), "number"),
         "price": (_json_decimal_value("current_price_value"), "number"),
         "publicationDate": (_json_text_value("publication_date"), "text"),
         "ratingScore": (AuctionLotRecord.rating_score, "number"),
         "repairCost": (_json_decimal_value("repair_cost"), "number"),
-        "roiValue": (_json_decimal_value("roi"), "number"),
+        "roiValue": (_grid_roi_value(), "number"),
         "source": (AuctionLotRecord.source_code, "text"),
         "sourcePosition": (_json_integer_value("source_position"), "number"),
         "sourceTitle": (AuctionLotRecord.source_code, "text"),
         "status": (AuctionLotRecord.status, "text"),
         "storageCost": (_json_decimal_value("storage_cost"), "number"),
         "targetProfit": (_json_decimal_value("target_profit"), "number"),
-        "totalExpenses": (_json_decimal_value("total_expenses"), "number"),
+        "totalExpenses": (_grid_total_expenses_value(), "number"),
         "workDecisionStatus": (_work_item_text_value("decision_status"), "text"),
     }.get(key, (None, "text"))
 
@@ -581,11 +581,7 @@ def _column_filter_predicate(key: str, payload):
         expression, _ = _grid_column_expression(key)
         if expression is None:
             return None
-        predicates = [_value_set_token_predicate(expression, str(token)) for token in tokens]
-        predicates = [predicate for predicate in predicates if predicate is not None]
-        if not predicates:
-            return None
-        return or_(*predicates)
+        return _value_set_tokens_predicate(expression, [str(token) for token in tokens])
     if kind == "predicate":
         return _predicate_filter_condition(key, payload.get("operator"), payload.get("value"), payload.get("value2"), payload.get("caseSensitive"))
     return None
@@ -693,7 +689,7 @@ def _coerce_filter_value(value, value_type: str):
     if value_type == "number":
         try:
             return Decimal(str(value).replace(" ", "").replace(",", "."))
-        except (InvalidOperation, ValueError):
+        except (DecimalException, ValueError):
             return None
     return str(value) if value_type == "text" else value
 
@@ -708,7 +704,7 @@ def _value_set_token_predicate(expression, token: str):
     if token.startswith("number:"):
         try:
             return expression == Decimal(token.removeprefix("number:"))
-        except (InvalidOperation, ValueError):
+        except (DecimalException, ValueError):
             return None
     if token.startswith("boolean:"):
         value = token.removeprefix("boolean:").strip().lower()
@@ -718,6 +714,51 @@ def _value_set_token_predicate(expression, token: str):
             return expression.is_(False)
         return None
     return cast(expression, String) == token
+
+
+def _value_set_tokens_predicate(expression, tokens: list[str]):
+    string_values: list[str] = []
+    number_values: list[Decimal] = []
+    boolean_values: list[bool] = []
+    raw_values: list[str] = []
+    include_null = False
+
+    for token in tokens:
+        if token == "null":
+            include_null = True
+            continue
+        if token.startswith("string:"):
+            string_values.append(token.removeprefix("string:").lower())
+            continue
+        if token.startswith("number:"):
+            try:
+                number_values.append(Decimal(token.removeprefix("number:")))
+            except (DecimalException, ValueError):
+                continue
+            continue
+        if token.startswith("boolean:"):
+            value = token.removeprefix("boolean:").strip().lower()
+            if value == "true":
+                boolean_values.append(True)
+            elif value == "false":
+                boolean_values.append(False)
+            continue
+        raw_values.append(token)
+
+    predicates = []
+    if include_null:
+        predicates.append(expression.is_(None))
+    if string_values:
+        predicates.append(func.lower(cast(expression, String)).in_(string_values))
+    if number_values:
+        predicates.append(expression.in_(number_values))
+    if boolean_values:
+        predicates.append(expression.in_(boolean_values))
+    if raw_values:
+        predicates.append(cast(expression, String).in_(raw_values))
+    if not predicates:
+        return None
+    return or_(*predicates)
 
 
 def _histogram_limit(value: object) -> int:
@@ -809,15 +850,57 @@ def _json_nested_text_value(first_key: str, second_key: str):
 
 
 def _json_decimal_value(key: str):
-    return cast(func.nullif(_json_text_value(key), ""), Numeric(14, 2))
+    cleaned = func.regexp_replace(_json_text_value(key), "[^0-9,.-]+", "", "g")
+    normalized = func.replace(cleaned, ",", ".")
+    return cast(func.nullif(normalized, ""), Numeric(14, 2))
 
 
 def _json_integer_value(key: str):
-    return cast(func.nullif(_json_text_value(key), ""), Integer)
+    cleaned = func.regexp_replace(_json_text_value(key), "[^0-9-]+", "", "g")
+    return cast(func.nullif(cleaned, ""), Integer)
 
 
 def _json_boolean_value(key: str):
     return AuctionLotRecord.datagrid_row[key].as_boolean()
+
+
+def _grid_total_expenses_value():
+    return (
+        func.coalesce(_json_decimal_value("platform_fee"), 0)
+        + func.coalesce(_json_decimal_value("delivery_cost"), 0)
+        + func.coalesce(_json_decimal_value("dismantling_cost"), 0)
+        + func.coalesce(_json_decimal_value("repair_cost"), 0)
+        + func.coalesce(_json_decimal_value("storage_cost"), 0)
+        + func.coalesce(_json_decimal_value("legal_cost"), 0)
+        + func.coalesce(_json_decimal_value("other_costs"), 0)
+    )
+
+
+def _grid_full_entry_cost_value():
+    price = _json_decimal_value("current_price_value")
+    return case(
+        (price.is_(None), None),
+        else_=price + _grid_total_expenses_value(),
+    )
+
+
+def _grid_potential_profit_value():
+    market_value = _json_decimal_value("market_value")
+    full_entry_cost = _grid_full_entry_cost_value()
+    return case(
+        (market_value.is_(None), None),
+        (full_entry_cost.is_(None), None),
+        else_=market_value - full_entry_cost,
+    )
+
+
+def _grid_roi_value():
+    full_entry_cost = _grid_full_entry_cost_value()
+    return case(
+        (full_entry_cost.is_(None), None),
+        (full_entry_cost == 0, None),
+        else_=_grid_potential_profit_value() / full_entry_cost,
+    )
 
 
 def _work_item_text_value(key: str):

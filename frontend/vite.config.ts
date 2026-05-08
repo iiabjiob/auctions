@@ -15,6 +15,14 @@ export default defineConfig({
         changeOrigin: true,
         ws: true,
         configure: (proxy) => {
+          proxy.on('error', (error, request) => {
+            console.warn('[vite-proxy] /api request failed', {
+              method: request.method,
+              url: request.url,
+              code: (error as NodeJS.ErrnoException).code,
+              message: error.message,
+            })
+          })
           proxy.on('proxyRes', (proxyRes) => {
             delete proxyRes.headers['content-length']
           })

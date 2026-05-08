@@ -6,6 +6,7 @@ import {
   DataGrid,
   type DataGridAppToolbarModule,
   type DataGridAppColumnInput,
+  type DataGridColumnMenuProp,
   type DataGridExposed,
   type DataGridSavedViewSnapshot,
   readDataGridSavedViewFromStorage,
@@ -946,6 +947,10 @@ const QuickFiltersToolbar = defineComponent({
       type: Number,
       required: true,
     },
+    applying: {
+      type: Boolean,
+      required: true,
+    },
     sourceOptions: {
       type: Array as PropType<FilterOption[]>,
       required: true,
@@ -1102,6 +1107,20 @@ const QuickFiltersToolbar = defineComponent({
           h('span', 'Шорт-лист'),
         ]),
         h('div', { class: 'quick-filters-bar__actions' }, [
+          props.applying
+            ? h(
+                'span',
+                {
+                  class: 'quick-filters-bar__status',
+                  role: 'status',
+                  'aria-live': 'polite',
+                },
+                [
+                  h('span', { class: 'quick-filters-bar__status-spinner', 'aria-hidden': 'true' }),
+                  h('span', 'Применяю фильтры'),
+                ],
+              )
+            : null,
           props.activeFilterCount > 0
             ? h(
                 'button',
@@ -1569,6 +1588,42 @@ const typedColumns: DataGridAppColumnInput<GridLotRow>[] = [
 ]
 
 const columns = typedColumns as unknown as DataGridAppColumnInput[]
+const VALUE_FILTER_COLUMN_KEYS = new Set(['analysisLabel', 'analysisCategory'])
+const PERCENT_FILTER_COLUMN_KEYS = new Set(['roiValue', 'marketDiscount'])
+const columnMenuOptions = {
+  trigger: 'button+contextmenu',
+  items: ['sort', 'group', 'pin', 'filter'],
+  labels: {
+    sort: 'Сортировка',
+    group: 'Группировка',
+    pin: 'Закрепление',
+    filter: 'Фильтр по значениям',
+    valueSearchPlaceholder: 'Поиск значений',
+    selectedValuesSummary: 'Выбрано {selected} из {total}',
+  },
+  actions: {
+    sortAsc: { label: 'По возрастанию' },
+    sortDesc: { label: 'По убыванию' },
+    clearSort: { label: 'Сбросить сортировку' },
+    toggleGroup: { label: 'Группировать по колонке' },
+    pinMenu: { label: 'Закрепить колонку' },
+    pinLeft: { label: 'Слева' },
+    pinRight: { label: 'Справа' },
+    unpin: { label: 'Не закреплять' },
+    clearFilter: { label: 'Сбросить фильтр' },
+    addCurrentSelectionToFilter: { label: 'Добавить выделение в фильтр' },
+    selectAllValues: { label: 'Выбрать все' },
+    clearAllValues: { label: 'Очистить выбор' },
+    applyFilter: { label: 'Применить' },
+    cancelFilter: { label: 'Отмена' },
+  },
+  columns: Object.fromEntries(
+    typedColumns
+      .map((column) => String(column.key))
+      .filter((key) => !VALUE_FILTER_COLUMN_KEYS.has(key))
+      .map((key) => [key, { hide: ['filter'] }]),
+  ),
+} as unknown as DataGridColumnMenuProp
 
 function resolveClientGridRowId(row: Pick<GridLotRow, 'id'>) {
   return row.id
@@ -1660,6 +1715,7 @@ const toolbarModules = computed<readonly DataGridAppToolbarModule[]>(() => [
       onlyNew: filters.onlyNew,
       shortlist: filters.shortlist,
       activeFilterCount: activeFilterCount.value,
+      applying: loading.value || catalogViewportDimmed.value || catalogQueryPlaceholderVisible.value,
       sourceOptions: sourceOptions.value,
       analysisOptions: analysisOptions,
       statusOptions: statusOptions.value,
@@ -2200,6 +2256,109 @@ function setGridColumnWidths(widths: unknown, options: { persist?: boolean } = {
   return nextWidths
 }
 
+function sanitizeGridValueSetFilters(filterModel: DataGridFilterSnapshot | null | undefined): DataGridFilterSnapshot | null {
+  if (!filterModel) return null
+
+  const columnFilters = { ...(filterModel.columnFilters ?? {}) } as unknown as Record<string, Record<string, unknown>>
+  for (const [key, payload] of Object.entries(columnFilters)) {
+    if (!payload || typeof payload !== 'object') continue
+    const filterPayload = payload
+    if (filterPayload.kind === 'predicate' && PERCENT_FILTER_COLUMN_KEYS.has(key)) {
+      columnFilters[key] = {
+        ...filterPayload,
+        value: normalizePercentFilterValue(key, filterPayload.value),
+        value2: normalizePercentFilterValue(key, filterPayload.value2),
+      }
+      continue
+    }
+    if (VALUE_FILTER_COLUMN_KEYS.has(key)) continue
+    if (filterPayload.kind === 'valueSet') {
+      delete columnFilters[key]
+    }
+  }
+
+  const nextFilterModel = {
+    ...filterModel,
+    columnFilters,
+    advancedFilters: sanitizePercentAdvancedFilters(filterModel.advancedFilters),
+    advancedExpression: sanitizePercentAdvancedExpression(filterModel.advancedExpression),
+  } as unknown as DataGridFilterSnapshot
+  return hasGridFilterModel(nextFilterModel) ? nextFilterModel : null
+}
+
+function normalizePercentFilterValue(key: unknown, value: unknown) {
+  if (!PERCENT_FILTER_COLUMN_KEYS.has(String(key))) return value
+  if (value === null || value === undefined || value === '') return value
+
+  const parsed = Number(String(value).trim().replace(/\s+/g, '').replace('%', '').replace(',', '.'))
+  if (!Number.isFinite(parsed)) return value
+  return String(parsed / 100)
+}
+
+function sanitizePercentPredicatePayload(payload: unknown) {
+  if (!payload || typeof payload !== 'object') return payload
+
+  const record = payload as Record<string, unknown>
+  if (!('value' in record) && !('value2' in record)) return payload
+  return {
+    ...record,
+    value: normalizePercentFilterValue(record.key, record.value),
+    value2: normalizePercentFilterValue(record.key, record.value2),
+  }
+}
+
+function sanitizePercentAdvancedFilters(value: unknown) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value
+
+  const next: Record<string, unknown> = {}
+  for (const [key, payload] of Object.entries(value as Record<string, unknown>)) {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      next[key] = payload
+      continue
+    }
+
+    const record = payload as Record<string, unknown>
+    next[key] = {
+      ...record,
+      clauses: Array.isArray(record.clauses)
+        ? record.clauses.map((clause) => {
+            const sanitized = sanitizePercentPredicatePayload(clause)
+            return sanitized && typeof sanitized === 'object'
+              ? {
+                  ...(sanitized as Record<string, unknown>),
+                  value: normalizePercentFilterValue(key, (sanitized as Record<string, unknown>).value),
+                  value2: normalizePercentFilterValue(key, (sanitized as Record<string, unknown>).value2),
+                }
+              : sanitized
+          })
+        : record.clauses,
+    }
+  }
+  return next
+}
+
+function sanitizePercentAdvancedExpression(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value
+
+  const record = value as Record<string, unknown>
+  if (record.kind === 'condition') {
+    return sanitizePercentPredicatePayload(record)
+  }
+  if (record.kind === 'group') {
+    return {
+      ...record,
+      children: Array.isArray(record.children) ? record.children.map(sanitizePercentAdvancedExpression) : record.children,
+    }
+  }
+  if (record.kind === 'not') {
+    return {
+      ...record,
+      child: sanitizePercentAdvancedExpression(record.child),
+    }
+  }
+  return value
+}
+
 function sanitizeGridSavedView<TRow extends Record<string, unknown>>(
   savedView: DataGridSavedViewSnapshot<TRow>,
   options: { dropSort?: boolean } = {},
@@ -2216,6 +2375,7 @@ function sanitizeGridSavedView<TRow extends Record<string, unknown>>(
         snapshot: {
           ...rowSnapshot,
           sortModel: options.dropSort ? [] : rowSnapshot.sortModel,
+          filterModel: sanitizeGridValueSetFilters(rowSnapshot.filterModel),
           pagination: {
             ...rowSnapshot.pagination,
             enabled: false,
@@ -2778,7 +2938,10 @@ function createCatalogDataSource(): CatalogDataSource {
         }
       }
       try {
-        return await auctionServerDataSource.pull(request)
+        return await auctionServerDataSource.pull({
+          ...request,
+          filterModel: sanitizeGridValueSetFilters(request.filterModel),
+        })
       } catch (error) {
         if (!isBackgroundPrefetch && !isAbortLikeError(error) && requestSeq === catalogPullRequestSeq) {
           errorMessage.value = error instanceof Error ? error.message : 'Не удалось загрузить лоты'
@@ -3516,13 +3679,33 @@ function formatActionRecommendation(value: ActionRecommendation) {
 }
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(apiUrl(url), {
-    ...init,
-    headers: new Headers({
-      ...Object.fromEntries(authHeaders().entries()),
-      ...Object.fromEntries(new Headers(init?.headers ?? {}).entries()),
-    }),
-  })
+  const resolvedUrl = apiUrl(url)
+  const startedAt = performance.now()
+  let response: Response
+  try {
+    response = await fetch(resolvedUrl, {
+      ...init,
+      headers: new Headers({
+        ...Object.fromEntries(authHeaders().entries()),
+        ...Object.fromEntries(new Headers(init?.headers ?? {}).entries()),
+      }),
+    })
+  } catch (error) {
+    if (isAbortLikeError(error) || Boolean(init?.signal?.aborted)) {
+      throw error
+    }
+    console.warn('[api-fetch] request failed before response', {
+      url: resolvedUrl,
+      method: init?.method ?? 'GET',
+      elapsedMs: Math.round(performance.now() - startedAt),
+      apiBaseUrl: API_BASE_URL || '(same-origin)',
+      online: navigator.onLine,
+      aborted: init?.signal?.aborted === true,
+      errorName: error instanceof Error ? error.name : null,
+      errorMessage: error instanceof Error ? error.message : String(error),
+    })
+    throw error
+  }
   if (response.status === 401) {
     authStore.logout()
     throw new Error('Сессия истекла. Войдите снова.')
@@ -4781,6 +4964,7 @@ onUnmounted(() => {
           :is-cell-editable="isGridCellEditable"
           :virtualization="catalogVirtualizationOptions"
           :advanced-filter="advancedFilterOptions"
+          :column-menu="columnMenuOptions"
           :column-layout="columnLayoutOptions"
           fill-handle
           range-move

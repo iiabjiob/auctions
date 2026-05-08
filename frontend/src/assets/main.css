@@ -504,6 +504,11 @@ h2 {
   grid-template-columns: minmax(320px, 1fr) minmax(420px, min(var(--detail-pane-width, 720px), 55vw));
 }
 
+.workspace-split > * {
+  min-width: 0;
+  min-height: 0;
+}
+
 .grid-surface {
   position: relative;
   min-width: 0;
@@ -877,33 +882,37 @@ input[type='range'] {
 
 .quick-filters-bar {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   min-width: 0;
   padding: 4px 4px 0 0;
   overflow: visible;
 }
 
 .quick-filters-bar > * {
-  min-width: 0;
+  min-width: max-content;
 }
 
 .quick-filters-bar__input--search {
-  flex: 1 1 280px;
+  flex: 1 1 320px;
+  min-width: min(320px, 100%);
 }
 
 .quick-filters-bar__select {
-  flex: 0 1 148px;
+  flex: 0 0 148px;
+  min-width: 148px;
 }
 
 .quick-filters-bar__select--period {
   flex-basis: 116px;
+  min-width: 116px;
 }
 
 .quick-filters-bar__input--narrow,
 .quick-filters-bar__input--rating {
   flex: 0 0 104px;
+  min-width: 104px;
 }
 
 .quick-filters-bar__input,
@@ -954,7 +963,37 @@ input[type='range'] {
   gap: 6px;
   margin-left: auto;
   flex-wrap: nowrap;
-  flex: 0 0 auto;
+  flex: 0 0 max-content;
+}
+
+.quick-filters-bar__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--color-accent-border);
+  border-radius: var(--radius-pill);
+  color: var(--color-accent-strong);
+  background: var(--color-accent-soft);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.quick-filters-bar__status-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid color-mix(in srgb, var(--color-accent) 24%, transparent);
+  border-top-color: var(--color-accent);
+  border-radius: 50%;
+  animation: quick-filter-status-spin 720ms linear infinite;
+}
+
+@keyframes quick-filter-status-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .quick-filters-bar__icon-action {
@@ -1005,8 +1044,10 @@ input[type='range'] {
   z-index: 2;
   height: 100%;
   min-width: 0;
+  min-height: 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
   border-left: 1px solid var(--color-border);
   background: var(--color-surface);
   box-shadow: var(--shadow-md);
