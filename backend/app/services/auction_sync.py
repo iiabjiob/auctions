@@ -165,6 +165,7 @@ async def sync_source_lots(
                 payload={"source": "sync", "source_code": source_info.code, "changed_fields": ["row"]},
             )
         else:
+            _preserve_existing_real_media(record, snapshot)
             publication_at = publication_at or _publication_datetime_from_row(record.datagrid_row)
 
             status_changed = record.status != item.lot.status
@@ -401,6 +402,58 @@ def _prepare_snapshot(item: AuctionListItem, source_title: str) -> PreparedLotSn
         normalized_item=normalized_item,
         content_hash=content_hash,
     )
+
+
+def _preserve_existing_real_media(record: AuctionLotRecord, snapshot: PreparedLotSnapshot) -> None:
+    existing_images = _media_images_from_row(record.datagrid_row)
+    if not _has_real_media(existing_images):
+        return
+
+    next_images = _media_images_from_row(snapshot.datagrid_row)
+    if _has_real_media(next_images):
+        return
+
+    primary_url = _first_real_media_url(existing_images) or _string_value((record.datagrid_row or {}).get("primary_image_url"))
+    snapshot.datagrid_row["images"] = existing_images
+    snapshot.datagrid_row["primary_image_url"] = primary_url
+    snapshot.datagrid_row["image_count"] = len(existing_images)
+
+    normalized_item = dict(snapshot.normalized_item or {})
+    lot_payload = dict(normalized_item.get("lot") or {})
+    lot_payload["images"] = existing_images
+    lot_payload["primary_image_url"] = primary_url
+    normalized_item["lot"] = lot_payload
+    snapshot.normalized_item = normalized_item
+
+
+def _media_images_from_row(row: dict | None) -> list[dict]:
+    if not isinstance(row, dict):
+        return []
+    images = row.get("images")
+    return [dict(image) for image in images if isinstance(image, dict)] if isinstance(images, list) else []
+
+
+def _has_real_media(images: list[dict]) -> bool:
+    return any(_is_real_media_url(_string_value(image.get("url"))) for image in images)
+
+
+def _first_real_media_url(images: list[dict]) -> str | None:
+    for image in images:
+        url = _string_value(image.get("url"))
+        if _is_real_media_url(url):
+            return url
+    return None
+
+
+def _is_real_media_url(url: str | None) -> bool:
+    if not url:
+        return False
+    lowered = url.lower()
+    return not ("/img/blur/" in lowered or "/blur_" in lowered)
+
+
+def _string_value(value: object) -> str | None:
+    return value if isinstance(value, str) and value.strip() else None
 
 
 def _rating_payload(row: dict) -> dict:

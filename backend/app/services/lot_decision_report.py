@@ -81,12 +81,14 @@ def build_lot_decision_report(
         work_item,
         profile_fit=profile_fit,
         has_documents=evidence.legal.has_documents,
+        current_status=evidence.category.status,
     )
     decision_level = _decision_level(
         record,
         work_item,
         profile_fit=profile_fit,
         near_deadline=near_deadline,
+        current_status=evidence.category.status,
     )
     recommendation = _recommendation(
         decision_level,
@@ -381,6 +383,7 @@ def _decision_level(
     *,
     profile_fit: LotProfileFitEvaluation | None,
     near_deadline: bool,
+    current_status: str | None,
 ) -> DecisionLevel:
     decision = _manual_decision(work_item)
     final_decision = _manual_final_decision(work_item)
@@ -388,6 +391,8 @@ def _decision_level(
     is_excluded = bool(work_item and getattr(work_item, "exclude_from_analysis", False))
     score = int(record.rating_score or 0)
 
+    if _is_terminal_lot_status(current_status):
+        return DecisionLevel.IGNORE
     if is_excluded or decision == "reject" or final_decision in {"reject", "rejected", "no"}:
         return DecisionLevel.IGNORE
     if has_profile_blockers:
@@ -551,8 +556,17 @@ def _decision_risks(
     *,
     profile_fit: LotProfileFitEvaluation | None,
     has_documents: bool,
+    current_status: str | None,
 ) -> list[LotDecisionRisk]:
     risks: list[LotDecisionRisk] = []
+    if _is_terminal_lot_status(current_status):
+        risks.append(
+            LotDecisionRisk(
+                code="source.terminal_status",
+                message=f"Лот недоступен для заявки: {current_status}",
+                level="high",
+            )
+        )
     if work_item and getattr(work_item, "exclude_from_analysis", False):
         risks.append(
             LotDecisionRisk(
@@ -656,6 +670,18 @@ def _decision_level_label(level: DecisionLevel) -> str:
         DecisionLevel.CALCULATE: "Рассчитать",
         DecisionLevel.BID_CANDIDATE: "Кандидат на торги",
     }[level]
+
+
+def _is_terminal_lot_status(status: str | None) -> bool:
+    if not isinstance(status, str):
+        return False
+    normalized = status.strip().lower()
+    if not normalized:
+        return False
+    return any(
+        marker in normalized
+        for marker in ("архив", "archived", "заверш", "закончен", "состоял", "состоялись", "подвед", "отмен")
+    )
 
 
 def _resolve_target_roi(

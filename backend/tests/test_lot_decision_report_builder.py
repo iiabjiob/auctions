@@ -67,7 +67,7 @@ def make_record(
     )
 
 
-def make_detail_cache(*, documents: list[dict] | None = None) -> AuctionLotDetailCache:
+def make_detail_cache(*, documents: list[dict] | None = None, status: str | None = None) -> AuctionLotDetailCache:
     return AuctionLotDetailCache(
         lot_record_id=1,
         content_hash="detail-hash",
@@ -75,6 +75,7 @@ def make_detail_cache(*, documents: list[dict] | None = None) -> AuctionLotDetai
             "lot": {
                 "description": "Local detail payload",
                 "inspection_order": "By appointment",
+                "status": status,
             }
         },
         auction_detail=None,
@@ -116,6 +117,17 @@ class LotDecisionReportBuilderTests(unittest.TestCase):
             {action.action for action in report.next_actions},
         )
         self.assertIn("Запросить документы", {action.label for action in report.next_actions})
+
+    def test_terminal_detail_status_downgrades_high_score_to_ignore(self) -> None:
+        report = build_lot_decision_report(
+            make_record(score=96, level="high", status="Идет прием заявок"),
+            detail_cache=make_detail_cache(status="Торги состоялись"),
+            work_item=AuctionLotWorkItem(lot_record_id=1, max_purchase_price=Decimal("1200000")),
+        )
+
+        self.assertEqual(report.decision_level, DecisionLevel.IGNORE)
+        self.assertEqual(report.recommendation, ActionRecommendation.IGNORE)
+        self.assertTrue(any(risk.code == "source.terminal_status" for risk in report.risks))
 
     def test_profile_blocker_downgrades_decision(self) -> None:
         record = make_record(lot_name="Blocked tracked excavator", score=92, level="high")

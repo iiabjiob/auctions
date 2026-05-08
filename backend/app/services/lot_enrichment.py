@@ -56,6 +56,10 @@ TERMINAL_LOT_STATUS_MARKERS: tuple[str, ...] = (
     "архив",
     "archived",
     "заверш",
+    "закончен",
+    "состоял",
+    "состоялись",
+    "подвед",
     "отмен",
 )
 DEADLINE_PATTERNS: tuple[str, ...] = (

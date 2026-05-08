@@ -905,6 +905,20 @@ class AuctionRatingTests(unittest.TestCase):
         self.assertEqual(rating.level, "low")
         self.assertIn("non_actionable", score_cap_keys(record))
 
+    def test_completed_detail_status_overrides_stale_open_record_status(self) -> None:
+        record = make_record(lot_name="Экскаватор гусеничный", status="Идет прием заявок")
+        detail_cache = make_detail_cache()
+        detail_cache.lot_detail["lot"]["status"] = "Торги состоялись"
+
+        rating = recalculate_record_rating(record, detail_cache, make_work_item())
+
+        self.assertEqual(record.status, "Торги состоялись")
+        self.assertEqual(record.datagrid_row["status"], "Торги состоялись")
+        self.assertEqual(record.normalized_item["lot"]["status"], "Торги состоялись")
+        self.assertLessEqual(rating.score, 20)
+        self.assertEqual(rating.level, "low")
+        self.assertIn("non_actionable", score_cap_keys(record))
+
     def test_missing_price_caps_rating_below_high(self) -> None:
         record = make_record(lot_name="Экскаватор гусеничный")
         record.initial_price = None

@@ -86,6 +86,7 @@ def _post_html(
     *,
     referer: str,
     timeout: int = DEFAULT_REQUEST_TIMEOUT,
+    use_session: bool = True,
 ) -> str:
     request = Request(
         url,
@@ -99,15 +100,16 @@ def _post_html(
             "X-Requested-With": "XMLHttpRequest",
         },
     )
-    return _read_response_text(request, timeout=timeout)
+    return _read_response_text(request, timeout=timeout, opener=_OPENER if use_session else build_opener())
 
 
-def _read_response_text(request: Request, *, timeout: int) -> str:
+def _read_response_text(request: Request, *, timeout: int, opener=None) -> str:
+    opener = opener or _OPENER
     last_error: Exception | None = None
     for attempt in range(1, REQUEST_RETRY_ATTEMPTS + 1):
         try:
             _wait_for_polite_request_slot(request.full_url)
-            with _OPENER.open(request, timeout=timeout) as response:
+            with opener.open(request, timeout=timeout) as response:
                 encoding = response.headers.get_content_charset() or "utf-8"
                 return response.read().decode(encoding, errors="replace")
         except HTTPError as error:
@@ -274,6 +276,19 @@ def _extract_status(card_html: str) -> str | None:
     status_values = [value for value in status_values if value]
     if status_values:
         return ", ".join(status_values)
+    return None
+
+
+def _extract_detail_status(html: str, title: str | None) -> str | None:
+    status = _extract_status(html)
+    if status:
+        return status
+    if title:
+        title_status = re.search(r"\s-\s([^-\n\r]+)$", title.strip())
+        if title_status:
+            value = _normalize_text(title_status.group(1))
+            if value:
+                return value
     return None
 
 
@@ -567,11 +582,23 @@ def fetch_price_schedule(
 ) -> list[PriceScheduleStep]:
     if authenticate:
         ensure_authenticated(email=auth_email, password=auth_password)
-    html = _post_html(
+    html = _fetch_price_schedule_html(lot_id)
+    steps = _parse_price_schedule_steps(html)
+    if authenticate and not steps:
+        steps = _parse_price_schedule_steps(_fetch_price_schedule_html(lot_id, use_session=False))
+    return steps
+
+
+def _fetch_price_schedule_html(lot_id: str, *, use_session: bool = True) -> str:
+    return _post_html(
         f"{BASE_URL}/script/ajax.php",
         {"key": "get_price_down", "id": lot_id},
         referer=f"{BASE_URL}/item?id={lot_id}",
+        use_session=use_session,
     )
+
+
+def _parse_price_schedule_steps(html: str) -> list[PriceScheduleStep]:
     steps: list[PriceScheduleStep] = []
     for match in re.finditer(
         r'<tr\s+class="down"[^>]*>\s*<td\s+class="date"[^>]*>(.*?)</td>\s*<td\s+class="price"[^>]*>(.*?)</td>',
@@ -750,6 +777,7 @@ def fetch_lot_detail(
     documents = _extract_detail_documents(html)
     lot_text = _extract_lot_text(html)
     title = _first_match(html, r'<meta\s+property="og:title"\s+content="([^"]+)"') or _first_text(html, r'<h1>(.*?)</h1>')
+    status = _extract_detail_status(html, title)
     publication_date = _first_text(html, r'<p\s+class="obtain"[^>]*>.*?<span\s+class="gray">(.*?)</span>')
     application_start, application_deadline = _extract_application_dates(html, "Прием заявок")
     auction_start, auction_end = _extract_application_dates(html, "Проведение торгов")
@@ -799,6 +827,7 @@ def fetch_lot_detail(
             current_price=_first_text(html, r'<p\s+class="green semibold"[^>]*>(.*?)</p>'),
             minimum_price=_first_text(html, r'<p\s+class="red semibold"[^>]*>(.*?)</p>'),
             market_value=market_value,
+            status=status,
             description=lot_text,
             inspection_order=inspection_order,
             price_schedule=price_schedule,

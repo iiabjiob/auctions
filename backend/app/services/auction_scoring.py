@@ -514,6 +514,7 @@ def sync_record_from_detail_cache(record: AuctionLotRecord, detail_cache: Auctio
     publication_date = _publication_date_from_detail_cache(detail_cache)
     lot_details = _lot_details_from_detail_cache(detail_cache)
     auction_details = _auction_details_from_detail_cache(detail_cache)
+    detail_status = lot_details.get("status")
 
     row = dict(record.datagrid_row or {})
     if publication_date and row.get("publication_date") != publication_date:
@@ -524,6 +525,9 @@ def sync_record_from_detail_cache(record: AuctionLotRecord, detail_cache: Auctio
     for key, value in lot_details.items():
         if value is not None:
             row[key] = value
+    if detail_status and detail_status != record.status:
+        record.status = detail_status
+        record.status_changed_at = datetime.now(UTC)
     if lot_details.get("initial_price"):
         initial_price_value = parse_price(lot_details["initial_price"])
         row["initial_price_value"] = str(initial_price_value) if initial_price_value is not None else None
@@ -1025,6 +1029,7 @@ def _lot_details_from_detail_cache(detail_cache: AuctionLotDetailCache | None) -
         "current_price": _clean_text(lot.get("current_price")),
         "minimum_price": _clean_text(lot.get("minimum_price")),
         "market_value": _clean_text(lot.get("market_value")) or _clean_text(cadastral_market_value),
+        "status": _clean_text(lot.get("status")),
     }
 
 

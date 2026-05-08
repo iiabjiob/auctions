@@ -81,7 +81,7 @@ async def get_lot_workspace(
 
     detail_started_at = perf_counter()
     detail_cache = (
-        await ensure_lot_detail_cache(session, record, refresh=True, include_price_schedule=False)
+        await ensure_lot_detail_cache(session, record, refresh=True, include_price_schedule=True)
         if refresh
         else await get_cached_lot_detail_cache(session, record) if include_detail else None
     )
@@ -156,7 +156,7 @@ async def refresh_lot_workspace_live(
         session,
         record,
         refresh=True,
-        include_price_schedule=False,
+        include_price_schedule=True,
         raise_on_fetch_error=True,
     )
     work_item = await ensure_work_item(session, record)
@@ -573,9 +573,6 @@ def _workspace_row_payload(record: AuctionLotRecord, *, include_embedded_payload
         return payload
 
     payload["price_schedule"] = []
-    payload["images"] = []
-    payload["primary_image_url"] = None
-    payload["image_count"] = 0
     return payload
 
 

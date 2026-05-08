@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 from urllib.error import HTTPError
 
 from app.models.auction import AuctionLotDetailCache, AuctionLotRecord
-from app.schemas.auctions import AuctionSummary, LotDetailResponse, LotSummary
+from app.schemas.auctions import AuctionSummary, LotDetailResponse, LotImage, LotSummary
 from app.services.auction_scoring import invalidate_lot_score
 from app.services.auction_workspace import (
     _detail_cache_has_price_schedule,
@@ -19,6 +19,7 @@ from app.services.auction_workspace import (
     get_lot_workspace,
     ensure_lot_detail_cache,
     get_cached_lot_detail_cache,
+    refresh_lot_workspace_live,
 )
 
 
@@ -53,11 +54,13 @@ class StaticDetailProvider:
 
     def __init__(self, lot_response: LotDetailResponse):
         self.lot_response = lot_response
+        self.include_price_schedule_calls: list[bool] = []
 
     def info(self):
         return None
 
     def get_lot(self, lot_id: str, *, include_price_schedule: bool = True):
+        self.include_price_schedule_calls.append(include_price_schedule)
         return self.lot_response
 
     def get_auction(self, auction_id: str):
@@ -75,6 +78,16 @@ def _lot_detail_content_hash(response: LotDetailResponse) -> str:
     )
     data = {"lot_detail": payload, "auction_detail": None, "documents": response.documents}
     return hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def _runtime_config() -> SimpleNamespace:
+    return SimpleNamespace(
+        category_keywords={},
+        exclusion_keywords=(),
+        legal_risk_rules=SimpleNamespace(),
+        owner_profile=SimpleNamespace(),
+        dimension_weights=SimpleNamespace(),
+    )
 
 
 class AuctionWorkspaceDetailCacheTests(unittest.TestCase):
@@ -167,6 +180,48 @@ class AuctionWorkspaceDetailCacheTests(unittest.TestCase):
 
         self.assertIsNotNone(response)
         self.assertEqual(response.lot.price_schedule[0].starts_at, "01.01.2026")
+
+    def test_workspace_detail_response_preserves_cached_lot_images(self) -> None:
+        record = AuctionLotRecord(
+            id=1,
+            source_code="tbankrot",
+            auction_external_id="auction-1",
+            lot_external_id="lot-1",
+            content_hash="hash",
+            datagrid_row={},
+            normalized_item={},
+        )
+        cache = AuctionLotDetailCache(
+            lot_record_id=1,
+            content_hash="hash",
+            lot_detail={
+                "source": "tbankrot",
+                "url": "https://tbankrot.ru/item?id=lot-1",
+                "auction": {},
+                "lot": {
+                    "images": [
+                        LotImage(
+                            url="https://tbankrot.ru/upload/lot/photo.jpg",
+                            thumbnail_url="https://tbankrot.ru/upload/lot/photo-thumb.jpg",
+                            alt="Фото лота",
+                            source="tbankrot",
+                        ).model_dump(mode="json")
+                    ],
+                    "primary_image_url": "https://tbankrot.ru/upload/lot/photo.jpg",
+                },
+                "documents": [],
+                "raw_fields": [],
+                "raw_tables": [],
+            },
+            auction_detail=None,
+            documents=[],
+        )
+
+        response = _lot_detail_response_from_cache(record, cache)
+
+        self.assertIsNotNone(response)
+        self.assertEqual(response.lot.primary_image_url, "https://tbankrot.ru/upload/lot/photo.jpg")
+        self.assertEqual(response.lot.images[0].url, "https://tbankrot.ru/upload/lot/photo.jpg")
 
     def test_workspace_detail_payload_is_bounded_for_browser_rendering(self) -> None:
         payload = {
@@ -264,6 +319,97 @@ class AuctionWorkspaceDetailFetchTests(unittest.IsolatedAsyncioTestCase):
         refresh_detail.assert_not_awaited()
         get_source_provider.assert_not_called()
         self.assertEqual(session.commits, 1)
+
+    async def test_workspace_refresh_loads_price_schedule(self) -> None:
+        record = AuctionLotRecord(
+            id=1,
+            source_code="tbankrot",
+            auction_external_id=None,
+            lot_external_id="lot-1",
+            content_hash="hash",
+            rating_score=88,
+            rating_level="high",
+            datagrid_row={},
+            normalized_item={},
+        )
+        response = LotDetailResponse(
+            source="tbankrot",
+            url="https://example.test/lot-1",
+            auction=AuctionSummary(source="tbankrot", external_id="auction-1", url="https://example.test/auction-1"),
+            lot=LotSummary(source="tbankrot", external_id="lot-1", name="Экскаватор", price_schedule=[]),
+            organizer=None,
+            debtor=None,
+            documents=[],
+            raw_fields=[],
+            raw_tables=[],
+        )
+        provider = StaticDetailProvider(response)
+        session = FakeSession()
+
+        with (
+            patch("app.services.auction_workspace.find_lot_record", AsyncMock(return_value=record)),
+            patch("app.services.auction_workspace.get_source_provider", return_value=provider),
+            patch("app.services.auction_workspace.ensure_work_item", AsyncMock(return_value=SimpleNamespace(lot_record_id=1))),
+            patch("app.services.auction_workspace.recalculate_record_rating"),
+            patch("app.services.auction_workspace.generate_and_persist_lot_decision_report_snapshot", AsyncMock()),
+            patch("app.services.auction_workspace.bump_auction_lot_dataset_version", AsyncMock()),
+            patch("app.services.auction_workspace.auction_analysis_config_service.get_runtime_config", AsyncMock(return_value=_runtime_config())),
+            patch("app.services.auction_workspace.build_workspace_response", AsyncMock(return_value=SimpleNamespace(marker="workspace"))),
+        ):
+            await get_lot_workspace(session, source="tbankrot", lot_id="lot-1", refresh=True, include_detail=True)
+
+        self.assertEqual(provider.include_price_schedule_calls, [True])
+
+    async def test_live_workspace_refresh_loads_price_schedule(self) -> None:
+        record = AuctionLotRecord(
+            id=1,
+            source_code="tbankrot",
+            auction_external_id=None,
+            lot_external_id="lot-1",
+            content_hash="hash",
+            rating_score=88,
+            rating_level="high",
+            datagrid_row={},
+            normalized_item={},
+        )
+        response = LotDetailResponse(
+            source="tbankrot",
+            url="https://example.test/lot-1",
+            auction=AuctionSummary(source="tbankrot", external_id="auction-1", url="https://example.test/auction-1"),
+            lot=LotSummary(source="tbankrot", external_id="lot-1", name="Экскаватор", price_schedule=[]),
+            organizer=None,
+            debtor=None,
+            documents=[],
+            raw_fields=[],
+            raw_tables=[],
+        )
+        provider = StaticDetailProvider(response)
+        session = FakeSession()
+
+        with (
+            patch("app.services.auction_workspace.find_lot_record", AsyncMock(return_value=record)),
+            patch("app.services.auction_workspace.get_source_provider", return_value=provider),
+            patch("app.services.auction_workspace.ensure_work_item", AsyncMock(return_value=SimpleNamespace(lot_record_id=1))),
+            patch("app.services.auction_workspace.recalculate_record_rating"),
+            patch("app.services.auction_workspace.generate_and_persist_lot_decision_report_snapshot", AsyncMock()),
+            patch("app.services.auction_workspace.bump_auction_lot_dataset_version", AsyncMock()),
+            patch("app.services.auction_workspace.publish_auction_event", AsyncMock()),
+            patch("app.services.auction_workspace.auction_analysis_config_service.get_runtime_config", AsyncMock(return_value=_runtime_config())),
+            patch(
+                "app.services.auction_workspace.build_workspace_response",
+                AsyncMock(
+                    return_value=SimpleNamespace(
+                        marker="workspace",
+                        record_id=1,
+                        detail_cached_at=None,
+                        row=SimpleNamespace(model_dump=lambda mode: {}),
+                    )
+                ),
+            ),
+        ):
+            await refresh_lot_workspace_live(session, source="tbankrot", lot_id="lot-1")
+
+        self.assertEqual(provider.include_price_schedule_calls, [True])
 
     async def test_cached_detail_lookup_does_not_fetch_source(self) -> None:
         record = AuctionLotRecord(

@@ -6,12 +6,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from app.models.auction import AuctionLotDetailCache, AuctionLotRecord, AuctionSourceState
-from app.schemas.auctions import AuctionListItem, AuctionSummary, LotSummary, OrganizerInfo
+from app.schemas.auctions import AuctionListItem, AuctionSummary, LotImage, LotSummary, OrganizerInfo
 from app.services.auction_scoring import invalidate_lot_score
 from app.services.lot_enrichment import classify_lot_enrichment
 from app.services.lot_enrichment import schedule_lot_enrichment
 from app.services.lot_enrichment import schedule_lot_ttl_refresh
-from app.services.auction_sync import _prepare_snapshot, _sync_detail_if_needed, sync_source_lots
+from app.services.auction_sync import _prepare_snapshot, _preserve_existing_real_media, _sync_detail_if_needed, sync_source_lots
 
 
 def make_list_item(
@@ -22,6 +22,7 @@ def make_list_item(
     location_region: str | None = "Московская область",
     application_deadline: str | None = "05.05.2026 18:00",
     initial_price: str | None = "1 000 000 руб.",
+    images: list[LotImage] | None = None,
 ) -> AuctionListItem:
     return AuctionListItem(
         source="tbankrot",
@@ -42,6 +43,8 @@ def make_list_item(
             location_region=location_region,
             application_deadline=application_deadline,
             initial_price=initial_price,
+            images=images or [],
+            primary_image_url=images[0].url if images else None,
         ),
         organizer=OrganizerInfo(name="Organizer"),
     )
@@ -109,6 +112,35 @@ class FakeSession:
 
 
 class AuctionSyncInvalidationTests(unittest.IsolatedAsyncioTestCase):
+    def test_preserve_existing_real_media_when_next_sync_has_only_locked_placeholders(self) -> None:
+        existing_item = make_list_item(
+            images=[
+                LotImage(
+                    url="https://tbankrot.ru/upload/lot/photo.jpg",
+                    thumbnail_url="https://tbankrot.ru/upload/lot/photo-thumb.jpg",
+                    source="tbankrot",
+                )
+            ]
+        )
+        next_item = make_list_item(
+            images=[
+                LotImage(
+                    url="https://tbankrot.ru/img/blur/photo.jpg",
+                    thumbnail_url="https://tbankrot.ru/img/blur/photo.jpg",
+                    source="tbankrot",
+                )
+            ]
+        )
+        existing_snapshot = _prepare_snapshot(existing_item, "TBankrot")
+        next_snapshot = _prepare_snapshot(next_item, "TBankrot")
+        record = make_record(existing_snapshot, content_hash=existing_snapshot.content_hash)
+
+        _preserve_existing_real_media(record, next_snapshot)
+
+        self.assertEqual(next_snapshot.datagrid_row["primary_image_url"], "https://tbankrot.ru/upload/lot/photo.jpg")
+        self.assertEqual(next_snapshot.datagrid_row["images"][0]["url"], "https://tbankrot.ru/upload/lot/photo.jpg")
+        self.assertEqual(next_snapshot.normalized_item["lot"]["images"][0]["url"], "https://tbankrot.ru/upload/lot/photo.jpg")
+
     async def test_source_content_change_schedules_enrichment_when_evidence_is_missing(self) -> None:
         item = make_list_item(initial_price=None)
         snapshot = _prepare_snapshot(item, "TBankrot")

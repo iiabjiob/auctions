@@ -1971,7 +1971,7 @@ const detailImages = computed<DetailImage[]>(() => {
   const documentImages = detailDocuments.value
     .filter((document) => belongsToSelectedLotMedia(document) && isImageDocument(document) && document.url)
     .map((document) => ({ url: document.url || '', thumbnailUrl: document.url || '', name: document.name }))
-  const fallbackImages = selectedLot.value?.source === 'tbankrot' ? [] : [...selectedRowImages, ...liveDetailImages]
+  const fallbackImages = [...liveDetailImages, ...selectedRowImages]
   const images = documentImages.length ? documentImages : fallbackImages
   return uniqueDetailImages(images).filter((image) => isRelevantDetailImage(image.url) && !isLockedTbankrotImageUrl(image.url))
 })
@@ -4218,6 +4218,23 @@ async function refreshLiveLotDetails(row: GridLotRow, requestId: number) {
   }
 }
 
+async function reloadSelectedWorkspaceAfterLiveRefresh(requestId: number) {
+  const row = selectedLot.value
+  if (!row?.lotId) return
+  detailStatus.value = 'Загружаю обновленные live-данные'
+  try {
+    const workspace = await fetchJson<LotWorkspaceResponse>(buildLotWorkspacePath(row, '', { includeDetail: true }))
+    if (requestId !== detailRequestId) return
+    applyDetailWorkspace(workspace)
+    finishDetailLiveRefresh('Live-данные обновлены')
+  } catch (error) {
+    if (requestId !== detailRequestId) return
+    finishDetailLiveRefresh(
+      error instanceof Error ? `Live-данные обновлены, но карточку не удалось перечитать: ${error.message}` : 'Live-данные обновлены, но карточку не удалось перечитать',
+    )
+  }
+}
+
 function refreshSelectedLotLiveDetails() {
   const row = selectedLot.value
   if (!row?.lotId || detailLiveRefreshing.value) return
@@ -4559,7 +4576,7 @@ function subscribeToAuctionEvents() {
           detail_cached_at: payload.detail_cached_at ?? selectedWorkspace.value.detail_cached_at,
         }
       }
-      finishDetailLiveRefresh('Live-данные обновлены на backend')
+      void reloadSelectedWorkspaceAfterLiveRefresh(detailRequestId)
     }
   })
 

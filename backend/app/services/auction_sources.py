@@ -10,7 +10,7 @@ from app.services.tbankrot_scraper import iter_auction_list as iter_tbankrot_auc
 
 
 settings = get_settings()
-LIST_SYNC_INCLUDE_PRICE_SCHEDULE = False
+LIST_SYNC_INCLUDE_PRICE_SCHEDULE = settings.tbankrot_include_price_schedule
 
 
 class AuctionSourceProvider(Protocol):

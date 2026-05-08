@@ -86,7 +86,7 @@ def build_lot_evidence(record: AuctionLotRecord, detail_cache: AuctionLotDetailC
             category=_first_text(merged_lot.get("category")),
             model_category=_first_text(merged_lot.get("model_category")),
             lot_name=_first_text(row.lot_name, record.lot_name),
-            status=_first_text(row.status, record.status),
+            status=_first_text(merged_lot.get("status"), row.status, record.status),
         ),
         legal=LotLegalFacts(
             has_documents=bool(documents),

@@ -10,7 +10,10 @@ class TBankrotSourceProviderTests(unittest.TestCase):
     def test_list_lots_does_not_load_price_schedule(self) -> None:
         provider = TBankrotSourceProvider()
 
-        with patch("app.services.auction_sources.fetch_tbankrot_auction_list", return_value=[]) as fetch_list:
+        with (
+            patch("app.services.auction_sources.LIST_SYNC_INCLUDE_PRICE_SCHEDULE", False),
+            patch("app.services.auction_sources.fetch_tbankrot_auction_list", return_value=[]) as fetch_list,
+        ):
             provider.list_lots(limit=10)
 
         self.assertFalse(fetch_list.call_args.kwargs["include_price_schedule"])
@@ -18,10 +21,24 @@ class TBankrotSourceProviderTests(unittest.TestCase):
     def test_iter_lots_does_not_load_price_schedule(self) -> None:
         provider = TBankrotSourceProvider()
 
-        with patch("app.services.auction_sources.iter_tbankrot_auction_list", return_value=iter(())) as iter_list:
+        with (
+            patch("app.services.auction_sources.LIST_SYNC_INCLUDE_PRICE_SCHEDULE", False),
+            patch("app.services.auction_sources.iter_tbankrot_auction_list", return_value=iter(())) as iter_list,
+        ):
             list(provider.iter_lots(limit=10))
 
         self.assertFalse(iter_list.call_args.kwargs["include_price_schedule"])
+
+    def test_list_lots_can_load_price_schedule_when_enabled(self) -> None:
+        provider = TBankrotSourceProvider()
+
+        with (
+            patch("app.services.auction_sources.LIST_SYNC_INCLUDE_PRICE_SCHEDULE", True),
+            patch("app.services.auction_sources.fetch_tbankrot_auction_list", return_value=[]) as fetch_list,
+        ):
+            provider.list_lots(limit=10)
+
+        self.assertTrue(fetch_list.call_args.kwargs["include_price_schedule"])
 
     def test_lot_detail_loads_price_schedule_by_default(self) -> None:
         provider = TBankrotSourceProvider()
