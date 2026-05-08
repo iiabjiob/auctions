@@ -287,7 +287,7 @@ async def get_lot_decision_report(
         statement = statement.where(AuctionLotDecisionReport.profile_hash == profile_hash)
     snapshot = await session.scalar(statement.order_by(AuctionLotDecisionReport.generated_at.desc()).limit(1))
     if snapshot is None:
-        raise HTTPException(status_code=404, detail="Decision report snapshot was not found")
+        raise HTTPException(status_code=404, detail="Снимок отчета по лоту не найден")
     return LotDecisionReport.model_validate(snapshot.report_payload)
 
 

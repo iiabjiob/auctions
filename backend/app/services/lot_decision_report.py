@@ -216,22 +216,22 @@ def render_telegram_lot_message(
 ) -> TelegramLotMessage:
     message_link = link or _default_lot_link(report)
     lines = [
-        f"<b>{_html(report.title or 'Lot decision report')}</b>",
-        _field_line("Region", report.region),
-        _field_line("Price", report.current_price),
-        f"Score: {report.rating_score} ({_html(report.rating_level)})",
-        f"Decision: {_html(report.decision_level.value)} / {_html(report.recommendation.value)}",
-        _field_line("Max buy", _format_decimal(report.economics.max_buy_price) if report.economics else None),
-        _field_line("Deadline", report.deadline),
+        f"<b>{_html(report.title or 'Отчет по лоту')}</b>",
+        _field_line("Регион", report.region),
+        _field_line("Цена", report.current_price),
+        f"Рейтинг: {report.rating_score} ({_html(report.rating_level)})",
+        f"Решение: {_html(_decision_level_label(report.decision_level))} / {_html(_recommendation_label(report.recommendation))}",
+        _field_line("Макс. цена", _format_decimal(report.economics.max_buy_price) if report.economics else None),
+        _field_line("Дедлайн", report.deadline),
     ]
-    reason_lines = _message_items("Reasons", [reason.message for reason in report.reasons], TELEGRAM_REASON_LIMIT)
-    risk_lines = _message_items("Risks", [risk.message for risk in report.risks], TELEGRAM_RISK_LIMIT)
+    reason_lines = _message_items("Причины", [reason.message for reason in report.reasons], TELEGRAM_REASON_LIMIT)
+    risk_lines = _message_items("Риски", [risk.message for risk in report.risks], TELEGRAM_RISK_LIMIT)
     if reason_lines:
         lines.extend(reason_lines)
     if risk_lines:
         lines.extend(risk_lines)
     if message_link:
-        lines.append(f"Link: {_html(message_link)}")
+        lines.append(f"Ссылка: {_html(message_link)}")
 
     text = _trim_message("\n".join(line for line in lines if line), max_length=max_length)
     return TelegramLotMessage(
@@ -442,21 +442,21 @@ def _next_actions(
     deadline: str | None,
 ) -> list[LotDecisionNextAction]:
     if decision_level == DecisionLevel.IGNORE:
-        return [LotDecisionNextAction(action=ActionRecommendation.IGNORE, label="Ignore lot")]
+        return [LotDecisionNextAction(action=ActionRecommendation.IGNORE, label="Игнорировать лот")]
 
     actions: list[LotDecisionNextAction] = []
     if not has_documents:
         actions.append(
             LotDecisionNextAction(
                 action=ActionRecommendation.REQUEST_DOCS,
-                label="Request documents",
+                label="Запросить документы",
             )
         )
     if decision_level in {DecisionLevel.INSPECT, DecisionLevel.CALCULATE, DecisionLevel.BID_CANDIDATE}:
         actions.append(
             LotDecisionNextAction(
                 action=ActionRecommendation.INSPECT,
-                label="Inspect lot",
+                label="Осмотреть лот",
                 deadline=deadline,
             )
         )
@@ -464,7 +464,7 @@ def _next_actions(
         actions.append(
             LotDecisionNextAction(
                 action=ActionRecommendation.CALCULATE_MAX_BID,
-                label="Calculate max bid",
+                label="Рассчитать макс. цену",
                 deadline=deadline,
             )
         )
@@ -476,7 +476,7 @@ def _next_actions(
         actions.append(
             LotDecisionNextAction(
                 action=ActionRecommendation.PREPARE_BID,
-                label="Prepare bid",
+                label="Готовить заявку",
                 deadline=deadline,
             )
         )
@@ -484,7 +484,7 @@ def _next_actions(
         actions.append(
             LotDecisionNextAction(
                 action=ActionRecommendation.MONITOR,
-                label="Monitor lot",
+                label="Наблюдать лот",
                 deadline=deadline,
             )
         )
@@ -639,13 +639,23 @@ def _manual_final_decision(work_item: AuctionLotWorkItem | None) -> str:
 
 def _recommendation_label(recommendation: ActionRecommendation) -> str:
     return {
-        ActionRecommendation.IGNORE: "Ignore lot",
-        ActionRecommendation.MONITOR: "Monitor lot",
-        ActionRecommendation.REQUEST_DOCS: "Request documents",
-        ActionRecommendation.INSPECT: "Inspect lot",
-        ActionRecommendation.CALCULATE_MAX_BID: "Calculate max bid",
-        ActionRecommendation.PREPARE_BID: "Prepare bid",
+        ActionRecommendation.IGNORE: "Игнорировать лот",
+        ActionRecommendation.MONITOR: "Наблюдать лот",
+        ActionRecommendation.REQUEST_DOCS: "Запросить документы",
+        ActionRecommendation.INSPECT: "Осмотреть лот",
+        ActionRecommendation.CALCULATE_MAX_BID: "Рассчитать макс. цену",
+        ActionRecommendation.PREPARE_BID: "Готовить заявку",
     }[recommendation]
+
+
+def _decision_level_label(level: DecisionLevel) -> str:
+    return {
+        DecisionLevel.IGNORE: "Игнорировать",
+        DecisionLevel.WATCH: "Наблюдать",
+        DecisionLevel.INSPECT: "Осмотреть",
+        DecisionLevel.CALCULATE: "Рассчитать",
+        DecisionLevel.BID_CANDIDATE: "Кандидат на торги",
+    }[level]
 
 
 def _resolve_target_roi(

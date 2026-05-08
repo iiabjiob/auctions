@@ -120,6 +120,7 @@ class LotDecisionReportRouteTests(unittest.IsolatedAsyncioTestCase):
                 )
 
         self.assertEqual(error.exception.status_code, 404)
+        self.assertEqual(error.exception.detail, "Снимок отчета по лоту не найден")
         get_source_provider.assert_not_called()
 
     async def test_list_bid_candidate_reports_reads_local_snapshots_without_external_fetch(self) -> None:

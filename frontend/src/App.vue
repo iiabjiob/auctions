@@ -4929,7 +4929,7 @@ onUnmounted(() => {
               </ul>
             </div>
             <div v-if="decisionReportNextActions.length" class="decision-report-panel__group">
-              <h3>Дальше</h3>
+              <h3>Следующие действия</h3>
               <ul class="detail-bullet-list">
                 <li v-for="action in decisionReportNextActions" :key="`${action.action}-${action.label}`">
                   {{ action.label }}<span v-if="action.deadline"> · {{ action.deadline }}</span>
@@ -4937,7 +4937,7 @@ onUnmounted(() => {
               </ul>
             </div>
           </template>
-          <div v-else class="detail-muted">Отчет решения появится после локальной генерации snapshot</div>
+          <div v-else class="detail-muted">Отчет решения появится после локальной генерации снимка</div>
         </section>
 
         <section v-if="economyFields.length" class="detail-section">

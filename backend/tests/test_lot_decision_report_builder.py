@@ -115,6 +115,7 @@ class LotDecisionReportBuilderTests(unittest.TestCase):
             ActionRecommendation.REQUEST_DOCS,
             {action.action for action in report.next_actions},
         )
+        self.assertIn("Запросить документы", {action.label for action in report.next_actions})
 
     def test_profile_blocker_downgrades_decision(self) -> None:
         record = make_record(lot_name="Blocked tracked excavator", score=92, level="high")
