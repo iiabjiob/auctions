@@ -4,15 +4,17 @@ import asyncio
 import json
 import logging
 from decimal import Decimal
+from typing import Literal
 from urllib.error import HTTPError, URLError
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
+from sqlalchemy import case, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
 from app.infrastructure.db.database import AsyncSessionLocal, get_db
-from app.models import UserModel
+from app.models import AuctionLotDecisionReport, UserModel
 from app.schemas.analysis_config import AuctionAnalysisConfigResponse, AuctionAnalysisConfigUpdate
 from app.schemas.auctions import (
     AuctionDetailResponse,
@@ -27,7 +29,12 @@ from app.schemas.auctions import (
     LotWorkspaceRefreshResponse,
     LotWorkspaceResponse,
 )
-from app.services.auction_catalog import list_lots_for_datagrid, list_persisted_lots_for_datagrid, list_persisted_lot_column_histogram
+from app.schemas.lot_decision_report import DecisionLevel, LotDecisionReport
+from app.services.auction_catalog import (
+    list_lots_for_datagrid,
+    list_persisted_lot_column_histogram,
+    list_persisted_lots_for_datagrid,
+)
 from app.services.auction_analysis_config import auction_analysis_config_service
 from app.services.auction_sources import get_source_provider, list_source_infos
 from app.services.auction_workspace import (
@@ -264,6 +271,74 @@ async def get_lots_column_histogram(
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.get("/lots/{id}/decision-report", response_model=LotDecisionReport)
+async def get_lot_decision_report(
+    id: int,
+    profile_hash: str | None = Query(default=None),
+    session: AsyncSession = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
+) -> LotDecisionReport:
+    statement = select(AuctionLotDecisionReport).where(AuctionLotDecisionReport.lot_record_id == id)
+    if profile_hash is None:
+        statement = statement.where(AuctionLotDecisionReport.profile_hash.is_(None))
+    else:
+        statement = statement.where(AuctionLotDecisionReport.profile_hash == profile_hash)
+    snapshot = await session.scalar(statement.order_by(AuctionLotDecisionReport.generated_at.desc()).limit(1))
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Decision report snapshot was not found")
+    return LotDecisionReport.model_validate(snapshot.report_payload)
+
+
+@router.get("/decision-reports", response_model=list[LotDecisionReport])
+async def list_lot_decision_reports(
+    kind: Literal["top", "bid_candidates", "inspect_candidates"] = Query(default="top"),
+    decision_level: DecisionLevel | None = Query(default=None),
+    profile_hash: str | None = Query(default=None),
+    notification_should_send: bool | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    session: AsyncSession = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
+) -> list[LotDecisionReport]:
+    statement = select(AuctionLotDecisionReport)
+    if profile_hash is None:
+        statement = statement.where(AuctionLotDecisionReport.profile_hash.is_(None))
+    else:
+        statement = statement.where(AuctionLotDecisionReport.profile_hash == profile_hash)
+    if notification_should_send is not None:
+        statement = statement.where(AuctionLotDecisionReport.notification_should_send.is_(notification_should_send))
+    if decision_level is not None:
+        statement = statement.where(AuctionLotDecisionReport.decision_level == decision_level.value)
+    elif kind == "bid_candidates":
+        statement = statement.where(AuctionLotDecisionReport.decision_level == DecisionLevel.BID_CANDIDATE.value)
+    elif kind == "inspect_candidates":
+        statement = statement.where(
+            AuctionLotDecisionReport.decision_level.in_(
+                [DecisionLevel.INSPECT.value, DecisionLevel.CALCULATE.value]
+            )
+        )
+
+    priority_order = case(
+        (AuctionLotDecisionReport.decision_level == DecisionLevel.BID_CANDIDATE.value, 0),
+        (AuctionLotDecisionReport.decision_level == DecisionLevel.CALCULATE.value, 1),
+        (AuctionLotDecisionReport.decision_level == DecisionLevel.INSPECT.value, 2),
+        (AuctionLotDecisionReport.decision_level == DecisionLevel.WATCH.value, 3),
+        else_=4,
+    )
+    snapshots = list(
+        (
+            await session.scalars(
+                statement.order_by(
+                    AuctionLotDecisionReport.notification_should_send.desc(),
+                    priority_order,
+                    AuctionLotDecisionReport.generated_at.desc(),
+                    AuctionLotDecisionReport.id.desc(),
+                ).limit(limit)
+            )
+        ).all()
+    )
+    return [LotDecisionReport.model_validate(snapshot.report_payload) for snapshot in snapshots]
 
 
 def _parse_grid_filter(payload: str | None) -> dict | None:

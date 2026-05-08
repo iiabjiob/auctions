@@ -120,6 +120,18 @@ updates the existing row or creates it when missing. `report_hash` is computed
 from meaningful report content and excludes `generated_at`, so unchanged report
 content keeps a stable hash across regeneration.
 
+Read-only API endpoints expose persisted snapshots only:
+- `GET /api/v1/auctions/lots/{id}/decision-report`
+- `GET /api/v1/auctions/decision-reports`
+
+These endpoints read the local `auction_lot_decision_reports` table and validate
+the stored payload back into `LotDecisionReport`. They do not call source
+providers, refresh details, fetch external data, send notifications, or generate
+new reports on demand. The list endpoint supports `kind=top`,
+`kind=bid_candidates`, and `kind=inspect_candidates`, plus optional
+`decision_level`, `profile_hash`, `notification_should_send`, and `limit`
+filters.
+
 The report is a presentation and delivery contract, not a scoring engine. It
 must not change score values or scoring formulas. Telegram should later render
 messages from this report or a derivative notification contract, but sending and
