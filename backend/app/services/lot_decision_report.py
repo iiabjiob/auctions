@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -13,6 +15,7 @@ from app.schemas.lot_decision_report import (
     LotDecisionReason,
     LotDecisionReport,
     LotDecisionRisk,
+    LotNotificationEligibility,
 )
 from app.schemas.scoring_profile import LotScoringProfile, build_lot_scoring_profile_hash
 from app.schemas.scoring_profile_fit import LotProfileFitEvaluation
@@ -22,6 +25,8 @@ from app.services.scoring_profile_fit import evaluate_lot_profile_fit
 
 
 NEAR_DEADLINE_HOURS = 72
+NOTIFICATION_NEAR_DEADLINE_HOURS = 72
+NOTIFICATION_HIGH_SCORE = 85
 DEFAULT_TARGET_ROI = Decimal("0.25")
 ECONOMICS_COST_FIELDS = (
     "platform_fee",
@@ -156,6 +161,29 @@ def calculate_lot_economics_decision(
         estimated_profit=estimated_profit,
         confidence=confidence,
         missing_inputs=tuple(missing_inputs),
+    )
+
+
+def evaluate_lot_notification_eligibility(
+    report: LotDecisionReport,
+    profile: LotScoringProfile | None = None,
+) -> LotNotificationEligibility:
+    profile_hash = report.profile_hash
+    if profile_hash is None and profile is not None:
+        profile_hash = build_lot_scoring_profile_hash(profile)
+
+    blockers = _notification_blockers(report)
+    reasons = _notification_reasons(report)
+    priority = _notification_priority(report, blocked=bool(blockers))
+    should_notify = not blockers and bool(reasons) and priority != "low"
+
+    return LotNotificationEligibility(
+        should_notify=should_notify,
+        priority=priority if should_notify else "low",
+        reasons=tuple(reasons if should_notify else ()),
+        blockers=tuple(blockers),
+        dedupe_key=_notification_dedupe_key(report, profile_hash=profile_hash),
+        cooldown_key=_notification_cooldown_key(report, profile_hash=profile_hash),
     )
 
 
@@ -480,3 +508,138 @@ def _economics_missing_inputs(
     if not has_cost_inputs:
         missing.append("expected_costs")
     return missing
+
+
+def _notification_blockers(report: LotDecisionReport) -> list[str]:
+    blockers: list[str] = []
+    if report.decision_level in {DecisionLevel.IGNORE, DecisionLevel.WATCH}:
+        blockers.append("decision_level_not_high")
+    if report.recommendation == ActionRecommendation.IGNORE:
+        blockers.append("recommendation_ignore")
+    for risk in report.risks:
+        if risk.level == "high":
+            blockers.append(f"high_risk:{risk.code}")
+    return blockers
+
+
+def _notification_reasons(report: LotDecisionReport) -> list[str]:
+    reasons: list[str] = []
+    high_decision = report.decision_level in {DecisionLevel.CALCULATE, DecisionLevel.BID_CANDIDATE}
+    high_score = report.rating_score >= NOTIFICATION_HIGH_SCORE
+    profile_fit = _report_has_profile_fit(report)
+    near_deadline = _report_is_near_deadline(report)
+    changed_opportunity = _report_has_meaningful_opportunity(report)
+
+    if high_decision:
+        reasons.append(f"decision_level:{report.decision_level.value}")
+    if high_score:
+        reasons.append("high_score")
+    if profile_fit:
+        reasons.append("profile_fit")
+    if near_deadline:
+        reasons.append("near_deadline")
+    if changed_opportunity:
+        reasons.append("meaningful_opportunity")
+
+    if not high_decision and not (report.decision_level == DecisionLevel.INSPECT and high_score):
+        return []
+    if not (high_score or profile_fit or near_deadline):
+        return []
+    return reasons
+
+
+def _notification_priority(report: LotDecisionReport, *, blocked: bool) -> str:
+    if blocked:
+        return "low"
+    near_deadline = _report_is_near_deadline(report)
+    high_score = report.rating_score >= NOTIFICATION_HIGH_SCORE
+    profile_fit = _report_has_profile_fit(report)
+    if report.decision_level == DecisionLevel.BID_CANDIDATE and near_deadline:
+        return "urgent"
+    if report.decision_level == DecisionLevel.BID_CANDIDATE or (high_score and profile_fit):
+        return "high"
+    if report.decision_level == DecisionLevel.CALCULATE or near_deadline:
+        return "medium"
+    return "low"
+
+
+def _report_has_profile_fit(report: LotDecisionReport) -> bool:
+    if report.profile_hash is None and report.profile_fit_summary is None:
+        return False
+    if any(reason.code == "profile.match" for reason in report.reasons):
+        return True
+    return report.profile_fit_summary is not None and not any(
+        risk.code == "profile.blocker" for risk in report.risks
+    )
+
+
+def _report_is_near_deadline(report: LotDecisionReport) -> bool:
+    deadline = _parse_report_deadline(report.deadline)
+    if deadline is None:
+        return False
+    generated_at = report.generated_at
+    if generated_at.tzinfo is not None:
+        generated_at = generated_at.astimezone(UTC).replace(tzinfo=None)
+    remaining_hours = (deadline - generated_at).total_seconds() / 3600
+    return 0 <= remaining_hours <= NOTIFICATION_NEAR_DEADLINE_HOURS
+
+
+def _parse_report_deadline(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    normalized = value.strip()
+    for pattern in (
+        "%d.%m.%Y %H:%M:%S",
+        "%d.%m.%Y %H:%M",
+        "%d/%m/%Y %H:%M:%S",
+        "%d/%m/%Y %H:%M",
+        "%Y-%m-%dT%H:%M:%S",
+    ):
+        try:
+            return datetime.strptime(normalized[:19], pattern)
+        except ValueError:
+            continue
+    return None
+
+
+def _report_has_meaningful_opportunity(report: LotDecisionReport) -> bool:
+    if report.economics and report.economics.max_buy_price is not None:
+        return True
+    return bool(report.reasons or report.risks)
+
+
+def _notification_dedupe_key(report: LotDecisionReport, *, profile_hash: str | None) -> str:
+    return "lot-notification:" + _stable_hash(
+        {
+            "source": report.source,
+            "auction_id": report.auction_id,
+            "lot_id": report.lot_id,
+            "record_id": report.record_id,
+            "profile_hash": profile_hash,
+            "rating_score": report.rating_score,
+            "rating_level": report.rating_level,
+            "decision_level": report.decision_level.value,
+            "recommendation": report.recommendation.value,
+            "economics": report.economics.model_dump(mode="json") if report.economics else None,
+            "risk_codes": [risk.code for risk in report.risks],
+            "reason_codes": [reason.code for reason in report.reasons],
+        }
+    )
+
+
+def _notification_cooldown_key(report: LotDecisionReport, *, profile_hash: str | None) -> str:
+    return "lot-notification-cooldown:" + _stable_hash(
+        {
+            "source": report.source,
+            "auction_id": report.auction_id,
+            "lot_id": report.lot_id,
+            "record_id": report.record_id,
+            "profile_hash": profile_hash,
+        }
+    )
+
+
+def _stable_hash(payload: dict[str, Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()

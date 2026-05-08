@@ -64,6 +64,17 @@ class LotEconomicsDecision(BaseModel):
     missing_inputs: tuple[str, ...] = Field(default_factory=tuple)
 
 
+class LotNotificationEligibility(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    should_notify: bool
+    priority: Literal["low", "medium", "high", "urgent"] = "low"
+    reasons: tuple[str, ...] = Field(default_factory=tuple)
+    blockers: tuple[str, ...] = Field(default_factory=tuple)
+    dedupe_key: str
+    cooldown_key: str
+
+
 class LotDecisionReport(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 

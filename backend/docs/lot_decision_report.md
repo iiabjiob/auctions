@@ -8,6 +8,7 @@ This slice is local-only:
 - it does not perform scoring
 - it does not scrape or fetch external data
 - it does not send Telegram messages
+- it does not call Telegram APIs or any external notification service
 - it does not persist decision report snapshots
 - it does not change frontend behavior
 
@@ -76,6 +77,31 @@ The max-buy calculation is conservative and explainable:
 `max_buy_price = (market_value - expected_costs) / (1 + target_roi)`.
 `target_roi` comes from an explicit helper argument, then profile
 `minimum_roi`, then the local default.
+
+`LotNotificationEligibility` is the Telegram-ready local notification contract.
+It includes:
+- `should_notify`
+- `priority`
+- `reasons`
+- `blockers`
+- `dedupe_key`
+- `cooldown_key`
+
+Use `evaluate_lot_notification_eligibility(report, profile=None)` to decide
+whether a decision report is eligible for future Telegram delivery. The helper
+does not send messages and does not integrate with Telegram. It only returns a
+local contract that a later outbox/sender slice can consume.
+
+Eligibility is intentionally conservative:
+- `ignore` and `watch` reports are blocked
+- high risks block notification
+- notifiable reports need a high decision level, or an inspect-level report
+  with a high score
+- a qualifying report must also have a high score, profile-fit signal, or near
+  deadline
+- `dedupe_key` changes when meaningful report state changes
+- `cooldown_key` stays stable for the same lot/profile so a future sender can
+  rate-limit repeated alerts
 
 The report is a presentation and delivery contract, not a scoring engine. It
 must not change score values or scoring formulas. Telegram should later render
