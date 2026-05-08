@@ -75,6 +75,20 @@ class LotNotificationEligibility(BaseModel):
     cooldown_key: str
 
 
+class TelegramLotMessage(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    text: str
+    parse_mode: Literal["HTML"] = "HTML"
+    lot_record_id: int
+    source: str
+    auction_id: str
+    lot_id: str
+    decision_level: DecisionLevel
+    recommendation: ActionRecommendation
+    message_length: int
+
+
 class LotDecisionReport(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 

@@ -132,6 +132,14 @@ new reports on demand. The list endpoint supports `kind=top`,
 `decision_level`, `profile_hash`, `notification_should_send`, and `limit`
 filters.
 
+`TelegramLotMessage` is a rendered message contract for future Telegram
+delivery. Use `render_telegram_lot_message(report, link=...)` to format a short
+HTML-safe text message from an existing `LotDecisionReport`. The renderer
+includes title, region, price, score, decision, max buy when available,
+deadline, reasons, risks, and link. It only returns a local message object and
+does not call Telegram APIs, send messages, enqueue outbox rows, or fetch
+external data.
+
 The report is a presentation and delivery contract, not a scoring engine. It
 must not change score values or scoring formulas. Telegram should later render
 messages from this report or a derivative notification contract, but sending and

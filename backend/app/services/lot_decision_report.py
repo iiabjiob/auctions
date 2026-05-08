@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from html import escape
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -24,6 +25,7 @@ from app.schemas.lot_decision_report import (
     LotDecisionReport,
     LotDecisionRisk,
     LotNotificationEligibility,
+    TelegramLotMessage,
 )
 from app.schemas.scoring_profile import LotScoringProfile, build_lot_scoring_profile_hash
 from app.schemas.scoring_profile_fit import LotProfileFitEvaluation
@@ -45,6 +47,9 @@ ECONOMICS_COST_FIELDS = (
     "legal_cost",
     "other_costs",
 )
+TELEGRAM_MAX_MESSAGE_LENGTH = 4096
+TELEGRAM_REASON_LIMIT = 3
+TELEGRAM_RISK_LIMIT = 2
 
 
 def build_lot_decision_report(
@@ -198,6 +203,44 @@ def evaluate_lot_notification_eligibility(
 def build_lot_decision_report_snapshot_hash(report: LotDecisionReport) -> str:
     payload = report.model_dump(mode="json", exclude_none=True, exclude={"generated_at"})
     return _stable_hash(payload)
+
+
+def render_telegram_lot_message(
+    report: LotDecisionReport,
+    *,
+    link: str | None = None,
+    max_length: int = TELEGRAM_MAX_MESSAGE_LENGTH,
+) -> TelegramLotMessage:
+    message_link = link or _default_lot_link(report)
+    lines = [
+        f"<b>{_html(report.title or 'Lot decision report')}</b>",
+        _field_line("Region", report.region),
+        _field_line("Price", report.current_price),
+        f"Score: {report.rating_score} ({_html(report.rating_level)})",
+        f"Decision: {_html(report.decision_level.value)} / {_html(report.recommendation.value)}",
+        _field_line("Max buy", _format_decimal(report.economics.max_buy_price) if report.economics else None),
+        _field_line("Deadline", report.deadline),
+    ]
+    reason_lines = _message_items("Reasons", [reason.message for reason in report.reasons], TELEGRAM_REASON_LIMIT)
+    risk_lines = _message_items("Risks", [risk.message for risk in report.risks], TELEGRAM_RISK_LIMIT)
+    if reason_lines:
+        lines.extend(reason_lines)
+    if risk_lines:
+        lines.extend(risk_lines)
+    if message_link:
+        lines.append(f"Link: {_html(message_link)}")
+
+    text = _trim_message("\n".join(line for line in lines if line), max_length=max_length)
+    return TelegramLotMessage(
+        text=text,
+        lot_record_id=report.record_id,
+        source=report.source,
+        auction_id=report.auction_id,
+        lot_id=report.lot_id,
+        decision_level=report.decision_level,
+        recommendation=report.recommendation,
+        message_length=len(text),
+    )
 
 
 async def upsert_lot_decision_report_snapshot(
@@ -354,7 +397,11 @@ def _next_actions(
                 deadline=deadline,
             )
         )
-    if decision_level == DecisionLevel.BID_CANDIDATE and work_item and getattr(work_item, "max_purchase_price", None) is not None:
+    if (
+        decision_level == DecisionLevel.BID_CANDIDATE
+        and work_item
+        and getattr(work_item, "max_purchase_price", None) is not None
+    ):
         actions.append(
             LotDecisionNextAction(
                 action=ActionRecommendation.PREPARE_BID,
@@ -717,3 +764,43 @@ def _stable_hash(payload: dict[str, Any]) -> str:
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
     ).hexdigest()
+
+
+def _field_line(label: str, value: object | None) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return f"{label}: {_html(text)}"
+
+
+def _message_items(label: str, values: list[str], limit: int) -> list[str]:
+    items = [value.strip() for value in values if isinstance(value, str) and value.strip()]
+    if not items:
+        return []
+    lines = [f"{label}:"]
+    lines.extend(f"- {_html(value)}" for value in items[:limit])
+    return lines
+
+
+def _format_decimal(value: Decimal | None) -> str | None:
+    if value is None:
+        return None
+    rounded = value.quantize(Decimal("1")) if value == value.to_integral() else value.normalize()
+    return format(rounded, "f")
+
+
+def _default_lot_link(report: LotDecisionReport) -> str:
+    return f"/auctions/lots/{report.record_id}/decision-report"
+
+
+def _trim_message(text: str, *, max_length: int) -> str:
+    if len(text) <= max_length:
+        return text
+    marker = "\n..."
+    return text[: max(0, max_length - len(marker))].rstrip() + marker
+
+
+def _html(value: object) -> str:
+    return escape(str(value), quote=False)
