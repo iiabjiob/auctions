@@ -65,6 +65,14 @@ class Settings(BaseSettings):
     auction_analysis_event_chunk_size: int = 25
     auction_analysis_event_pause_seconds: float = 0.1
     auction_analysis_use_active_scoring_profile: bool = False
+    telegram_bot_token: str | None = None
+    telegram_chat_id: str | None = None
+    telegram_sender_dry_run: bool = True
+    telegram_sender_batch_limit: int = 20
+    telegram_sender_max_attempts: int = 3
+    telegram_sender_base_backoff_seconds: int = 60
+    telegram_sender_poll_interval_seconds: int = 60
+    telegram_sender_request_timeout_seconds: float = 10.0
     grid_change_feed_limit: int = 1000
     grid_change_feed_max_limit: int = 1000
 

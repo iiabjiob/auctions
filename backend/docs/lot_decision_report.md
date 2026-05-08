@@ -170,10 +170,24 @@ pending/sent row for the same `cooldown_key` is still inside its cooldown
 window, the helper records the new opportunity as `skipped` instead of creating
 another pending notification.
 
+`app.services.telegram_sender.send_pending_telegram_notifications(...)` is the
+local sender service for pending outbox rows. It selects `pending` rows whose
+`next_attempt_at` is empty or due, sends rendered `message_payload` through the
+Telegram Bot API, then marks rows:
+- `sent` with `sent_at` on success
+- still `pending` with incremented `attempt_count` and exponential
+  `next_attempt_at` when a retryable failure has attempts remaining
+- `failed` with `failed_at` and `last_error` when attempts are exhausted or the
+  error is non-retryable
+
+`app.worker.telegram_sender_worker` reads `telegram_bot_token` and
+`telegram_chat_id` from config, plus sender limit/retry/backoff settings. Dry
+run mode is enabled by default through `telegram_sender_dry_run`; it selects due
+rows for metrics but does not call Telegram and does not mutate outbox rows.
+
 The report is a presentation and delivery contract, not a scoring engine. It
 must not change score values or scoring formulas. Telegram should later render
-messages from this report or a derivative notification contract, but actual
-sending belongs to a later slice.
+messages from this report or a derivative notification contract.
 
 Use `lot_decision_report_canonical_json(...)` and
 `build_lot_decision_report_hash(...)` when a deterministic serialized payload or

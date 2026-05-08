@@ -1,0 +1,231 @@
+from __future__ import annotations
+
+import asyncio
+import json
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from typing import Protocol
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+from sqlalchemy import case, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.auction import TelegramNotificationOutbox
+from app.schemas.lot_decision_report import TelegramNotificationStatus
+
+
+TELEGRAM_SEND_URL_TEMPLATE = "https://api.telegram.org/bot{bot_token}/sendMessage"
+
+
+class TelegramSenderError(Exception):
+    def __init__(self, message: str, *, retryable: bool = True) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+
+
+class TelegramMessageSender(Protocol):
+    async def send_message(
+        self,
+        *,
+        bot_token: str,
+        chat_id: str,
+        text: str,
+        parse_mode: str,
+    ) -> None:
+        ...
+
+
+@dataclass(frozen=True)
+class TelegramSenderBatchResult:
+    selected: int = 0
+    sent: int = 0
+    failed: int = 0
+    retried: int = 0
+    dry_run: int = 0
+
+    def model_dump(self, mode: str = "python") -> dict[str, int]:  # noqa: ARG002
+        return {
+            "selected": self.selected,
+            "sent": self.sent,
+            "failed": self.failed,
+            "retried": self.retried,
+            "dry_run": self.dry_run,
+        }
+
+
+class TelegramBotApiSender:
+    def __init__(self, *, timeout_seconds: float = 10.0) -> None:
+        self.timeout_seconds = timeout_seconds
+
+    async def send_message(
+        self,
+        *,
+        bot_token: str,
+        chat_id: str,
+        text: str,
+        parse_mode: str,
+    ) -> None:
+        await asyncio.to_thread(
+            self._send_message_sync,
+            bot_token=bot_token,
+            chat_id=chat_id,
+            text=text,
+            parse_mode=parse_mode,
+        )
+
+    def _send_message_sync(self, *, bot_token: str, chat_id: str, text: str, parse_mode: str) -> None:
+        payload = json.dumps(
+            {
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": parse_mode,
+                "disable_web_page_preview": True,
+            }
+        ).encode("utf-8")
+        request = Request(
+            TELEGRAM_SEND_URL_TEMPLATE.format(bot_token=bot_token),
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=self.timeout_seconds) as response:
+                response_payload = json.loads(response.read().decode("utf-8"))
+        except HTTPError as error:
+            retryable = error.code == 429 or 500 <= error.code < 600
+            raise TelegramSenderError(f"Telegram HTTP {error.code}", retryable=retryable) from error
+        except (TimeoutError, URLError, OSError) as error:
+            raise TelegramSenderError(str(error) or "Telegram request failed", retryable=True) from error
+        if not isinstance(response_payload, dict) or not response_payload.get("ok"):
+            description = response_payload.get("description") if isinstance(response_payload, dict) else None
+            raise TelegramSenderError(description or "Telegram API returned unsuccessful response", retryable=False)
+
+
+async def send_pending_telegram_notifications(
+    session: AsyncSession,
+    *,
+    bot_token: str | None,
+    chat_id: str | None,
+    limit: int,
+    dry_run: bool,
+    sender: TelegramMessageSender | None = None,
+    max_attempts: int = 3,
+    base_backoff_seconds: int = 60,
+    now: datetime | None = None,
+) -> TelegramSenderBatchResult:
+    if limit <= 0:
+        return TelegramSenderBatchResult()
+    current_time = now or datetime.now(UTC)
+    entries = await _pending_entries(session, limit=limit, now=current_time)
+    if not entries:
+        return TelegramSenderBatchResult()
+    if dry_run:
+        return TelegramSenderBatchResult(selected=len(entries), dry_run=len(entries))
+    if not bot_token or not chat_id:
+        raise ValueError("telegram_bot_token and telegram_chat_id are required when dry-run is disabled")
+
+    resolved_sender = sender or TelegramBotApiSender()
+    sent = 0
+    failed = 0
+    retried = 0
+    for entry in entries:
+        message_payload = entry.message_payload if isinstance(entry.message_payload, dict) else {}
+        try:
+            await resolved_sender.send_message(
+                bot_token=bot_token,
+                chat_id=chat_id,
+                text=str(message_payload.get("text") or ""),
+                parse_mode=str(message_payload.get("parse_mode") or "HTML"),
+            )
+        except TelegramSenderError as error:
+            retryable = error.retryable
+            if _mark_retry_or_failed(
+                entry,
+                message=str(error),
+                retryable=retryable,
+                max_attempts=max_attempts,
+                base_backoff_seconds=base_backoff_seconds,
+                now=current_time,
+            ):
+                retried += 1
+            else:
+                failed += 1
+            continue
+        except Exception as error:
+            if _mark_retry_or_failed(
+                entry,
+                message=str(error) or "Unexpected Telegram sender error",
+                retryable=True,
+                max_attempts=max_attempts,
+                base_backoff_seconds=base_backoff_seconds,
+                now=current_time,
+            ):
+                retried += 1
+            else:
+                failed += 1
+            continue
+
+        _mark_sent(entry, now=current_time)
+        sent += 1
+
+    await session.flush()
+    return TelegramSenderBatchResult(selected=len(entries), sent=sent, failed=failed, retried=retried)
+
+
+async def _pending_entries(session: AsyncSession, *, limit: int, now: datetime) -> list[TelegramNotificationOutbox]:
+    priority_order = case(
+        (TelegramNotificationOutbox.priority == "urgent", 0),
+        (TelegramNotificationOutbox.priority == "high", 1),
+        (TelegramNotificationOutbox.priority == "medium", 2),
+        else_=3,
+    )
+    statement = (
+        select(TelegramNotificationOutbox)
+        .where(TelegramNotificationOutbox.status == TelegramNotificationStatus.PENDING.value)
+        .where(
+            or_(
+                TelegramNotificationOutbox.next_attempt_at.is_(None),
+                TelegramNotificationOutbox.next_attempt_at <= now,
+            )
+        )
+        .order_by(priority_order, TelegramNotificationOutbox.scheduled_at.asc(), TelegramNotificationOutbox.id.asc())
+        .limit(limit)
+        .with_for_update(skip_locked=True)
+    )
+    return list((await session.scalars(statement)).all())
+
+
+def _mark_sent(entry: TelegramNotificationOutbox, *, now: datetime) -> None:
+    entry.status = TelegramNotificationStatus.SENT.value
+    entry.sent_at = now
+    entry.failed_at = None
+    entry.next_attempt_at = None
+    entry.last_error = None
+    entry.updated_at = now
+
+
+def _mark_retry_or_failed(
+    entry: TelegramNotificationOutbox,
+    *,
+    message: str,
+    retryable: bool,
+    max_attempts: int,
+    base_backoff_seconds: int,
+    now: datetime,
+) -> bool:
+    entry.attempt_count = int(entry.attempt_count or 0) + 1
+    entry.last_error = message[:2000]
+    entry.updated_at = now
+    if retryable and entry.attempt_count < max(1, max_attempts):
+        entry.status = TelegramNotificationStatus.PENDING.value
+        entry.next_attempt_at = now + timedelta(seconds=_backoff_seconds(entry.attempt_count, base_backoff_seconds))
+        return True
+    entry.status = TelegramNotificationStatus.FAILED.value
+    entry.failed_at = now
+    entry.next_attempt_at = None
+    return False
+
+
+def _backoff_seconds(attempt_count: int, base_backoff_seconds: int) -> int:
+    return max(1, base_backoff_seconds) * (2 ** max(0, attempt_count - 1))
