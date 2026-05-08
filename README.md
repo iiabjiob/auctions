@@ -12,8 +12,10 @@ Clean monorepo starter for:
 1. Prepare env files:
    `cp backend/.env.prod.example backend/.env.prod`
    `cp backend/.env.db.prod.example backend/.env.db.prod`
+   `cp frontend/.env.example frontend/.env.local`
 
 2. Review secrets in `backend/.env.prod` and `backend/.env.db.prod`.
+   If the frontend API runs on a different origin, set `VITE_API_BASE_URL` in `frontend/.env.local`.
 
 3. Start the stack:
    `docker compose -f docker-compose.prod.yml up -d --build`
