@@ -23,3 +23,5 @@ Clean monorepo starter for:
 The production stack includes `db`, `redis`, `migrations`, `backend`, auction sync/analysis/enrichment workers, `telegram-sender-worker`, and `nginx`.
 
 Telegram delivery is dry-run by default. To send real messages, set `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, and `TELEGRAM_SENDER_DRY_RUN=False`.
+To preview one visual test message without touching the outbox, run `uv run python scripts/send_test_telegram_message.py --print-only` from `backend/`.
+To send that test message to Telegram, run `uv run python scripts/send_test_telegram_message.py` from `backend/`.

@@ -94,12 +94,31 @@ class TelegramBotApiSender:
                 response_payload = json.loads(response.read().decode("utf-8"))
         except HTTPError as error:
             retryable = error.code == 429 or 500 <= error.code < 600
-            raise TelegramSenderError(f"Telegram HTTP {error.code}", retryable=retryable) from error
+            raise TelegramSenderError(_telegram_http_error_message(error), retryable=retryable) from error
         except (TimeoutError, URLError, OSError) as error:
             raise TelegramSenderError(str(error) or "Telegram request failed", retryable=True) from error
         if not isinstance(response_payload, dict) or not response_payload.get("ok"):
             description = response_payload.get("description") if isinstance(response_payload, dict) else None
             raise TelegramSenderError(description or "Telegram API returned unsuccessful response", retryable=False)
+
+
+def _telegram_http_error_message(error: HTTPError) -> str:
+    fallback = f"Telegram HTTP {error.code}"
+    try:
+        payload = error.read().decode("utf-8")
+    except Exception:
+        return fallback
+    if not payload:
+        return fallback
+    try:
+        response = json.loads(payload)
+    except json.JSONDecodeError:
+        return f"{fallback}: {payload[:500]}"
+    if isinstance(response, dict):
+        description = response.get("description")
+        if description:
+            return f"{fallback}: {description}"
+    return f"{fallback}: {payload[:500]}"
 
 
 async def send_pending_telegram_notifications(

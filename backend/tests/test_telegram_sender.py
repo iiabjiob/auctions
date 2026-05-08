@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import unittest
+from io import BytesIO
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from urllib.error import HTTPError
 from unittest.mock import AsyncMock, patch
 
 from app.models.auction import TelegramNotificationOutbox
 from app.schemas.lot_decision_report import TelegramNotificationStatus
 from app.services.telegram_sender import (
+    TelegramBotApiSender,
     TelegramSenderBatchResult,
     TelegramSenderError,
     send_pending_telegram_notifications,
@@ -93,6 +96,28 @@ def make_entry(**overrides: object) -> TelegramNotificationOutbox:
 
 
 class TelegramSenderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_bot_api_sender_includes_telegram_error_description(self) -> None:
+        response = BytesIO(b'{"ok": false, "error_code": 400, "description": "Bad Request: chat not found"}')
+        error = HTTPError(
+            url="https://api.telegram.org/botTOKEN/sendMessage",
+            code=400,
+            msg="Bad Request",
+            hdrs={},
+            fp=response,
+        )
+
+        with patch("app.services.telegram_sender.urlopen", side_effect=error):
+            with self.assertRaises(TelegramSenderError) as context:
+                await TelegramBotApiSender().send_message(
+                    bot_token="TOKEN",
+                    chat_id="@missing",
+                    text="hello",
+                    parse_mode="HTML",
+                )
+
+        self.assertEqual(str(context.exception), "Telegram HTTP 400: Bad Request: chat not found")
+        self.assertFalse(context.exception.retryable)
+
     async def test_successful_send_marks_entry_sent(self) -> None:
         entry = make_entry()
         sender = FakeSender()
