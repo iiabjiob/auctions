@@ -60,7 +60,7 @@ class Settings(BaseSettings):
     auction_publication_sync_limit: int = 0
     auction_analysis_enabled: bool = True
     auction_analysis_interval_seconds: int = 60 * 30
-    auction_analysis_batch_size: int = 250
+    auction_analysis_batch_size: int = 2000
     auction_analysis_commit_chunk_size: int = 25
     auction_analysis_event_chunk_size: int = 25
     auction_analysis_event_pause_seconds: float = 0.1
