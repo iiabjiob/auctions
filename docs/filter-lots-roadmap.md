@@ -392,7 +392,8 @@ dedupe_key
 priority
 cooldown_until
 Реализация по слайсам
-Slice 1 — Decision Report contract only
+
+[x] Slice 1 — Decision Report contract only
 Goal:
 Introduce a local-only LotDecisionReport contract without changing runtime behavior.
 
@@ -441,7 +442,8 @@ Final response format:
 - Files changed
 - Validation commands run and results
 - Risks/follow-up
-Slice 2 — Build Decision Report from local data
+
+[x] Slice 2 — Build Decision Report from local data
 Goal:
 Add a local-only builder that creates LotDecisionReport from existing local analytics.
 
@@ -480,7 +482,8 @@ Validation:
 - Run relevant backend tests.
 - Run compile/import validation.
 - Run git diff --check.
-Slice 3 — Economics / max buy price contract
+
+[x] Slice 3 — Economics / max buy price contract
 Goal:
 Add a conservative max-buy economics helper for decision reports.
 
@@ -509,7 +512,8 @@ Tasks:
    - expected costs reduce max buy price
    - target ROI changes max buy price
 6. Wire the economics object into LotDecisionReport builder.
-Slice 4 — Notification eligibility contract
+
+[x] Slice 4 — Notification eligibility contract
 Goal:
 Add Telegram-ready notification eligibility without sending messages.
 
@@ -539,7 +543,8 @@ Tasks:
    - blocker suppresses notification
    - dedupe key is deterministic
 5. Add docs explaining Telegram will consume this later.
-Slice 5 — Persist decision report snapshot
+
+[x] Slice 5 — Persist decision report snapshot
 Goal:
 Persist latest LotDecisionReport snapshot for fast UI/Telegram consumption.
 
@@ -566,7 +571,8 @@ Tasks:
    - report snapshot is created
    - unchanged report hash is stable
    - changed score/evidence changes report
-Slice 6 — Fast report API
+
+[x] Slice 6 — Fast report API
 Goal:
 Expose read-only decision reports for UI.
 
@@ -578,7 +584,8 @@ Tasks:
    - inspect candidates
 3. Must read local DB only.
 4. Add route tests proving no external fetch.
-Slice 7 — Telegram message rendering, no sending
+
+[x] Slice 7 — Telegram message rendering, no sending
 Goal:
 Render Telegram messages from LotDecisionReport without sending.
 
@@ -597,7 +604,8 @@ Tasks:
    - link
 3. Add tests for formatting and length.
 4. Do not call Telegram API yet.
-Slice 8 — Telegram outbox
+
+[x] Slice 8 — Telegram outbox
 Goal:
 Add reliable Telegram outbox, still no direct send from scoring worker.
 
@@ -610,7 +618,8 @@ Tasks:
    - failed
    - skipped
 4. Add tests for dedupe/cooldown.
-Slice 9 — Telegram sender worker
+
+[x] Slice 9 — Telegram sender worker
 Goal:
 Send pending Telegram outbox messages safely.
 
@@ -621,63 +630,3 @@ Tasks:
 4. Mark sent/failed.
 5. Add dry-run mode.
 Я бы начал вот с этого
-
-Первый Codex prompt давай такой:
-
-Goal:
-Introduce a local-only LotDecisionReport contract that will become the shared output for UI decision reports and future Telegram notifications.
-
-Important constraints:
-- Do NOT change scoring formulas or score values.
-- Do NOT change frontend behavior.
-- Do NOT send Telegram messages.
-- Do NOT persist decision reports yet.
-- Do NOT fetch external data.
-- Keep this additive and reviewable.
-- Existing tests must continue to pass.
-
-Tasks:
-1. Add backend schemas for:
-   - LotDecisionReport
-   - DecisionLevel
-   - ActionRecommendation
-   - LotDecisionReason
-   - LotDecisionRisk
-   - LotDecisionNextAction
-2. The report should include:
-   - lot identity: source, auction_id, lot_id, record_id
-   - display fields: title, source_title, region, current_price, deadline
-   - rating fields: rating_score, rating_level
-   - optional profile fields: profile_hash, profile_fit_summary
-   - decision_level
-   - recommendation
-   - reasons
-   - risks
-   - next_actions
-   - generated_at
-3. Use Pydantic models consistent with the backend schema style.
-4. Add deterministic JSON/hash helper if similar helpers already exist in the project.
-5. Do not wire this into workers, API routes, DB models, or frontend yet.
-6. Add focused tests proving:
-   - minimal valid report can be created
-   - enum values are stable
-   - serialization/hash is deterministic
-   - optional profile fields can be omitted
-7. Add backend docs explaining:
-   - DecisionReport is the shared decision output for UI and Telegram
-   - it is local-only
-   - it does not perform scoring, scraping, or notification sending
-   - future builders will derive it from LotEvidence, score_breakdown, economics, and profile fit
-
-Validation:
-- Run relevant backend tests.
-- Run compile/import validation.
-- Run git diff --check.
-
-Final response format:
-- Summary of what changed
-- Files changed
-- Validation commands run and results
-- Risks/follow-up
-
-Это правильный первый шаг: сначала контракт, потом builder, потом persistence/API/Telegram.

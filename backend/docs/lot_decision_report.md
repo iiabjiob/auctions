@@ -131,6 +131,12 @@ new reports on demand. The list endpoint supports `kind=top`,
 `decision_level`, `profile_hash`, `notification_should_send`, and `limit`
 filters.
 
+The frontend selected-lot detail pane reads the per-lot endpoint only after the
+local workspace card has supplied `record_id`. It shows the persisted snapshot
+as a compact read-only decision panel with loading, missing-snapshot, and error
+states. The UI does not generate reports, refresh source data, recalculate
+scores, or send Telegram messages.
+
 `TelegramLotMessage` is a rendered message contract for future Telegram
 delivery. Use `render_telegram_lot_message(report, link=...)` to format a short
 HTML-safe text message from an existing `LotDecisionReport`. The renderer

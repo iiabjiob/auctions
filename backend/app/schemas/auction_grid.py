@@ -64,12 +64,22 @@ class AuctionLotsGridPullRow(BaseModel):
     row: LotDatagridRow
 
 
+class AuctionLotsGridSummary(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    total: int = 0
+    new_count: int = Field(default=0, alias="newCount")
+    open_applications_count: int = Field(default=0, alias="openApplicationsCount")
+    high_rating_count: int = Field(default=0, alias="highRatingCount")
+
+
 class AuctionLotsGridPullResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     rows: list[AuctionLotsGridPullRow]
     total: int
     dataset_version: int = Field(alias="datasetVersion")
+    summary: AuctionLotsGridSummary = Field(default_factory=AuctionLotsGridSummary)
 
 
 class AuctionLotsGridHistogramRequest(AuctionLotsGridQueryOptions):

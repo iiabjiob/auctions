@@ -4,6 +4,17 @@ type ApiRequestInit = RequestInit & {
   auth?: boolean
 }
 
+export class ApiRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly body: unknown,
+  ) {
+    super(message)
+    this.name = 'ApiRequestError'
+  }
+}
+
 export async function apiRequest<T>(path: string, init?: ApiRequestInit): Promise<T> {
   const { auth = false, headers, ...requestInit } = init ?? {}
   const nextHeaders = new Headers(headers ?? {})
@@ -26,15 +37,17 @@ export async function apiRequest<T>(path: string, init?: ApiRequestInit): Promis
 
   if (!response.ok) {
     let detail = `API вернул ${response.status}`
+    let body: unknown = null
     try {
       const payload = (await response.json()) as { detail?: string }
+      body = payload
       if (typeof payload.detail === 'string' && payload.detail.trim()) {
         detail = payload.detail
       }
     } catch {
       // keep default detail
     }
-    throw new Error(detail)
+    throw new ApiRequestError(detail, response.status, body)
   }
 
   return (await response.json()) as T

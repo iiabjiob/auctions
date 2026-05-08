@@ -14,7 +14,11 @@ from app.schemas.auction_grid import (
     AuctionLotsGridPullResponse,
     AuctionLotsGridPullRow,
 )
-from app.services.auction_catalog import list_persisted_lot_column_histogram, pull_persisted_lots_for_grid
+from app.services.auction_catalog import (
+    list_persisted_lot_column_histogram,
+    pull_persisted_lots_for_grid,
+    summarize_persisted_lots_for_grid,
+)
 from app.services.auction_grid_state import AUCTION_LOTS_TABLE_ID, DEFAULT_GRID_WORKSPACE_ID, auction_lot_grid_row_id
 
 
@@ -57,6 +61,20 @@ async def pull_auction_lots_grid(
         sort_model=_normalize_sort_model(request.sort_model),
         grid_filter=request.filter_model,
     )
+    summary = await summarize_persisted_lots_for_grid(
+        session,
+        period=request.period,
+        source=request.source,
+        q=request.q,
+        status=request.status,
+        analysis_color=request.analysis_color,
+        min_price=request.min_price,
+        max_price=request.max_price,
+        only_new=request.only_new,
+        shortlist=request.shortlist,
+        min_rating=request.min_rating,
+        grid_filter=request.filter_model,
+    )
     return AuctionLotsGridPullResponse(
         rows=[
             AuctionLotsGridPullRow(
@@ -68,6 +86,7 @@ async def pull_auction_lots_grid(
         ],
         total=total,
         dataset_version=dataset_version,
+        summary=summary,
     )
 
 

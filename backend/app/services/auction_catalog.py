@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import Integer, Numeric, String, and_, cast, func, not_, or_, select
+from sqlalchemy import Integer, Numeric, String, and_, case, cast, func, not_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.auction import AuctionLotDetailCache, AuctionLotRecord, AuctionLotWorkItem
@@ -18,6 +18,7 @@ from app.schemas.auctions import (
     LotDatagridRow,
     LotFreshness,
 )
+from app.schemas.auction_grid import AuctionLotsGridSummary
 from app.services.auction_datagrid_payload import validate_datagrid_row_payload
 from app.services.auction_grid_state import auction_lot_grid_row_id
 from app.services.auction_scoring import calculate_list_lot_rating
@@ -235,6 +236,71 @@ async def pull_persisted_lots_for_grid(
         _attach_work_item_state(row, work_items.get(record.id))
         rows.append((record, row))
     return rows, total
+
+
+async def summarize_persisted_lots_for_grid(
+    session: AsyncSession,
+    *,
+    period: str = "month",
+    source: str | None = None,
+    q: str | None = None,
+    status: str | None = None,
+    analysis_color: str | None = None,
+    min_price: Decimal | None = None,
+    max_price: Decimal | None = None,
+    only_new: bool = False,
+    shortlist: bool = False,
+    min_rating: int | None = None,
+    grid_filter: dict | None = None,
+) -> AuctionLotsGridSummary:
+    filters = LotDatagridFilters(
+        period=period,
+        source=source,
+        q=q,
+        status=status,
+        analysis_color=analysis_color,
+        min_price=min_price,
+        max_price=max_price,
+        only_new=only_new,
+        shortlist=shortlist,
+        min_rating=min_rating,
+    )
+    active_sources = tuple(SOURCE_PROVIDERS)
+    if source and source != "all" and source not in SOURCE_PROVIDERS:
+        supported = ", ".join(sorted(SOURCE_PROVIDERS))
+        raise ValueError(f"Unsupported auction source '{source}'. Supported: {supported}")
+
+    statement = _build_persisted_lots_statement(filters, active_sources, grid_filter=grid_filter)
+    base_query = (
+        statement.with_only_columns(
+            AuctionLotRecord.id.label("id"),
+            AuctionLotRecord.is_new.label("is_new"),
+            AuctionLotRecord.status.label("status"),
+            AuctionLotRecord.rating_score.label("rating_score"),
+        )
+        .order_by(None)
+        .subquery()
+    )
+    status_text = func.lower(func.coalesce(base_query.c.status, ""))
+    open_applications = or_(
+        status_text.like("%прием%"),
+        status_text.like("%приём%"),
+    )
+    result = await session.execute(
+        select(
+            func.count(base_query.c.id),
+            func.coalesce(func.sum(case((base_query.c.is_new.is_(True), 1), else_=0)), 0),
+            func.coalesce(func.sum(case((open_applications, 1), else_=0)), 0),
+            func.coalesce(func.sum(case((base_query.c.rating_score >= 75, 1), else_=0)), 0),
+        )
+    )
+    total, new_count, open_applications_count, high_rating_count = result.one()
+    return AuctionLotsGridSummary(
+        total=int(total or 0),
+        new_count=int(new_count or 0),
+        open_applications_count=int(open_applications_count or 0),
+        high_rating_count=int(high_rating_count or 0),
+    )
 
 
 async def list_persisted_lot_column_histogram(

@@ -21,6 +21,8 @@ import {
   type DataSourceBackedRowModel,
 } from '@affino/datagrid-vue'
 import { createDialogFocusOrchestrator, useDialogController } from '@affino/dialog-vue'
+import { ApiRequestError as ApiClientRequestError } from './api/http'
+import { fetchLotDecisionReport } from './api/decisionReports'
 import AuthLoginScreen from './components/AuthLoginScreen.vue'
 import AnalysisSignalTooltip from './components/AnalysisSignalTooltip.vue'
 import AffinoCombobox from './components/AffinoCombobox.vue'
@@ -30,6 +32,7 @@ import {
   createAuctionServerDatasource,
   type AuctionServerDatasource,
   type AuctionServerGridFilters,
+  type AuctionServerGridSummary,
 } from './datagrid/auctionServerDatasource'
 import {
   AUCTION_GRID_EDITABLE_COLUMN_IDS,
@@ -43,6 +46,7 @@ import {
 } from './datagrid/auctionGridHistory'
 import { useAuthStore } from './stores/auth'
 import { workspaceDataGridTheme } from './theme/dataGridTheme'
+import type { ActionRecommendation, DecisionLevel, LotDecisionReport } from './types/decisionReport'
 
 type ApiColumn = {
   key: string
@@ -643,6 +647,12 @@ type GridColumnWidthsState = Record<string, number | null>
 
 const allRows = ref<GridLotRow[]>([])
 const catalogTotal = ref(0)
+const catalogSummary = ref<AuctionServerGridSummary>({
+  total: 0,
+  newCount: 0,
+  openApplicationsCount: 0,
+  highRatingCount: 0,
+})
 const sources = ref<ApiSource[]>([])
 const presets = ref<FilterPreset[]>([])
 const analysisConfig = ref<AnalysisConfigResponse | null>(null)
@@ -661,11 +671,13 @@ const selectedLot = ref<GridLotRow | null>(null)
 const selectedLotDetails = ref<LotDetailResponse | null>(null)
 const selectedAuctionDetails = ref<AuctionDetailResponse | null>(null)
 const selectedWorkspace = ref<LotWorkspaceResponse | null>(null)
+const selectedDecisionReport = ref<LotDecisionReport | null>(null)
+const decisionReportLoading = ref(false)
+const decisionReportStatus = ref<'idle' | 'empty' | 'error'>('idle')
+const decisionReportError = ref('')
 const detailLoading = ref(false)
 const detailLiveRefreshing = ref(false)
 const detailStatus = ref('')
-const projectedRowsForSummary = ref<GridLotRow[]>([])
-const gridSummaryReady = ref(false)
 const catalogViewportDimmed = ref(false)
 const DETAIL_PANE_WIDTH_STORAGE_KEY = 'auction-detail-pane-width'
 const GRID_SAVED_VIEW_STORAGE_KEY = 'auction-grid-saved-view-v2'
@@ -704,7 +716,6 @@ const DETAIL_PANE_MAX_WIDTH = 980
 const LOTS_RELOAD_DELAY_MS = 1200
 const SYNC_PROGRESS_RELOAD_INTERVAL_MS = 30_000
 const SERVER_ROW_MODEL_INITIAL_FETCH_SIZE = 256
-const GRID_SUMMARY_MAX_READ_ROWS = 1000
 const DETAIL_FETCH_TIMEOUT_MS = 15_000
 const DETAIL_LIVE_REFRESH_ENQUEUE_TIMEOUT_MS = 5_000
 const DETAIL_LIVE_REFRESH_RESULT_TIMEOUT_MS = 30_000
@@ -738,6 +749,7 @@ let suppressGridCommitEditsDepth = 0
 let resizeStartX = 0
 let resizeStartWidth = 0
 let detailRequestId = 0
+let decisionReportRequestId = 0
 let detailAbortController: AbortController | null = null
 let detailGridFocusAnchor: GridFocusAnchor | null = null
 let detailLiveRefreshTimeout: ReturnType<typeof window.setTimeout> | null = null
@@ -746,7 +758,6 @@ const catalogDataSourceListeners = new Set<DataGridDataSourcePushListener<GridLo
 let rowUpdateFrame: number | null = null
 let deferredLotsReloadTimer: ReturnType<typeof window.setTimeout> | null = null
 let deferredLotsReloadShouldResetViewport = false
-let gridSummaryFrame: number | null = null
 let lastLotsReloadStartedAt = 0
 let lastGridServerQuerySignature = ''
 let catalogPullRequestSeq = 0
@@ -1743,15 +1754,11 @@ const statusOptions = computed(() => {
   ]
 })
 
-const summaryRows = computed(() => projectedRowsForSummary.value)
-const totalRows = computed(() => catalogTotal.value || summaryRows.value.length)
+const totalRows = computed(() => catalogSummary.value.total || catalogTotal.value)
 const loadedRowsCount = computed(() => allRows.value.length)
-const openApplicationsCount = computed(() =>
-  summaryRows.value.filter((row) => row.status.toLowerCase().includes('прием') || row.status.toLowerCase().includes('приём'))
-    .length,
-)
-const newCount = computed(() => summaryRows.value.filter((row) => row.isNew).length)
-const highRatingCount = computed(() => summaryRows.value.filter((row) => row.ratingScore >= 75).length)
+const openApplicationsCount = computed(() => catalogSummary.value.openApplicationsCount)
+const newCount = computed(() => catalogSummary.value.newCount)
+const highRatingCount = computed(() => catalogSummary.value.highRatingCount)
 const activeFilterCount = computed(() => {
   return [
     filters.source !== DEFAULT_SERVER_FILTERS.source,
@@ -1907,6 +1914,20 @@ const economyFields = computed(() =>
     ['Макс. цена покупки', formatApiMoney(selectedLot.value?.formulaMaxPurchasePrice ?? selectedWorkspace.value?.economy.max_purchase_price)],
   ]),
 )
+const decisionReportSummaryFields = computed(() => {
+  const report = selectedDecisionReport.value
+  if (!report) return []
+  return makeFields([
+    ['Решение', formatDecisionLevel(report.decision_level)],
+    ['Рекомендация', formatActionRecommendation(report.recommendation)],
+    ['Рейтинг', `${report.rating_score} / ${report.rating_level}`],
+    ['Макс. цена покупки', formatApiMoney(report.economics?.max_buy_price)],
+    ['Сгенерирован', formatDateTime(report.generated_at)],
+  ])
+})
+const decisionReportReasons = computed(() => selectedDecisionReport.value?.reasons ?? [])
+const decisionReportRisks = computed(() => selectedDecisionReport.value?.risks ?? [])
+const decisionReportNextActions = computed(() => selectedDecisionReport.value?.next_actions ?? [])
 const analysisReasonItems = computed(() =>
   (selectedLot.value?.analysisReasons ?? []).filter((reason) => !(detailImages.value.length && isNoPhotoReason(reason))),
 )
@@ -2508,10 +2529,11 @@ function createAuctionServerCatalogDataSource(): CatalogAuctionServerDataSource 
       gridRowRevision.value = nextRevision
       return nextRevision
     },
-    onPullCompleted({ rows, total, datasetVersion, reason, priority }) {
+    onPullCompleted({ rows, total, datasetVersion, summary, reason, priority }) {
       const isBackgroundPrefetch = reason === 'prefetch' || priority === 'background'
       latestAuctionGridDatasetVersion.value = datasetVersion
       catalogTotal.value = total
+      catalogSummary.value = summary
       rememberLoadedRows(rows, { trackLoadedRows: !isBackgroundPrefetch })
       if (!isBackgroundPrefetch) {
         lastLoadedAt.value = new Date().toLocaleString('ru-RU')
@@ -2859,6 +2881,7 @@ async function softRefreshCatalogRows(options: {
     if (reloadSeq !== catalogSoftReloadSeq) return
     latestAuctionGridDatasetVersion.value = result.datasetVersion
     catalogTotal.value = result.total
+    catalogSummary.value = result.summary
     rememberLoadedRows(result.rows)
     lastLoadedAt.value = new Date().toLocaleString('ru-RU')
     startAuctionGridChangePolling()
@@ -2885,8 +2908,12 @@ function resetCatalogRowModel() {
   loadedGridRowIds.clear()
   gridRowsById.value.clear()
   loadedStatusValues.value = []
-  projectedRowsForSummary.value = []
-  gridSummaryReady.value = false
+  catalogSummary.value = {
+    total: 0,
+    newCount: 0,
+    openApplicationsCount: 0,
+    highRatingCount: 0,
+  }
   gridSavedViewRestored.value = false
   catalogGridHasLoadedOnce.value = false
   lastGridServerQuerySignature = ''
@@ -3115,34 +3142,8 @@ function patchGridRowsInDataGrid(rows: readonly GridLotRow[]) {
   }
 }
 
-function readProjectedRowsFromGrid() {
-  const api = gridRef.value?.getApi()
-  if (!api) return []
-
-  const count = api.rows.getCount()
-  if (count <= 0) return []
-  const readableCount = Math.min(count, allRows.value.length, GRID_SUMMARY_MAX_READ_ROWS)
-  if (readableCount <= 0) return []
-
-  return api.rows.getRange({ start: 0, end: readableCount - 1 }).flatMap((node) => {
-    const row = node.data as GridLotRow | undefined
-    return row && typeof row.id === 'string' ? [row] : []
-  })
-}
-
-function refreshGridSummaryRows() {
-  projectedRowsForSummary.value = readProjectedRowsFromGrid()
-  gridSummaryReady.value = true
-}
-
 function scheduleGridSummaryRefresh() {
-  if (gridSummaryFrame !== null) {
-    window.cancelAnimationFrame(gridSummaryFrame)
-  }
-  gridSummaryFrame = window.requestAnimationFrame(() => {
-    gridSummaryFrame = null
-    refreshGridSummaryRows()
-  })
+  return
 }
 
 function queueWorkspaceRows(rows: ApiLotRow[]) {
@@ -3491,6 +3492,27 @@ function formatApiPercent(value: string | number | null | undefined) {
     style: 'percent',
     maximumFractionDigits: 1,
   }).format(parsed)
+}
+
+function formatDecisionLevel(value: DecisionLevel) {
+  return {
+    ignore: 'Игнорировать',
+    watch: 'Наблюдать',
+    inspect: 'Осмотреть',
+    calculate: 'Посчитать',
+    bid_candidate: 'Кандидат на торги',
+  }[value]
+}
+
+function formatActionRecommendation(value: ActionRecommendation) {
+  return {
+    ignore: 'Игнорировать',
+    monitor: 'Мониторить',
+    request_docs: 'Запросить документы',
+    inspect: 'Осмотреть лот',
+    calculate_max_bid: 'Посчитать максимум',
+    prepare_bid: 'Готовить заявку',
+  }[value]
 }
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -4111,6 +4133,38 @@ function applyDetailWorkspace(workspace: LotWorkspaceResponse, options: { update
   hydrateWorkDraft(workspace.work_item)
 }
 
+function resetDecisionReportState() {
+  selectedDecisionReport.value = null
+  decisionReportLoading.value = false
+  decisionReportStatus.value = 'idle'
+  decisionReportError.value = ''
+}
+
+async function loadSelectedDecisionReport(recordId: number, requestId: number) {
+  const reportRequestId = ++decisionReportRequestId
+  selectedDecisionReport.value = null
+  decisionReportLoading.value = true
+  decisionReportStatus.value = 'idle'
+  decisionReportError.value = ''
+  try {
+    const report = await fetchLotDecisionReport(recordId)
+    if (requestId !== detailRequestId || reportRequestId !== decisionReportRequestId) return
+    selectedDecisionReport.value = report
+  } catch (error) {
+    if (requestId !== detailRequestId || reportRequestId !== decisionReportRequestId) return
+    if (error instanceof ApiClientRequestError && error.status === 404) {
+      decisionReportStatus.value = 'empty'
+      return
+    }
+    decisionReportStatus.value = 'error'
+    decisionReportError.value = error instanceof Error ? error.message : 'Не удалось загрузить отчет решения'
+  } finally {
+    if (requestId === detailRequestId && reportRequestId === decisionReportRequestId) {
+      decisionReportLoading.value = false
+    }
+  }
+}
+
 function clearDetailLiveRefreshTimeout() {
   if (detailLiveRefreshTimeout !== null) {
     window.clearTimeout(detailLiveRefreshTimeout)
@@ -4185,6 +4239,7 @@ async function openLotDetails(row: GridLotRow) {
   selectedLotDetails.value = null
   selectedAuctionDetails.value = null
   selectedWorkspace.value = null
+  resetDecisionReportState()
   resetWorkDraft()
   errorMessage.value = ''
   detailLiveRefreshing.value = false
@@ -4216,6 +4271,7 @@ async function openLotDetails(row: GridLotRow) {
       : 'Показана карточка из каталога'
     await nextTick()
     applyDetailWorkspace(workspace, { updateGrid: false })
+    void loadSelectedDecisionReport(workspace.record_id, requestId)
     logDetailPhase('render:done')
     trace.end({ stage: 'rendered' })
   } catch (error) {
@@ -4239,6 +4295,7 @@ async function openLotDetails(row: GridLotRow) {
 function closeLotDetails() {
   const trace = startUiPerfTrace('closeLotDetails', { rowId: selectedLot.value?.id ?? null })
   detailRequestId += 1
+  decisionReportRequestId += 1
   detailAbortController?.abort()
   detailAbortController = null
   clearDetailLiveRefreshTimeout()
@@ -4246,6 +4303,7 @@ function closeLotDetails() {
   selectedLotDetails.value = null
   selectedAuctionDetails.value = null
   selectedWorkspace.value = null
+  resetDecisionReportState()
   resetWorkDraft()
   detailLoading.value = false
   detailLiveRefreshing.value = false
@@ -4264,14 +4322,19 @@ function resetCatalogState() {
   gridRowsById.value.clear()
   loadedStatusValues.value = []
   catalogTotal.value = 0
-  projectedRowsForSummary.value = []
-  gridSummaryReady.value = false
+  catalogSummary.value = {
+    total: 0,
+    newCount: 0,
+    openApplicationsCount: 0,
+    highRatingCount: 0,
+  }
   presets.value = []
   selectedPresetId.value = ''
   selectedLot.value = null
   selectedLotDetails.value = null
   selectedAuctionDetails.value = null
   selectedWorkspace.value = null
+  resetDecisionReportState()
   detailStatus.value = ''
   errorMessage.value = ''
   lastLoadedAt.value = null
@@ -4535,7 +4598,6 @@ function stopAuctionEvents() {
 
 watch(filters, () => {
   persistServerFilters()
-  gridSummaryReady.value = false
   scheduleLotsReload(LOTS_RELOAD_DELAY_MS, true, { resetViewport: true })
   scheduleGridSummaryRefresh()
 }, { deep: true })
@@ -4588,10 +4650,6 @@ onUnmounted(() => {
   if (deferredLotsReloadTimer !== null) {
     window.clearTimeout(deferredLotsReloadTimer)
     deferredLotsReloadTimer = null
-  }
-  if (gridSummaryFrame !== null) {
-    window.cancelAnimationFrame(gridSummaryFrame)
-    gridSummaryFrame = null
   }
   queuedRowUpdates.clear()
 })
@@ -4835,6 +4893,52 @@ onUnmounted(() => {
           <span v-if="detailLoading || detailLiveRefreshing" class="detail-live-status__spinner" aria-hidden="true"></span>
           <span>{{ detailStatus || 'Подгружаю live-данные с площадки' }}</span>
         </div>
+
+        <section class="detail-section decision-report-panel">
+          <div class="detail-section__header">
+            <span class="eyebrow">Решение</span>
+            <span v-if="selectedDecisionReport" class="decision-report-panel__level">
+              {{ formatDecisionLevel(selectedDecisionReport.decision_level) }}
+            </span>
+          </div>
+          <div v-if="decisionReportLoading" class="detail-muted">Загружаю отчет решения</div>
+          <div v-else-if="decisionReportStatus === 'empty'" class="detail-muted">Снимок решения еще не создан</div>
+          <div v-else-if="decisionReportStatus === 'error'" class="detail-muted">
+            {{ decisionReportError || 'Не удалось загрузить отчет решения' }}
+          </div>
+          <template v-else-if="selectedDecisionReport">
+            <dl class="detail-list detail-list--dense decision-report-panel__summary">
+              <template v-for="field in decisionReportSummaryFields" :key="field.label">
+                <dt>{{ field.label }}</dt>
+                <dd>{{ field.value }}</dd>
+              </template>
+            </dl>
+            <div v-if="decisionReportReasons.length" class="decision-report-panel__group">
+              <h3>Причины</h3>
+              <ul class="detail-bullet-list">
+                <li v-for="reason in decisionReportReasons" :key="reason.code">{{ reason.message }}</li>
+              </ul>
+            </div>
+            <div v-if="decisionReportRisks.length" class="decision-report-panel__group">
+              <h3>Риски</h3>
+              <ul class="detail-bullet-list">
+                <li v-for="risk in decisionReportRisks" :key="risk.code">
+                  <strong>{{ risk.level }}</strong>
+                  <span>{{ risk.message }}</span>
+                </li>
+              </ul>
+            </div>
+            <div v-if="decisionReportNextActions.length" class="decision-report-panel__group">
+              <h3>Дальше</h3>
+              <ul class="detail-bullet-list">
+                <li v-for="action in decisionReportNextActions" :key="`${action.action}-${action.label}`">
+                  {{ action.label }}<span v-if="action.deadline"> · {{ action.deadline }}</span>
+                </li>
+              </ul>
+            </div>
+          </template>
+          <div v-else class="detail-muted">Отчет решения появится после локальной генерации snapshot</div>
+        </section>
 
         <section v-if="economyFields.length" class="detail-section">
           <span class="eyebrow">Экономика</span>

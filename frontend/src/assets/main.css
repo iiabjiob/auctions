@@ -1432,6 +1432,63 @@ input[type='range'] {
   font-size: 13px;
 }
 
+.decision-report-panel {
+  display: grid;
+  gap: 10px;
+  border-color: var(--color-accent-border);
+  background: var(--color-surface);
+}
+
+.decision-report-panel__level {
+  min-width: 0;
+  border: 1px solid var(--color-accent-border);
+  border-radius: var(--radius-pill);
+  padding: 4px 8px;
+  color: var(--color-accent-strong);
+  background: var(--color-accent-soft);
+  font-size: 12px;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.decision-report-panel__summary {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: 8px 12px;
+  margin-top: 0;
+}
+
+.decision-report-panel__summary dt,
+.decision-report-panel__summary dd {
+  margin: 0;
+}
+
+.decision-report-panel__summary dd {
+  font-weight: 700;
+}
+
+.decision-report-panel__group {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  border-top: 1px solid var(--color-border);
+  padding-top: 10px;
+}
+
+.decision-report-panel__group h3 {
+  margin: 0;
+  color: var(--color-text-soft);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.decision-report-panel__group li strong {
+  margin-right: 6px;
+  color: var(--color-text-soft);
+  text-transform: uppercase;
+}
+
 .detail-gallery {
   display: grid;
   gap: 10px;

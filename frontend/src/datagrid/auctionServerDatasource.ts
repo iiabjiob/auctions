@@ -38,6 +38,7 @@ export type AuctionServerPullWindowResult<TRow> = {
   entries: DataGridDataSourceRowEntry<TRow>[]
   total: number
   datasetVersion: number
+  summary: AuctionServerGridSummary
   start: number
   end: number
 }
@@ -54,6 +55,14 @@ type AuctionServerPullResponse<TApiRow> = {
   }>
   total: number
   datasetVersion: number
+  summary?: AuctionServerGridSummary
+}
+
+export type AuctionServerGridSummary = {
+  total: number
+  newCount: number
+  openApplicationsCount: number
+  highRatingCount: number
 }
 
 type AuctionServerHistogramResponse = {
@@ -73,6 +82,7 @@ export type CreateAuctionServerDatasourceOptions<TApiRow, TRow> = {
     rows: TRow[]
     total: number
     datasetVersion: number
+    summary: AuctionServerGridSummary
     rowRevision: number
     reason?: string
     priority?: string
@@ -121,6 +131,7 @@ export function createAuctionServerDatasource<TApiRow, TRow>(
       rows,
       total: data.total,
       datasetVersion: data.datasetVersion,
+      summary: data.summary ?? emptyAuctionServerGridSummary(data.total),
       rowRevision,
       reason: request.reason,
       priority: request.priority,
@@ -131,6 +142,7 @@ export function createAuctionServerDatasource<TApiRow, TRow>(
       entries,
       total: data.total,
       datasetVersion: data.datasetVersion,
+      summary: data.summary ?? emptyAuctionServerGridSummary(data.total),
       start,
       end: inclusiveEnd,
     }
@@ -175,6 +187,15 @@ export function createAuctionServerDatasource<TApiRow, TRow>(
     pull,
     pullWindow,
     getColumnHistogram,
+  }
+}
+
+function emptyAuctionServerGridSummary(total: number): AuctionServerGridSummary {
+  return {
+    total,
+    newCount: 0,
+    openApplicationsCount: 0,
+    highRatingCount: 0,
   }
 }
 

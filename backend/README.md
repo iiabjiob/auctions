@@ -38,6 +38,11 @@ For one-click startup in VS Code, run task `backend: start all` (Terminal → Ru
 	uv run python -m app.worker.auction_enrichment_worker
 	```
 
+6. Telegram sender worker:
+	```bash
+	uv run python -m app.worker.telegram_sender_worker
+	```
+
 The worker refreshes enabled auction vendors on `AUCTION_SYNC_INTERVAL_SECONDS`, adds up to `AUCTION_SYNC_INTERVAL_JITTER_SECONDS` of random jitter, writes snapshots to Postgres, and publishes `sync.started`, `sync.progress`, `sync.completed`, and `sync.failed` messages to the Redis Stream configured by `AUCTION_EVENTS_STREAM`. The default is a polite schedule: every 12 hours with jitter, no sync immediately on worker start, one TBankrot page per run, and no background detail fetches. Use manual sync or short development intervals only for controlled local runs.
 
 The application no longer creates the default user during API startup or login. If you want the configured default user to exist, create it explicitly with the seed command above.
