@@ -4,7 +4,7 @@ from datetime import datetime
 
 from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -70,6 +70,7 @@ class AuctionLotRecord(Base):
     observations: Mapped[list["AuctionLotObservation"]] = relationship(back_populates="lot")
     ai_analyses: Mapped[list["AuctionLotAiAnalysis"]] = relationship(back_populates="lot")
     decision_reports: Mapped[list["AuctionLotDecisionReport"]] = relationship(back_populates="lot")
+    telegram_notifications: Mapped[list["TelegramNotificationOutbox"]] = relationship(back_populates="lot")
 
 
 class AuctionLotObservation(Base):
@@ -168,6 +169,41 @@ class AuctionLotDecisionReport(Base):
     )
 
     lot: Mapped[AuctionLotRecord] = relationship(back_populates="decision_reports")
+    telegram_notifications: Mapped[list["TelegramNotificationOutbox"]] = relationship(back_populates="decision_report")
+
+
+class TelegramNotificationOutbox(Base):
+    __tablename__ = "telegram_notification_outbox"
+    __table_args__ = (
+        UniqueConstraint("dedupe_key", name="uq_telegram_notification_outbox_dedupe_key"),
+        CheckConstraint(
+            "status IN ('pending', 'sent', 'failed', 'skipped')",
+            name="ck_telegram_notification_outbox_status",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    lot_record_id: Mapped[int] = mapped_column(
+        ForeignKey("auction_lot_records.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    decision_report_id: Mapped[int] = mapped_column(
+        ForeignKey("auction_lot_decision_reports.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    dedupe_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    cooldown_key: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", index=True)
+    priority: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    message_payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    report_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    cooldown_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    lot: Mapped[AuctionLotRecord] = relationship(back_populates="telegram_notifications")
+    decision_report: Mapped[AuctionLotDecisionReport] = relationship(back_populates="telegram_notifications")
 
 
 class AuctionLotAiAnalysis(Base):

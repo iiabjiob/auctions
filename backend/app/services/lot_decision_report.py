@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from html import escape
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -15,6 +15,7 @@ from app.models.auction import (
     AuctionLotDetailCache,
     AuctionLotRecord,
     AuctionLotWorkItem,
+    TelegramNotificationOutbox,
 )
 from app.schemas.lot_decision_report import (
     ActionRecommendation,
@@ -25,6 +26,7 @@ from app.schemas.lot_decision_report import (
     LotDecisionReport,
     LotDecisionRisk,
     LotNotificationEligibility,
+    TelegramNotificationStatus,
     TelegramLotMessage,
 )
 from app.schemas.scoring_profile import LotScoringProfile, build_lot_scoring_profile_hash
@@ -50,6 +52,7 @@ ECONOMICS_COST_FIELDS = (
 TELEGRAM_MAX_MESSAGE_LENGTH = 4096
 TELEGRAM_REASON_LIMIT = 3
 TELEGRAM_RISK_LIMIT = 2
+TELEGRAM_NOTIFICATION_COOLDOWN_SECONDS = 6 * 60 * 60
 
 
 def build_lot_decision_report(
@@ -284,6 +287,72 @@ async def upsert_lot_decision_report_snapshot(
     return existing
 
 
+async def enqueue_lot_telegram_notification_outbox(
+    session: AsyncSession,
+    snapshot: AuctionLotDecisionReport,
+    *,
+    report: LotDecisionReport | None = None,
+    profile: LotScoringProfile | None = None,
+    now: datetime | None = None,
+    cooldown_seconds: int = TELEGRAM_NOTIFICATION_COOLDOWN_SECONDS,
+) -> TelegramNotificationOutbox | None:
+    decision_report_id = getattr(snapshot, "id", None)
+    if decision_report_id is None:
+        return None
+
+    resolved_report = report or LotDecisionReport.model_validate(snapshot.report_payload)
+    eligibility = evaluate_lot_notification_eligibility(resolved_report, profile=profile)
+    if not eligibility.should_notify:
+        return None
+
+    existing = await session.scalar(
+        select(TelegramNotificationOutbox).where(
+            TelegramNotificationOutbox.dedupe_key == eligibility.dedupe_key,
+        )
+    )
+    if existing is not None:
+        return existing
+
+    current_time = now or datetime.now(UTC)
+    active_cooldown = await session.scalar(
+        select(TelegramNotificationOutbox)
+        .where(TelegramNotificationOutbox.cooldown_key == eligibility.cooldown_key)
+        .where(TelegramNotificationOutbox.status.in_(_cooldown_blocking_statuses()))
+        .where(TelegramNotificationOutbox.cooldown_until.is_not(None))
+        .where(TelegramNotificationOutbox.cooldown_until > current_time)
+        .order_by(TelegramNotificationOutbox.cooldown_until.desc())
+        .limit(1)
+    )
+    status = (
+        TelegramNotificationStatus.SKIPPED.value
+        if active_cooldown is not None
+        else TelegramNotificationStatus.PENDING.value
+    )
+    cooldown_until = (
+        active_cooldown.cooldown_until
+        if active_cooldown is not None
+        else current_time + timedelta(seconds=cooldown_seconds)
+    )
+    message = render_telegram_lot_message(resolved_report)
+    entry = TelegramNotificationOutbox(
+        lot_record_id=resolved_report.record_id,
+        decision_report_id=decision_report_id,
+        dedupe_key=eligibility.dedupe_key,
+        cooldown_key=eligibility.cooldown_key,
+        status=status,
+        priority=eligibility.priority,
+        message_payload=message.model_dump(mode="json"),
+        report_hash=snapshot.report_hash,
+        scheduled_at=current_time,
+        cooldown_until=cooldown_until,
+        created_at=current_time,
+        updated_at=current_time,
+    )
+    session.add(entry)
+    await session.flush()
+    return entry
+
+
 async def generate_and_persist_lot_decision_report_snapshot(
     session: AsyncSession,
     record: AuctionLotRecord,
@@ -301,7 +370,9 @@ async def generate_and_persist_lot_decision_report_snapshot(
         work_item=work_item,
         profile=profile,
     )
-    return await upsert_lot_decision_report_snapshot(session, report)
+    snapshot = await upsert_lot_decision_report_snapshot(session, report)
+    await enqueue_lot_telegram_notification_outbox(session, snapshot, report=report, profile=profile)
+    return snapshot
 
 
 def _decision_level(
@@ -641,6 +712,13 @@ def _notification_blockers(report: LotDecisionReport) -> list[str]:
         if risk.level == "high":
             blockers.append(f"high_risk:{risk.code}")
     return blockers
+
+
+def _cooldown_blocking_statuses() -> tuple[str, str]:
+    return (
+        TelegramNotificationStatus.PENDING.value,
+        TelegramNotificationStatus.SENT.value,
+    )
 
 
 def _notification_reasons(report: LotDecisionReport) -> list[str]:

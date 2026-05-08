@@ -27,6 +27,13 @@ class ActionRecommendation(StrEnum):
     PREPARE_BID = "prepare_bid"
 
 
+class TelegramNotificationStatus(StrEnum):
+    PENDING = "pending"
+    SENT = "sent"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
 class LotDecisionReason(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 

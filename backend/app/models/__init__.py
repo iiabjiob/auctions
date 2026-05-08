@@ -7,6 +7,7 @@ from app.models.auction import (
     AuctionLotRecord,
     AuctionLotWorkItem,
     AuctionSourceState,
+    TelegramNotificationOutbox,
 )
 from app.models.auction_analysis_config import AuctionAnalysisConfigModel
 from app.models.filter_preset import FilterPresetModel
@@ -24,6 +25,7 @@ __all__ = [
 	"AuctionLotWorkItem",
 	"AuctionAnalysisConfigModel",
 	"AuctionSourceState",
+	"TelegramNotificationOutbox",
 	"FilterPresetModel",
 	"GridChangeEventModel",
 	"GridOperationModel",

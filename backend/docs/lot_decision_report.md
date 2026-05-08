@@ -9,7 +9,6 @@ This slice is local-only:
 - it does not scrape or fetch external data
 - it does not send Telegram messages
 - it does not call Telegram APIs or any external notification service
-- it does not persist decision report snapshots
 - it does not change frontend behavior
 
 The contract captures the already-known lot identity, display fields, current
@@ -90,7 +89,7 @@ It includes:
 Use `evaluate_lot_notification_eligibility(report, profile=None)` to decide
 whether a decision report is eligible for future Telegram delivery. The helper
 does not send messages and does not integrate with Telegram. It only returns a
-local contract that a later outbox/sender slice can consume.
+local contract that the local outbox can consume.
 
 Eligibility is intentionally conservative:
 - `ignore` and `watch` reports are blocked
@@ -140,10 +139,41 @@ deadline, reasons, risks, and link. It only returns a local message object and
 does not call Telegram APIs, send messages, enqueue outbox rows, or fetch
 external data.
 
+`telegram_notification_outbox` stores local Telegram-ready notification rows for
+eligible reports. It is an outbox only: scoring/report generation may enqueue a
+row, but it never calls Telegram and never performs network I/O. A future sender
+will consume `pending` rows.
+
+The outbox stores:
+- `lot_record_id`
+- `decision_report_id`
+- `dedupe_key`
+- `cooldown_key`
+- `status`
+- `priority`
+- rendered `message_payload`
+- `report_hash`
+- `scheduled_at`
+- optional `cooldown_until`
+
+`status` uses this stable vocabulary:
+- `pending`
+- `sent`
+- `failed`
+- `skipped`
+
+Use `enqueue_lot_telegram_notification_outbox(...)` after a local decision
+report snapshot exists. The helper validates eligibility first. If
+`should_notify` is false, it writes nothing. If the same `dedupe_key` already
+exists, it returns the existing row without inserting a duplicate. If another
+pending/sent row for the same `cooldown_key` is still inside its cooldown
+window, the helper records the new opportunity as `skipped` instead of creating
+another pending notification.
+
 The report is a presentation and delivery contract, not a scoring engine. It
 must not change score values or scoring formulas. Telegram should later render
-messages from this report or a derivative notification contract, but sending and
-deduplication belong to later slices.
+messages from this report or a derivative notification contract, but actual
+sending belongs to a later slice.
 
 Use `lot_decision_report_canonical_json(...)` and
 `build_lot_decision_report_hash(...)` when a deterministic serialized payload or
