@@ -37,6 +37,23 @@ Future builders should derive `LotDecisionReport` only from local state, such as
 - profile fit evaluation
 - manual/workspace decision fields
 
+The first local builder is
+`app.services.lot_decision_report.build_lot_decision_report(...)`.
+It accepts an `AuctionLotRecord`, optional local detail cache, optional work
+item, and optional scoring profile. It reads local state only and does not
+recalculate or mutate score values.
+
+Current conservative derivation rules:
+- low scores, manual rejects, exclusions, and strong blockers become
+  `ignore`/`watch`
+- good scored lots become `inspect`, or `calculate` when deadline urgency is
+  visible in local score metadata
+- high scored lots only become `bid_candidate` when a profile match or manual
+  bid/approval signal is present
+- missing local documents add a `request_docs` next action
+- inspect/calculate/bid-candidate reports include practical inspection and
+  max-bid actions where applicable
+
 The report is a presentation and delivery contract, not a scoring engine. It
 must not change score values or scoring formulas. Telegram should later render
 messages from this report or a derivative notification contract, but sending and
