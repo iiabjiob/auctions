@@ -326,10 +326,10 @@ class LotEnrichmentRequirementTests(unittest.TestCase):
         record.rating_score = 10
         detail_cache = make_detail_cache(fetched_at=datetime(2026, 4, 29, tzinfo=UTC))
         detail_cache.lot_detail["raw_fields"] = [
-            {"name": "Прием заявок", "value": "с 10.05.2026 09:00 до 10.05.2026 18:00"},
+            {"name": "Прием заявок", "value": "с 10.05.2099 09:00 до 10.05.2099 18:00"},
         ]
-        record.datagrid_row["application_deadline"] = "10.05.2026 18:00"
-        record.normalized_item.setdefault("auction", {})["application_deadline"] = "10.05.2026 18:00"
+        record.datagrid_row["application_deadline"] = "10.05.2099 18:00"
+        record.normalized_item.setdefault("auction", {})["application_deadline"] = "10.05.2099 18:00"
 
         evaluation = evaluate_lot_ttl_refresh(
             record,
