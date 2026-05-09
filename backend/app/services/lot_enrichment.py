@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from collections.abc import Sequence
 
@@ -275,6 +276,7 @@ async def execute_lot_enrichment_candidates(
     *,
     source_code: str | None = None,
     limit: int = DEFAULT_ENRICHMENT_CANDIDATE_LIMIT,
+    item_pause_seconds: float = 0.0,
 ) -> LotEnrichmentExecutionResult:
     now = datetime.now(UTC)
     candidates = await claim_lot_enrichment_candidates(
@@ -294,6 +296,8 @@ async def execute_lot_enrichment_candidates(
         processed_count += 1
         if record.id is None:
             skipped_count += 1
+            if item_pause_seconds > 0:
+                await asyncio.sleep(item_pause_seconds)
             continue
         candidate_record_ids.append(record.id)
         evaluation_before = classify_lot_enrichment(record)
@@ -303,6 +307,8 @@ async def execute_lot_enrichment_candidates(
             else:
                 skipped_count += 1
             _release_lot_enrichment_claim(record)
+            if item_pause_seconds > 0:
+                await asyncio.sleep(item_pause_seconds)
             continue
 
         attempt_marked = _mark_enrichment_attempt(record, now=now)
@@ -323,11 +329,15 @@ async def execute_lot_enrichment_candidates(
             if not attempt_marked:
                 skipped_count += 1
             still_missing_count += 1
+            if item_pause_seconds > 0:
+                await asyncio.sleep(item_pause_seconds)
             continue
 
         if schedule_lot_enrichment(record, evaluation_after):
             cleared_count += 1
         _release_lot_enrichment_claim(record)
+        if item_pause_seconds > 0:
+            await asyncio.sleep(item_pause_seconds)
 
     return LotEnrichmentExecutionResult(
         candidate_count=len(candidates),

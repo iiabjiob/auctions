@@ -6,6 +6,7 @@ import logging
 from app.core.config import get_settings
 from app.infrastructure.db.database import AsyncSessionLocal
 from app.services.telegram_sender import send_pending_telegram_notifications
+from app.worker.safety import safe_worker_sleep_seconds
 
 
 logger = logging.getLogger(__name__)
@@ -36,7 +37,7 @@ async def run_worker(*, run_once: bool = False) -> dict[str, int] | None:
             result = await run_sender_batch()
             if run_once:
                 return result
-            await asyncio.sleep(max(1, settings.telegram_sender_poll_interval_seconds))
+            await asyncio.sleep(safe_worker_sleep_seconds(settings.telegram_sender_poll_interval_seconds))
     except asyncio.CancelledError:
         logger.info("Telegram sender worker shutdown requested")
         raise

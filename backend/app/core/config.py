@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     # ---- Redis / background sync ----
     redis_url: str = "redis://redis:6379/0"
     auction_events_stream: str = "auction:events"
+    auction_sync_enabled: bool = True
     auction_sync_run_on_start: bool = False
     auction_sync_interval_seconds: int = 60 * 60 * 12
     auction_sync_interval_jitter_seconds: int = 60 * 45
@@ -68,6 +69,8 @@ class Settings(BaseSettings):
     auction_enrichment_enabled: bool = True
     auction_enrichment_interval_seconds: int = 60 * 10
     auction_enrichment_batch_size: int = 50
+    auction_enrichment_item_pause_seconds: float = 0.0
+    auction_enrichment_empty_pause_seconds: int = 60 * 30
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
     telegram_sender_dry_run: bool = True

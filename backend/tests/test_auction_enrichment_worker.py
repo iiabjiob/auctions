@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 from app.services.lot_enrichment import LotEnrichmentExecutionResult
 from app.worker import auction_enrichment_worker
+from app.worker.safety import DEFAULT_MIN_WORKER_POLL_INTERVAL_SECONDS
 
 
 class FakeSessionContext:
@@ -40,10 +41,11 @@ class AuctionEnrichmentWorkerTests(unittest.IsolatedAsyncioTestCase):
                 AsyncMock(return_value=LotEnrichmentExecutionResult(**result_payload)),
             ) as execute_enrichment,
             patch("app.services.auction_workspace.ensure_lot_detail_cache", AsyncMock()) as fetch_detail,
+            patch.object(auction_enrichment_worker.settings, "auction_enrichment_item_pause_seconds", 0.0),
         ):
             result = await auction_enrichment_worker.run_enrichment_batch()
 
-        execute_enrichment.assert_awaited_once_with(fake_session, limit=50)
+        execute_enrichment.assert_awaited_once_with(fake_session, limit=50, item_pause_seconds=0.0)
         fetch_detail.assert_not_called()
         self.assertEqual(result, result_payload)
 
@@ -66,6 +68,35 @@ class AuctionEnrichmentWorkerTests(unittest.IsolatedAsyncioTestCase):
 
         run_batch.assert_awaited_once()
         self.assertEqual(result, result_payload)
+
+    def test_enrichment_delay_never_returns_less_than_safe_minimum(self) -> None:
+        self.assertEqual(
+            auction_enrichment_worker.calculate_enrichment_worker_delay(
+                interval_seconds=0,
+                empty_pause_seconds=0,
+            ),
+            DEFAULT_MIN_WORKER_POLL_INTERVAL_SECONDS,
+        )
+
+    def test_empty_enrichment_delay_uses_longer_empty_pause(self) -> None:
+        self.assertEqual(
+            auction_enrichment_worker.calculate_enrichment_worker_delay(
+                {"candidate_count": 0},
+                interval_seconds=10,
+                empty_pause_seconds=90,
+            ),
+            90.0,
+        )
+
+    def test_enrichment_failure_delay_is_exponential(self) -> None:
+        self.assertEqual(
+            auction_enrichment_worker.calculate_enrichment_worker_delay(
+                interval_seconds=10,
+                empty_pause_seconds=90,
+                failure_count=3,
+            ),
+            40.0,
+        )
 
 
 if __name__ == "__main__":

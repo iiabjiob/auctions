@@ -11,6 +11,7 @@ from app.infrastructure.db.database import AsyncSessionLocal
 from app.infrastructure.redis.streams import publish_auction_event
 from app.services.auction_sources import SOURCE_PROVIDERS
 from app.services.auction_sync import sync_source_lots
+from app.worker.safety import safe_worker_jitter_delay
 
 
 logger = logging.getLogger(__name__)
@@ -23,12 +24,7 @@ def calculate_next_sync_delay(
     *,
     random_fraction: Callable[[], float] = random.random,
 ) -> float:
-    base_delay = max(1, interval_seconds)
-    jitter = max(0, jitter_seconds)
-    if jitter == 0:
-        return float(base_delay)
-    offset = ((random_fraction() * 2) - 1) * jitter
-    return max(1.0, base_delay + offset)
+    return safe_worker_jitter_delay(interval_seconds, jitter_seconds, random_fraction=random_fraction)
 
 
 async def sync_all_sources() -> None:
@@ -113,7 +109,7 @@ def _source_sync_error_payload(*, source: str, error: Exception) -> dict:
     return payload
 
 
-async def run_worker() -> None:
+async def run_worker(*, run_once: bool = False) -> None:
     logger.info("Auction sync worker started")
     try:
         if not settings.auction_sync_run_on_start:
@@ -124,7 +120,20 @@ async def run_worker() -> None:
             logger.info("Initial auction sync delayed for %.0f seconds", initial_delay)
             await asyncio.sleep(initial_delay)
         while True:
+            if not settings.auction_sync_enabled:
+                delay = calculate_next_sync_delay(
+                    settings.auction_sync_interval_seconds,
+                    settings.auction_sync_interval_jitter_seconds,
+                )
+                logger.info("Auction sync worker disabled; next check in %.0f seconds", delay)
+                await asyncio.sleep(delay)
+                if run_once:
+                    return None
+                continue
+
             await sync_all_sources()
+            if run_once:
+                return None
             delay = calculate_next_sync_delay(
                 settings.auction_sync_interval_seconds,
                 settings.auction_sync_interval_jitter_seconds,

@@ -23,6 +23,7 @@ from app.services.auction_sources import SOURCE_PROVIDERS
 from app.schemas.scoring_profile import LotScoringProfile
 from app.services.lot_decision_report import generate_and_persist_lot_decision_report_snapshot
 from app.services.scoring_profile_store import scoring_profile_store_service
+from app.worker.safety import safe_worker_sleep_seconds
 
 
 logger = logging.getLogger(__name__)
@@ -214,12 +215,18 @@ def _chunks(items: list[_T], size: int) -> list[list[_T]]:
     return [items[index : index + size] for index in range(0, len(items), size)]
 
 
+def calculate_analysis_worker_delay(interval_seconds: int | float | None = None) -> float:
+    return safe_worker_sleep_seconds(
+        settings.auction_analysis_interval_seconds if interval_seconds is None else interval_seconds,
+    )
+
+
 async def run_worker() -> None:
     logger.info("Auction analysis worker started")
     try:
         while True:
             if not settings.auction_analysis_enabled:
-                await asyncio.sleep(settings.auction_analysis_interval_seconds)
+                await asyncio.sleep(calculate_analysis_worker_delay())
                 continue
 
             await publish_auction_event("analysis.started", {})
@@ -231,7 +238,7 @@ async def run_worker() -> None:
                 logger.exception("Auction analysis failed")
                 await publish_auction_event("analysis.failed", {"error": str(error)})
 
-            await asyncio.sleep(settings.auction_analysis_interval_seconds)
+            await asyncio.sleep(calculate_analysis_worker_delay())
     except asyncio.CancelledError:
         logger.info("Auction analysis worker shutdown requested")
         raise
