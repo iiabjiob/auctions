@@ -622,6 +622,7 @@ def _advanced_expression_predicate(payload):
 
 
 def _predicate_filter_condition(key, operator, value=None, value2=None, case_sensitive=False):
+    operator = _normalize_filter_operator(operator)
     if key == "__globalSearch":
         if operator != "contains" or not _is_search_text_allowed(value):
             return None
@@ -684,12 +685,23 @@ def _predicate_filter_condition(key, operator, value=None, value2=None, case_sen
     return None
 
 
-def _safe_text_search_expression(key: str | None):
+def _normalize_filter_operator(operator):
+    if not isinstance(operator, str):
+        return operator
     return {
-        "lotName": AuctionLotRecord.lot_name,
-        "source": AuctionLotRecord.source_code,
-        "sourceTitle": AuctionLotRecord.source_code,
-    }.get(key or "")
+        "starts-with": "startsWith",
+        "ends-with": "endsWith",
+        "not-equals": "notEquals",
+        "is-null": "isNull",
+        "not-null": "notNull",
+        "is-empty": "isEmpty",
+        "not-empty": "notEmpty",
+    }.get(operator, operator)
+
+
+def _safe_text_search_expression(key: str | None):
+    expression, value_type = _grid_column_expression(key)
+    return expression if value_type == "text" else None
 
 
 def _is_search_text_allowed(value: object) -> bool:

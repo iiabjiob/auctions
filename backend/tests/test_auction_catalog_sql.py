@@ -149,7 +149,63 @@ class AuctionCatalogSqlTests(unittest.TestCase):
         self.assertIn("%bmw%", compiled.params.values())
         self.assertNotIn("datagrid_row AS", sql)
         self.assertNotIn("datagrid_row::text", sql.lower())
-        self.assertNotIn("location", compiled.params.values())
+        self.assertIn("location", compiled.params.values())
+        self.assertIn("%москва%", compiled.params.values())
+
+    def test_grid_advanced_expression_applies_category_contains_and_price_gt(self) -> None:
+        predicate = _grid_filter_predicate(
+            {
+                "columnFilters": {},
+                "advancedFilters": {},
+                "advancedExpression": {
+                    "kind": "group",
+                    "operator": "and",
+                    "children": [
+                        {
+                            "kind": "condition",
+                            "key": "analysisCategory",
+                            "operator": "contains",
+                            "value": "недвижимость",
+                        },
+                        {"kind": "condition", "key": "price", "operator": "gt", "value": "1000000"},
+                    ],
+                },
+            }
+        )
+
+        self.assertIsNotNone(predicate)
+        compiled = predicate.compile(dialect=postgresql.dialect())
+        sql = str(compiled)
+
+        self.assertIn(" AND ", sql)
+        self.assertIn("LIKE", sql)
+        self.assertIn(">", sql)
+        self.assertIn("category", compiled.params.values())
+        self.assertIn("%недвижимость%", compiled.params.values())
+        self.assertIn("current_price_value", compiled.params.values())
+
+    def test_grid_advanced_expression_supports_hyphenated_operator_aliases(self) -> None:
+        predicate = _grid_filter_predicate(
+            {
+                "columnFilters": {},
+                "advancedFilters": {},
+                "advancedExpression": {
+                    "kind": "group",
+                    "operator": "and",
+                    "children": [
+                        {"kind": "condition", "key": "status", "operator": "not-equals", "value": "Отменен"},
+                        {"kind": "condition", "key": "applicationDeadline", "operator": "not-empty", "value": ""},
+                    ],
+                },
+            }
+        )
+
+        self.assertIsNotNone(predicate)
+        compiled = predicate.compile(dialect=postgresql.dialect())
+        sql = str(compiled)
+
+        self.assertIn("!=", sql)
+        self.assertIn("IS NOT NULL", sql)
 
     def test_short_global_search_input_is_ignored(self) -> None:
         statement = _build_persisted_lots_statement(
