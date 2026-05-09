@@ -322,6 +322,131 @@ class AuctionCatalogSqlTests(unittest.TestCase):
         self.assertIn("platform_fee", compiled.params.values())
         self.assertNotIn("roi", compiled.params.values())
 
+    def test_grid_current_price_filter_accepts_api_aliases(self) -> None:
+        for key in ("price", "currentPrice", "currentPriceValue", "current_price_value"):
+            with self.subTest(key=key):
+                predicate = _grid_filter_predicate(
+                    {
+                        "columnFilters": {
+                            key: {"kind": "predicate", "operator": "gte", "value": "1000000"},
+                        },
+                        "advancedFilters": {},
+                    }
+                )
+
+                self.assertIsNotNone(predicate)
+                compiled = predicate.compile(dialect=postgresql.dialect())
+
+                self.assertIn(">=", str(compiled))
+                self.assertIn("current_price_value", compiled.params.values())
+
+    def test_grid_visible_columns_have_filter_expressions(self) -> None:
+        text_columns = (
+            "analysisLabel",
+            "analysisCategory",
+            "sourceTitle",
+            "auctionNumber",
+            "publicationDate",
+            "lotNumber",
+            "lotName",
+            "location",
+            "status",
+            "organizer",
+            "applicationDeadline",
+            "auctionDate",
+            "lastSeenAt",
+            "exclusionReason",
+        )
+        number_columns = (
+            "ratingScore",
+            "initialPrice",
+            "price",
+            "minimumPrice",
+            "marketValue",
+            "platformFee",
+            "deliveryCost",
+            "dismantlingCost",
+            "repairCost",
+            "storageCost",
+            "legalCost",
+            "otherCosts",
+            "targetProfit",
+            "totalExpenses",
+            "fullEntryCost",
+            "potentialProfit",
+            "roiValue",
+            "marketDiscount",
+            "formulaMaxPurchasePrice",
+        )
+        boolean_columns = ("isNew", "excludeFromAnalysis")
+
+        for key in text_columns:
+            with self.subTest(key=key):
+                predicate = _grid_filter_predicate(
+                    {"columnFilters": {key: {"kind": "predicate", "operator": "not-empty", "value": ""}}}
+                )
+                self.assertIsNotNone(predicate)
+
+        for key in number_columns:
+            with self.subTest(key=key):
+                predicate = _grid_filter_predicate(
+                    {"columnFilters": {key: {"kind": "predicate", "operator": "gte", "value": "1"}}}
+                )
+                self.assertIsNotNone(predicate)
+
+        for key in boolean_columns:
+            with self.subTest(key=key):
+                predicate = _grid_filter_predicate(
+                    {"columnFilters": {key: {"kind": "predicate", "operator": "equals", "value": True}}}
+                )
+                self.assertIsNotNone(predicate)
+
+    def test_grid_filter_accepts_api_aliases_for_display_columns(self) -> None:
+        cases = (
+            ("source_title", "not-empty", "", "source_title"),
+            ("auction_number", "not-empty", "", None),
+            ("publication_date", "not-empty", "", "publication_date"),
+            ("lot_number", "not-empty", "", None),
+            ("lot_name", "not-empty", "", None),
+            ("location_region", "not-empty", "", "location_region"),
+            ("organizer_name", "not-empty", "", "organizer_name"),
+            ("application_deadline", "not-empty", "", "application_deadline"),
+            ("auction_date", "not-empty", "", "auction_date"),
+            ("last_seen_at", "not-empty", "", None),
+            ("initial_price_value", "gte", "1", "initial_price_value"),
+            ("current_price_value", "gte", "1", "current_price_value"),
+            ("minimum_price_value", "gte", "1", "minimum_price_value"),
+            ("market_value", "gte", "1", "market_value"),
+            ("platform_fee", "gte", "1", "platform_fee"),
+            ("delivery_cost", "gte", "1", "delivery_cost"),
+            ("dismantling_cost", "gte", "1", "dismantling_cost"),
+            ("repair_cost", "gte", "1", "repair_cost"),
+            ("storage_cost", "gte", "1", "storage_cost"),
+            ("legal_cost", "gte", "1", "legal_cost"),
+            ("other_costs", "gte", "1", "other_costs"),
+            ("target_profit", "gte", "1", "target_profit"),
+            ("total_expenses", "gte", "1", "platform_fee"),
+            ("full_entry_cost", "gte", "1", "current_price_value"),
+            ("potential_profit", "gte", "1", "market_value"),
+            ("roi", "gte", "1", "market_value"),
+            ("roi_value", "gte", "1", "market_value"),
+            ("market_discount", "gte", "1", "market_discount"),
+            ("formula_max_purchase_price", "gte", "1", "formula_max_purchase_price"),
+            ("is_new", "equals", True, None),
+            ("exclude_from_analysis", "equals", True, "exclude_from_analysis"),
+            ("work_decision_status", "not-empty", "", None),
+        )
+
+        for key, operator, value, expected_param in cases:
+            with self.subTest(key=key):
+                predicate = _grid_filter_predicate(
+                    {"columnFilters": {key: {"kind": "predicate", "operator": operator, "value": value}}}
+                )
+                self.assertIsNotNone(predicate)
+                if expected_param is not None:
+                    compiled = predicate.compile(dialect=postgresql.dialect())
+                    self.assertIn(expected_param, compiled.params.values())
+
     def test_grid_roi_sort_uses_computed_economy_expression(self) -> None:
         statement = _apply_record_sort(
             _build_persisted_lots_statement(LotDatagridFilters(source="tbankrot"), ("tbankrot",)),
