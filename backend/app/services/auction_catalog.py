@@ -49,6 +49,7 @@ LOT_GRID_COLUMNS = [
 SHORTLIST_DECISIONS = {"watch", "calculate", "inspection", "bid"}
 SHORTLIST_MIN_SCORE = 85
 LOT_DATASET_MAX_ROWS = 10_000
+MIN_TEXT_SEARCH_LENGTH = 3
 LOT_PERIOD_DAYS = {
     "week": 7,
     "month": 31,
@@ -341,6 +342,8 @@ async def list_persisted_lot_column_histogram(
     if source and source != "all" and source not in SOURCE_PROVIDERS:
         supported = ", ".join(sorted(SOURCE_PROVIDERS))
         raise ValueError(f"Unsupported auction source '{source}'. Supported: {supported}")
+    if _is_search_text_allowed(q) or _grid_filter_has_global_search(grid_filter):
+        return []
 
     options = histogram_options or {}
     effective_grid_filter = None if options.get("scope") == "sourceAll" else grid_filter
@@ -396,7 +399,7 @@ def _build_persisted_lots_statement(
         statement = statement.where(_json_decimal_value("current_price_value") >= filters.min_price)
     if filters.max_price is not None:
         statement = statement.where(_json_decimal_value("current_price_value") <= filters.max_price)
-    if filters.q:
+    if _is_search_text_allowed(filters.q):
         statement = statement.where(_record_search_predicate(filters.q))
     if filters.shortlist:
         statement = statement.where(_shortlist_record_predicate())
@@ -619,7 +622,30 @@ def _advanced_expression_predicate(payload):
 
 
 def _predicate_filter_condition(key, operator, value=None, value2=None, case_sensitive=False):
-    expression, value_type = _grid_column_expression(str(key) if key else None)
+    if key == "__globalSearch":
+        if operator != "contains" or not _is_search_text_allowed(value):
+            return None
+        return _record_search_predicate(str(value))
+    if key == "__shortlist":
+        normalized_value = _coerce_filter_value(value, "boolean")
+        return _shortlist_record_predicate() if operator == "equals" and normalized_value is True else None
+
+    normalized_key = str(key) if key else None
+    if operator in {"contains", "startsWith", "endsWith"}:
+        expression = _safe_text_search_expression(normalized_key)
+        if expression is None or not _is_search_text_allowed(value):
+            return None
+        pattern_value = _escape_like(str(value))
+        text_expression = cast(expression, String)
+        compared_text = text_expression if case_sensitive else func.lower(text_expression)
+        compared_value = pattern_value if case_sensitive else pattern_value.lower()
+        if operator == "contains":
+            return compared_text.like(f"%{compared_value}%", escape="\\")
+        if operator == "startsWith":
+            return compared_text.like(f"{compared_value}%", escape="\\")
+        return compared_text.like(f"%{compared_value}", escape="\\")
+
+    expression, value_type = _grid_column_expression(normalized_key)
     if expression is None or not isinstance(operator, str):
         return None
 
@@ -655,18 +681,38 @@ def _predicate_filter_condition(key, operator, value=None, value2=None, case_sen
             return comparable_expression == normalized_value
         return comparable_expression != normalized_value
 
-    if value is None:
-        return None
-    pattern_value = _escape_like(str(value))
-    compared_text = text_expression if case_sensitive else func.lower(text_expression)
-    compared_value = pattern_value if case_sensitive else pattern_value.lower()
-    if operator == "contains":
-        return compared_text.like(f"%{compared_value}%", escape="\\")
-    if operator == "startsWith":
-        return compared_text.like(f"{compared_value}%", escape="\\")
-    if operator == "endsWith":
-        return compared_text.like(f"%{compared_value}", escape="\\")
     return None
+
+
+def _safe_text_search_expression(key: str | None):
+    return {
+        "lotName": AuctionLotRecord.lot_name,
+        "source": AuctionLotRecord.source_code,
+        "sourceTitle": AuctionLotRecord.source_code,
+    }.get(key or "")
+
+
+def _is_search_text_allowed(value: object) -> bool:
+    return value is not None and len(str(value).strip()) >= MIN_TEXT_SEARCH_LENGTH
+
+
+def _grid_filter_has_global_search(filter_model: dict | None) -> bool:
+    if not isinstance(filter_model, dict):
+        return False
+    return _advanced_expression_has_global_search(filter_model.get("advancedExpression"))
+
+
+def _advanced_expression_has_global_search(payload: object) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    kind = payload.get("kind")
+    if kind == "condition":
+        return payload.get("key") == "__globalSearch" and _is_search_text_allowed(payload.get("value"))
+    if kind == "group":
+        return any(_advanced_expression_has_global_search(child) for child in payload.get("children") or [])
+    if kind == "not":
+        return _advanced_expression_has_global_search(payload.get("child"))
+    return False
 
 
 def _combine_joined_predicates(joined_predicates: list[tuple[str, object]]):
@@ -816,19 +862,7 @@ def _pagination_from_total(
 
 def _record_search_predicate(query: str):
     pattern = f"%{_escape_like(query.strip().lower())}%"
-    search_columns = (
-        AuctionLotRecord.lot_name,
-        AuctionLotRecord.auction_number,
-        AuctionLotRecord.lot_number,
-        AuctionLotRecord.status,
-        _json_text_value("auction_name"),
-        _json_text_value("organizer_name"),
-        _json_text_value("debtor_name"),
-        _json_text_value("location"),
-        _json_text_value("category"),
-        cast(AuctionLotRecord.datagrid_row, String),
-    )
-    return or_(*[func.lower(func.coalesce(column, "")).like(pattern, escape="\\") for column in search_columns])
+    return func.lower(AuctionLotRecord.search_text).like(pattern, escape="\\")
 
 
 def _shortlist_record_predicate():

@@ -102,6 +102,125 @@ class AuctionCatalogSqlTests(unittest.TestCase):
         self.assertIn("%квартира%", compiled.params.values())
         self.assertNotIn("LIMIT", sql)
 
+    def test_grid_advanced_expression_supports_global_search_and_shortlist(self) -> None:
+        statement = _build_persisted_lots_statement(
+            LotDatagridFilters(source=None),
+            ("tbankrot",),
+            grid_filter={
+                "advancedExpression": {
+                    "kind": "group",
+                    "operator": "and",
+                    "children": [
+                        {"kind": "condition", "key": "__globalSearch", "operator": "contains", "value": "квартира"},
+                        {"kind": "condition", "key": "__shortlist", "operator": "equals", "value": True},
+                    ],
+                },
+            },
+        )
+        compiled = statement.compile(dialect=postgresql.dialect())
+        sql = str(compiled)
+
+        self.assertIn("auction_lot_work_items", sql)
+        self.assertIn("LIKE", sql)
+        self.assertIn("auction_lot_records.search_text", sql)
+        self.assertIn("%квартира%", compiled.params.values())
+        self.assertNotIn("datagrid_row AS", sql)
+        self.assertNotIn("datagrid_row::text", sql.lower())
+
+    def test_grid_text_contains_does_not_fallback_to_datagrid_row_cast(self) -> None:
+        statement = _build_persisted_lots_statement(
+            LotDatagridFilters(source=None),
+            ("tbankrot",),
+            grid_filter={
+                "advancedExpression": {
+                    "kind": "group",
+                    "operator": "and",
+                    "children": [
+                        {"kind": "condition", "key": "lotName", "operator": "contains", "value": "bmw"},
+                        {"kind": "condition", "key": "location", "operator": "contains", "value": "москва"},
+                    ],
+                },
+            },
+        )
+        compiled = statement.compile(dialect=postgresql.dialect())
+        sql = str(compiled)
+
+        self.assertIn("auction_lot_records.lot_name", sql)
+        self.assertIn("%bmw%", compiled.params.values())
+        self.assertNotIn("datagrid_row AS", sql)
+        self.assertNotIn("datagrid_row::text", sql.lower())
+        self.assertNotIn("location", compiled.params.values())
+
+    def test_short_global_search_input_is_ignored(self) -> None:
+        statement = _build_persisted_lots_statement(
+            LotDatagridFilters(source=None),
+            ("tbankrot",),
+            grid_filter={
+                "advancedExpression": {
+                    "kind": "condition",
+                    "key": "__globalSearch",
+                    "operator": "contains",
+                    "value": "bm",
+                },
+            },
+        )
+        compiled = statement.compile(dialect=postgresql.dialect())
+        sql = str(compiled)
+
+        self.assertNotIn("LIKE", sql)
+        self.assertNotIn("%bm%", compiled.params.values())
+
+    def test_short_legacy_query_input_is_ignored(self) -> None:
+        statement = _build_persisted_lots_statement(
+            LotDatagridFilters(source=None, q="bm"),
+            ("tbankrot",),
+        )
+        compiled = statement.compile(dialect=postgresql.dialect())
+        sql = str(compiled)
+
+        self.assertNotIn("LIKE", sql)
+        self.assertNotIn("%bm%", compiled.params.values())
+
+    def test_three_character_global_search_input_is_allowed(self) -> None:
+        statement = _build_persisted_lots_statement(
+            LotDatagridFilters(source=None),
+            ("tbankrot",),
+            grid_filter={
+                "advancedExpression": {
+                    "kind": "condition",
+                    "key": "__globalSearch",
+                    "operator": "contains",
+                    "value": "bmw",
+                },
+            },
+        )
+        compiled = statement.compile(dialect=postgresql.dialect())
+        sql = str(compiled)
+
+        self.assertIn("LIKE", sql)
+        self.assertIn("auction_lot_records.search_text", sql)
+        self.assertIn("%bmw%", compiled.params.values())
+        self.assertNotIn("lower(coalesce(auction_lot_records.lot_name", sql)
+
+    def test_short_text_contains_input_is_ignored(self) -> None:
+        statement = _build_persisted_lots_statement(
+            LotDatagridFilters(source=None),
+            ("tbankrot",),
+            grid_filter={
+                "advancedExpression": {
+                    "kind": "condition",
+                    "key": "lotName",
+                    "operator": "contains",
+                    "value": "bm",
+                },
+            },
+        )
+        compiled = statement.compile(dialect=postgresql.dialect())
+        sql = str(compiled)
+
+        self.assertNotIn("LIKE", sql)
+        self.assertNotIn("%bm%", compiled.params.values())
+
     def test_grid_number_filter_sanitizes_currency_text_before_cast(self) -> None:
         statement = _build_persisted_lots_statement(
             LotDatagridFilters(source="tbankrot"),
