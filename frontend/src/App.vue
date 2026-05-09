@@ -1959,10 +1959,39 @@ function sanitizePercentPredicatePayload(payload: unknown) {
 
   const record = payload as Record<string, unknown>
   if (!('value' in record) && !('value2' in record)) return payload
-  return {
+  const next: Record<string, unknown> = {
     ...record,
     value: normalizePercentFilterValue(record.key, record.value),
-    value2: normalizePercentFilterValue(record.key, record.value2),
+  }
+  const value2 = normalizePercentFilterValue(record.key, record.value2)
+  if (value2 !== undefined) {
+    next.value2 = value2
+  } else {
+    delete next.value2
+  }
+  if (next.value === undefined) {
+    delete next.value
+  }
+  return next
+}
+
+function sanitizePercentPredicatePayloadForKey(payload: unknown, key: string) {
+  if (!payload || typeof payload !== 'object') return payload
+
+  const record = payload as Record<string, unknown>
+  const next: Record<string, unknown> = { ...record }
+  if ('value' in record) {
+    const value = normalizePercentFilterValue(key, record.value)
+    if (value !== undefined) next.value = value
+    else delete next.value
+  }
+  if ('value2' in record) {
+    const value2 = normalizePercentFilterValue(key, record.value2)
+    if (value2 !== undefined) next.value2 = value2
+    else delete next.value2
+  }
+  return {
+    ...next,
   }
 }
 
@@ -1982,13 +2011,7 @@ function sanitizePercentAdvancedFilters(value: unknown) {
       clauses: Array.isArray(record.clauses)
         ? record.clauses.map((clause) => {
             const sanitized = sanitizePercentPredicatePayload(clause)
-            return sanitized && typeof sanitized === 'object'
-              ? {
-                  ...(sanitized as Record<string, unknown>),
-                  value: normalizePercentFilterValue(key, (sanitized as Record<string, unknown>).value),
-                  value2: normalizePercentFilterValue(key, (sanitized as Record<string, unknown>).value2),
-                }
-              : sanitized
+            return sanitizePercentPredicatePayloadForKey(sanitized, key)
           })
         : record.clauses,
     }
@@ -2287,11 +2310,52 @@ function hasGridFilterModel(filterModel: DataGridFilterSnapshot | null | undefin
   if (!filterModel) return false
   const quickFilter = (filterModel as { quickFilter?: { query?: unknown } }).quickFilter
   return (
-    Object.keys(filterModel.columnFilters ?? {}).length > 0 ||
-    Object.keys(filterModel.advancedFilters ?? {}).length > 0 ||
+    hasMeaningfulColumnFilters(filterModel.columnFilters) ||
+    hasMeaningfulAdvancedFilters(filterModel.advancedFilters) ||
     Boolean(filterModel.advancedExpression) ||
     (typeof quickFilter?.query === 'string' && quickFilter.query.trim().length > 0)
   )
+}
+
+function hasMeaningfulColumnFilters(value: unknown) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+
+  for (const payload of Object.values(value as Record<string, unknown>)) {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) continue
+    const filter = payload as Record<string, unknown>
+    if (filter.kind === 'valueSet') {
+      const tokens = filter.tokens
+      if (Array.isArray(tokens) && tokens.length > 0) return true
+      continue
+    }
+    if (filter.kind === 'predicate') {
+      if (isMeaningfulAdvancedClause(filter)) return true
+    }
+  }
+  return false
+}
+
+function hasMeaningfulAdvancedFilters(value: unknown) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+
+  for (const payload of Object.values(value as Record<string, unknown>)) {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) continue
+    const clauses = (payload as { clauses?: unknown }).clauses
+    if (Array.isArray(clauses) && clauses.some(isMeaningfulAdvancedClause)) return true
+  }
+  return false
+}
+
+function isMeaningfulAdvancedClause(value: unknown) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const clause = value as Record<string, unknown>
+  const operator = typeof clause.operator === 'string' ? clause.operator.trim() : ''
+  if (!operator) return false
+  if (['isNull', 'notNull', 'is-null', 'not-null', 'isEmpty', 'notEmpty', 'is-empty', 'not-empty'].includes(operator)) {
+    return true
+  }
+  const clauseValue = clause.value
+  return clauseValue !== null && clauseValue !== undefined && String(clauseValue).trim().length > 0
 }
 
 function isAbortLikeError(error: unknown) {
@@ -2401,12 +2465,19 @@ async function requestAuctionServerLotsWindow(request: {
   sortModel?: readonly DataGridSortState[]
   filterModel?: DataGridFilterSnapshot | null
 }) {
+  const snapshot = catalogRowModel.value?.getSnapshot()
+  const snapshotFilterModel = snapshot?.filterModel ?? null
+  const effectiveFilterModel = hasGridFilterModel(request.filterModel)
+    ? request.filterModel ?? null
+    : hasGridFilterModel(snapshotFilterModel)
+      ? snapshotFilterModel
+      : request.filterModel ?? null
   return auctionServerDataSource.pullWindow({
     start: Math.max(0, request.start),
     end: Math.max(Math.max(0, request.start), request.end),
     signal: request.signal,
-    sortModel: request.sortModel,
-    filterModel: request.filterModel,
+    sortModel: request.sortModel ?? snapshot?.sortModel,
+    filterModel: effectiveFilterModel,
     reason: 'manual-window',
     priority: 'normal',
   })
@@ -2576,9 +2647,11 @@ function createCatalogDataSource(): CatalogDataSource {
         }
       }
       try {
+        const effectiveFilterModel = resolveCatalogPullFilterModel(request.filterModel, request.reason)
+        const sanitizedFilterModel = sanitizeGridValueSetFilters(effectiveFilterModel)
         return await auctionServerDataSource.pull({
           ...request,
-          filterModel: sanitizeGridValueSetFilters(request.filterModel),
+          filterModel: sanitizedFilterModel,
         })
       } catch (error) {
         if (!isBackgroundPrefetch && !isAbortLikeError(error) && requestSeq === catalogPullRequestSeq) {
@@ -2604,6 +2677,14 @@ function createCatalogDataSource(): CatalogDataSource {
       return commitCatalogEdits(request)
     },
   }
+}
+
+function resolveCatalogPullFilterModel(filterModel: DataGridFilterSnapshot | null | undefined, reason: string) {
+  if (hasGridFilterModel(filterModel)) return filterModel ?? null
+  if (reason === 'filter-change') return filterModel ?? null
+
+  const snapshotFilterModel = catalogRowModel.value?.getSnapshot().filterModel ?? null
+  return hasGridFilterModel(snapshotFilterModel) ? snapshotFilterModel : filterModel ?? null
 }
 
 function createCatalogRowModel(): CatalogRowModel {

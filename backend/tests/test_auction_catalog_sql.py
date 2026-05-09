@@ -179,6 +179,47 @@ class AuctionCatalogSqlTests(unittest.TestCase):
         self.assertIn("!=", sql)
         self.assertIn("IS NOT NULL", sql)
 
+    def test_grid_advanced_expression_supports_in_operator(self) -> None:
+        predicate = _grid_filter_predicate(
+            {
+                "columnFilters": {},
+                "advancedFilters": {},
+                "advancedExpression": {
+                    "kind": "condition",
+                    "key": "status",
+                    "operator": "in",
+                    "value": "Идут торги,Прием заявок",
+                },
+            }
+        )
+
+        self.assertIsNotNone(predicate)
+        compiled = predicate.compile(dialect=postgresql.dialect())
+
+        self.assertIn(" IN ", str(compiled))
+        self.assertIn(["Идут торги", "Прием заявок"], compiled.params.values())
+
+    def test_grid_advanced_expression_contains_supports_boolean_columns(self) -> None:
+        predicate = _grid_filter_predicate(
+            {
+                "columnFilters": {},
+                "advancedFilters": {},
+                "advancedExpression": {
+                    "kind": "condition",
+                    "key": "isNew",
+                    "type": "text",
+                    "operator": "contains",
+                    "value": "true",
+                },
+            }
+        )
+
+        self.assertIsNotNone(predicate)
+        compiled = predicate.compile(dialect=postgresql.dialect())
+
+        self.assertIn("LIKE", str(compiled))
+        self.assertIn("%true%", compiled.params.values())
+
     def test_grid_quick_filter_searches_configured_columns(self) -> None:
         statement = _build_persisted_lots_statement(
             LotDatagridFilters(source=None),

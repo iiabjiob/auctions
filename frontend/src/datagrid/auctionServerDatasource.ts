@@ -181,7 +181,7 @@ export function createAuctionServerDatasource<TApiRow, TRow>(
         columnId: request.columnId,
         options: request.options as Record<string, unknown>,
         sortModel: serverQuery.sortModel ?? [],
-        filterModel: serverQuery.filterModel ?? null,
+        filterModel: hasNormalizedFilterModel(serverQuery.filterModel) ? serverQuery.filterModel : null,
       },
       request.signal,
     )
@@ -225,6 +225,18 @@ function mapAuctionServerQuery(query: DataGridServerQuery) {
     startRow: query.range.startRow,
     endRow: query.range.endRow,
     sortModel: query.sortModel ?? [],
-    filterModel: query.filterModel ?? null,
+    filterModel: hasNormalizedFilterModel(query.filterModel) ? query.filterModel : null,
   }
+}
+
+function hasNormalizedFilterModel(filterModel: DataGridServerQuery['filterModel']) {
+  if (!filterModel) return false
+  const quickFilter = filterModel.quickFilter
+  return (
+    Object.keys(filterModel.columnFilters ?? {}).length > 0 ||
+    Object.keys(filterModel.columnStyleFilters ?? {}).length > 0 ||
+    Object.keys(filterModel.advancedFilters ?? {}).length > 0 ||
+    Boolean(filterModel.advancedExpression) ||
+    (typeof quickFilter?.query === 'string' && quickFilter.query.trim().length > 0)
+  )
 }

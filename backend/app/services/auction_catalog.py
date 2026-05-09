@@ -727,7 +727,7 @@ def _predicate_filter_condition(key, operator, value=None, value2=None, case_sen
 
     normalized_key = str(key) if key else None
     if operator in {"contains", "startsWith", "endsWith"}:
-        expression = _safe_text_search_expression(normalized_key)
+        expression, _ = _grid_column_expression(normalized_key)
         if expression is None or not _is_search_text_allowed(value):
             return None
         pattern_value = _escape_like(str(value))
@@ -761,6 +761,9 @@ def _predicate_filter_condition(key, operator, value=None, value2=None, case_sen
         if normalized_value is None or normalized_value2 is None:
             return None
         return and_(comparable_expression >= normalized_value, comparable_expression <= normalized_value2)
+    if operator == "in":
+        values = _coerce_filter_list_value(value, value_type)
+        return comparable_expression.in_(values) if values else None
     if operator in {"gt", "gte", "lt", "lte", "equals", "notEquals"}:
         if normalized_value is None:
             return None
@@ -872,6 +875,16 @@ def _coerce_filter_value(value, value_type: str):
         except (DecimalException, ValueError):
             return None
     return str(value) if value_type == "text" else value
+
+
+def _coerce_filter_list_value(value, value_type: str):
+    raw_values = value if isinstance(value, list) else str(value).split(",")
+    values = []
+    for item in raw_values:
+        normalized = _coerce_filter_value(str(item).strip() if item is not None else None, value_type)
+        if normalized is not None and normalized not in values:
+            values.append(normalized)
+    return values
 
 
 def _value_set_token_predicate(expression, token: str):
