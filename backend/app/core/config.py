@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     postgres_port: int
     postgres_db: str
     sqlalchemy_echo: bool = False
+    db_statement_timeout_ms: int = 5000
 
     # ---- Redis / background sync ----
     redis_url: str = "redis://redis:6379/0"
