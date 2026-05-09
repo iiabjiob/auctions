@@ -105,7 +105,6 @@ class AuctionGridApiTests(unittest.TestCase):
                 "startRow": 0,
                 "endRow": 10,
                 "source": "tbankrot",
-                "q": "квартира",
                 "status": "Идут торги",
                 "analysis_color": "green",
                 "min_price": "100000",
@@ -134,7 +133,6 @@ class AuctionGridApiTests(unittest.TestCase):
         self.assertEqual(
             {(condition["key"], condition["operator"]) for condition in merged["children"]},
             {
-                ("__globalSearch", "contains"),
                 ("source", "equals"),
                 ("status", "equals"),
                 ("analysisColor", "equals"),
@@ -148,8 +146,8 @@ class AuctionGridApiTests(unittest.TestCase):
 
     def test_search_query_detection_requires_effective_global_search(self) -> None:
         self.assertFalse(_has_search_query(None))
-        self.assertFalse(_has_search_query({"advancedExpression": {"kind": "condition", "key": "__globalSearch", "operator": "contains", "value": "bm"}}))
-        self.assertTrue(_has_search_query({"advancedExpression": {"kind": "condition", "key": "__globalSearch", "operator": "contains", "value": "bmw"}}))
+        self.assertTrue(_has_search_query({"quickFilter": {"query": "bm"}}))
+        self.assertFalse(_has_search_query({"quickFilter": {"query": "   "}}))
 
 
 class AuctionGridPullServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -188,7 +186,7 @@ class AuctionGridPullServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.dataset_version, 7)
 
     async def test_pull_skips_summary_when_search_is_present(self) -> None:
-        request = AuctionLotsGridPullRequest.model_validate({"startRow": 0, "endRow": 2, "q": "bmw"})
+        request = AuctionLotsGridPullRequest.model_validate({"startRow": 0, "endRow": 2, "filterModel": {"quickFilter": {"query": "bmw"}}})
 
         with (
             patch("app.services.auction_grid.read_grid_dataset_version", AsyncMock(return_value=7)),
@@ -216,7 +214,7 @@ class AuctionGridPullServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.summary.new_count, 3)
 
     async def test_histogram_is_disabled_when_search_is_present(self) -> None:
-        request = AuctionLotsGridHistogramRequest.model_validate({"columnId": "lotName", "q": "bmw"})
+        request = AuctionLotsGridHistogramRequest.model_validate({"columnId": "lotName", "filterModel": {"quickFilter": {"query": "bmw"}}})
 
         with patch("app.services.auction_grid.list_persisted_lot_column_histogram", AsyncMock()) as histogram:
             response = await get_auction_lots_grid_histogram(AsyncMock(), request)

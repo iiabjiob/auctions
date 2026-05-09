@@ -50,6 +50,18 @@ SHORTLIST_DECISIONS = {"watch", "calculate", "inspection", "bid"}
 SHORTLIST_MIN_SCORE = 85
 LOT_DATASET_MAX_ROWS = 10_000
 MIN_TEXT_SEARCH_LENGTH = 3
+DEFAULT_QUICK_FILTER_COLUMNS = (
+    "lotName",
+    "location",
+    "organizer",
+    "auctionNumber",
+    "lotNumber",
+    "status",
+    "sourceTitle",
+    "analysisLabel",
+    "analysisCategory",
+    "exclusionReason",
+)
 LOT_PERIOD_DAYS = {
     "week": 7,
     "month": 31,
@@ -61,7 +73,6 @@ def list_lots_for_datagrid(
     *,
     period: str = "month",
     source: str | None = None,
-    q: str | None = None,
     status: str | None = None,
     analysis_color: str | None = None,
     min_price: Decimal | None = None,
@@ -75,7 +86,6 @@ def list_lots_for_datagrid(
     filters = LotDatagridFilters(
         period=period,
         source=source,
-        q=q,
         status=status,
         analysis_color=analysis_color,
         min_price=min_price,
@@ -114,7 +124,6 @@ async def list_persisted_lots_for_datagrid(
     *,
     period: str = "month",
     source: str | None = None,
-    q: str | None = None,
     status: str | None = None,
     analysis_color: str | None = None,
     min_price: Decimal | None = None,
@@ -134,7 +143,6 @@ async def list_persisted_lots_for_datagrid(
     filters = LotDatagridFilters(
         period=period,
         source=source,
-        q=q,
         status=status,
         analysis_color=analysis_color,
         min_price=min_price,
@@ -185,7 +193,6 @@ async def pull_persisted_lots_for_grid(
     end_row: int,
     period: str = "month",
     source: str | None = None,
-    q: str | None = None,
     status: str | None = None,
     analysis_color: str | None = None,
     min_price: Decimal | None = None,
@@ -202,7 +209,6 @@ async def pull_persisted_lots_for_grid(
     filters = LotDatagridFilters(
         period=period,
         source=source,
-        q=q,
         status=status,
         analysis_color=analysis_color,
         min_price=min_price,
@@ -244,7 +250,6 @@ async def summarize_persisted_lots_for_grid(
     *,
     period: str = "month",
     source: str | None = None,
-    q: str | None = None,
     status: str | None = None,
     analysis_color: str | None = None,
     min_price: Decimal | None = None,
@@ -257,7 +262,6 @@ async def summarize_persisted_lots_for_grid(
     filters = LotDatagridFilters(
         period=period,
         source=source,
-        q=q,
         status=status,
         analysis_color=analysis_color,
         min_price=min_price,
@@ -309,7 +313,6 @@ async def list_persisted_lot_column_histogram(
     *,
     period: str = "month",
     source: str | None = None,
-    q: str | None = None,
     status: str | None = None,
     analysis_color: str | None = None,
     min_price: Decimal | None = None,
@@ -329,7 +332,6 @@ async def list_persisted_lot_column_histogram(
     filters = LotDatagridFilters(
         period=period,
         source=source,
-        q=q,
         status=status,
         analysis_color=analysis_color,
         min_price=min_price,
@@ -342,7 +344,7 @@ async def list_persisted_lot_column_histogram(
     if source and source != "all" and source not in SOURCE_PROVIDERS:
         supported = ", ".join(sorted(SOURCE_PROVIDERS))
         raise ValueError(f"Unsupported auction source '{source}'. Supported: {supported}")
-    if _is_search_text_allowed(q) or _grid_filter_has_global_search(grid_filter):
+    if _grid_filter_has_quick_filter(grid_filter):
         return []
 
     options = histogram_options or {}
@@ -399,8 +401,6 @@ def _build_persisted_lots_statement(
         statement = statement.where(_json_decimal_value("current_price_value") >= filters.min_price)
     if filters.max_price is not None:
         statement = statement.where(_json_decimal_value("current_price_value") <= filters.max_price)
-    if _is_search_text_allowed(filters.q):
-        statement = statement.where(_record_search_predicate(filters.q))
     if filters.shortlist:
         statement = statement.where(_shortlist_record_predicate())
     grid_predicate = _grid_filter_predicate(grid_filter)
@@ -526,6 +526,7 @@ def _grid_column_expression(key: str | None):
         "marketValue": (_json_decimal_value("market_value"), "number"),
         "minimumPrice": (_json_decimal_value("minimum_price_value"), "number"),
         "organizer": (_json_text_value("organizer_name"), "text"),
+        "organizerName": (_json_text_value("organizer_name"), "text"),
         "otherCosts": (_json_decimal_value("other_costs"), "number"),
         "platformFee": (_json_decimal_value("platform_fee"), "number"),
         "potentialProfit": (_grid_potential_profit_value(), "number"),
@@ -565,6 +566,11 @@ def _grid_filter_predicate(grid_filter: dict | None):
 
     advanced_expression = grid_filter.get("advancedExpression")
     predicate = _advanced_expression_predicate(advanced_expression)
+    if predicate is not None:
+        predicates.append(predicate)
+
+    quick_filter = grid_filter.get("quickFilter")
+    predicate = _quick_filter_predicate(quick_filter)
     if predicate is not None:
         predicates.append(predicate)
 
@@ -623,10 +629,6 @@ def _advanced_expression_predicate(payload):
 
 def _predicate_filter_condition(key, operator, value=None, value2=None, case_sensitive=False):
     operator = _normalize_filter_operator(operator)
-    if key == "__globalSearch":
-        if operator != "contains" or not _is_search_text_allowed(value):
-            return None
-        return _record_search_predicate(str(value))
     if key == "__shortlist":
         normalized_value = _coerce_filter_value(value, "boolean")
         return _shortlist_record_predicate() if operator == "equals" and normalized_value is True else None
@@ -708,23 +710,51 @@ def _is_search_text_allowed(value: object) -> bool:
     return value is not None and len(str(value).strip()) >= MIN_TEXT_SEARCH_LENGTH
 
 
-def _grid_filter_has_global_search(filter_model: dict | None) -> bool:
+def _quick_filter_predicate(payload):
+    if not isinstance(payload, dict):
+        return None
+    query = payload.get("query")
+    if query is None or not str(query).strip():
+        return None
+
+    mode = payload.get("mode") if payload.get("mode") in {"contains", "tokens"} else "contains"
+    if mode == "tokens":
+        terms = [term for term in str(query).strip().lower().split() if term]
+    else:
+        terms = [str(query).strip().lower()]
+    if not terms:
+        return None
+
+    columns = payload.get("columns")
+    column_keys = [str(column) for column in columns if isinstance(column, str)] if isinstance(columns, list) else list(DEFAULT_QUICK_FILTER_COLUMNS)
+    expressions = [_quick_filter_text_expression(column_key) for column_key in column_keys]
+    expressions = [expression for expression in expressions if expression is not None]
+    if not expressions:
+        return None
+
+    term_predicates = []
+    for term in terms:
+        pattern = f"%{_escape_like(term)}%"
+        term_predicates.append(or_(*(expression.like(pattern, escape="\\") for expression in expressions)))
+    return and_(*term_predicates)
+
+
+def _quick_filter_text_expression(key: str):
+    expression, _ = _grid_column_expression(key)
+    if expression is None:
+        return None
+    return func.lower(func.coalesce(cast(expression, String), ""))
+
+
+def _grid_filter_has_quick_filter(filter_model: dict | None) -> bool:
+    return _filter_model_has_quick_filter(filter_model)
+
+
+def _filter_model_has_quick_filter(filter_model: dict | None) -> bool:
     if not isinstance(filter_model, dict):
         return False
-    return _advanced_expression_has_global_search(filter_model.get("advancedExpression"))
-
-
-def _advanced_expression_has_global_search(payload: object) -> bool:
-    if not isinstance(payload, dict):
-        return False
-    kind = payload.get("kind")
-    if kind == "condition":
-        return payload.get("key") == "__globalSearch" and _is_search_text_allowed(payload.get("value"))
-    if kind == "group":
-        return any(_advanced_expression_has_global_search(child) for child in payload.get("children") or [])
-    if kind == "not":
-        return _advanced_expression_has_global_search(payload.get("child"))
-    return False
+    quick_filter = filter_model.get("quickFilter")
+    return isinstance(quick_filter, dict) and quick_filter.get("query") is not None and bool(str(quick_filter.get("query")).strip())
 
 
 def _combine_joined_predicates(joined_predicates: list[tuple[str, object]]):
@@ -870,11 +900,6 @@ def _pagination_from_total(
         total=total,
         total_pages=total_pages,
     )
-
-
-def _record_search_predicate(query: str):
-    pattern = f"%{_escape_like(query.strip().lower())}%"
-    return func.lower(AuctionLotRecord.search_text).like(pattern, escape="\\")
 
 
 def _shortlist_record_predicate():
@@ -1154,14 +1179,6 @@ def build_datagrid_row(item: AuctionListItem, source_title: str) -> LotDatagridR
 
 
 def _matches_filters(row: LotDatagridRow, filters: LotDatagridFilters) -> bool:
-    if filters.q:
-        query = filters.q.lower()
-        haystack = " ".join(
-            value or ""
-            for value in [row.lot_name, row.auction_name, row.organizer_name, row.auction_number, row.status]
-        ).lower()
-        if query not in haystack:
-            return False
     if filters.status and row.status != filters.status:
         return False
     if filters.min_price is not None and (row.initial_price_value is None or row.initial_price_value < filters.min_price):

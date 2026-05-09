@@ -258,7 +258,6 @@ class LotDatagridRow(BaseModel):
 class LotDatagridFilters(BaseModel):
     period: str = "month"
     source: str | None = None
-    q: str | None = None
     status: str | None = None
     analysis_color: str | None = None
     min_price: Decimal | None = None
@@ -296,7 +295,6 @@ class LotDatagridHistogramRequest(BaseModel):
     options: dict[str, Any] = Field(default_factory=dict)
     period: str = "month"
     source: str | None = None
-    q: str | None = None
     status: str | None = None
     analysis_color: str | None = None
     min_price: Decimal | None = None

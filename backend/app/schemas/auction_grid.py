@@ -21,7 +21,6 @@ class AuctionLotsGridQueryOptions(BaseModel):
 
     period: str = Field(default="month", pattern="^(week|month|year)$")
     source: str | None = None
-    q: str | None = None
     status: str | None = None
     analysis_color: str | None = None
     min_price: Decimal | None = None

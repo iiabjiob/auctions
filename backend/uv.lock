@@ -5,7 +5,7 @@ requires-python = ">=3.11"
 [[package]]
 name = "affino-grid-backend"
 version = "0.1.0"
-source = { git = "https://github.com/affinio/datagrid.git?subdirectory=backend%2Fpackages%2Faffino_grid_backend&rev=main#6deea924918b43c04362184575692b7e6526a704" }
+source = { git = "https://github.com/affinio/datagrid.git?subdirectory=backend%2Fpackages%2Faffino_grid_backend&rev=main#1d4955c310bf8e1b6e271d5d64c833d5aad8780e" }
 dependencies = [
     { name = "sqlalchemy" },
 ]

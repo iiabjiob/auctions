@@ -9,11 +9,14 @@ import type {
   DataGridRowId,
   DataGridSortState,
 } from '@affino/datagrid-vue'
+import {
+  normalizeDataGridServerQuery,
+  type DataGridServerQuery,
+} from '@affino/datagrid-server-adapters'
 
 export type AuctionServerGridFilters = {
   period: string
   source: string | null
-  q: string | null
   status: string | null
   analysis_color: string | null
   min_price: number | null
@@ -71,6 +74,7 @@ type AuctionServerHistogramResponse = {
 }
 
 type PostJson = <TResponse>(path: string, payload: unknown, signal?: AbortSignal) => Promise<TResponse>
+type QueryRequestProjection = Pick<DataGridDataSourcePullRequest, 'range' | 'sortModel' | 'filterModel' | 'groupBy' | 'pagination'>
 
 export type CreateAuctionServerDatasourceOptions<TApiRow, TRow> = {
   postJson: PostJson
@@ -99,19 +103,22 @@ export function createAuctionServerDatasource<TApiRow, TRow>(
 
     const start = Math.max(0, Math.trunc(request.start))
     const inclusiveEnd = Math.max(start, Math.trunc(request.end))
-    const endExclusive = inclusiveEnd + 1
-    const filterModel = normalizeFilterModel(request.filterModel, options.hasFilterModel)
-    const sortModel = request.sortModel ?? []
+    const serverQuery = normalizeAuctionServerQuery(
+      {
+        range: { start, end: inclusiveEnd },
+        sortModel: request.sortModel,
+        filterModel: request.filterModel,
+      },
+      options.hasFilterModel,
+    )
 
+    const payload = {
+      ...options.getFilters(),
+      ...mapAuctionServerQuery(serverQuery),
+    }
     const data = await options.postJson<AuctionServerPullResponse<TApiRow>>(
       '/api/auction-lots/pull',
-      {
-        ...options.getFilters(),
-        startRow: start,
-        endRow: endExclusive,
-        sortModel,
-        filterModel,
-      },
+      payload,
       request.signal,
     )
 
@@ -166,14 +173,15 @@ export function createAuctionServerDatasource<TApiRow, TRow>(
   }
 
   async function getColumnHistogram(request: DataGridDataSourceColumnHistogramRequest): Promise<DataGridColumnHistogram> {
+    const serverQuery = normalizeAuctionServerQuery(request, options.hasFilterModel)
     const response = await options.postJson<AuctionServerHistogramResponse | DataGridColumnHistogram>(
       '/api/auction-lots/histogram',
       {
         ...options.getFilters(),
         columnId: request.columnId,
         options: request.options as Record<string, unknown>,
-        sortModel: request.sortModel ?? [],
-        filterModel: normalizeFilterModel(request.filterModel, options.hasFilterModel),
+        sortModel: serverQuery.sortModel ?? [],
+        filterModel: serverQuery.filterModel ?? null,
       },
       request.signal,
     )
@@ -199,9 +207,24 @@ function emptyAuctionServerGridSummary(total: number): AuctionServerGridSummary 
   }
 }
 
-function normalizeFilterModel(
-  filterModel: DataGridFilterSnapshot | null | undefined,
+function normalizeAuctionServerQuery(
+  request: Partial<QueryRequestProjection>,
   hasFilterModel: (filterModel: DataGridFilterSnapshot | null | undefined) => boolean,
 ) {
-  return hasFilterModel(filterModel) ? filterModel ?? null : null
+  return normalizeDataGridServerQuery({
+    range: request.range ?? { start: 0, end: 0 },
+    sortModel: request.sortModel ?? [],
+    filterModel: hasFilterModel(request.filterModel) ? request.filterModel ?? null : null,
+    groupBy: request.groupBy ?? null,
+    pagination: request.pagination ?? { snapshot: null },
+  } as DataGridDataSourcePullRequest)
+}
+
+function mapAuctionServerQuery(query: DataGridServerQuery) {
+  return {
+    startRow: query.range.startRow,
+    endRow: query.range.endRow,
+    sortModel: query.sortModel ?? [],
+    filterModel: query.filterModel ?? null,
+  }
 }

@@ -55,7 +55,6 @@ async def pull_auction_lots_grid(
         end_row=request.resolved_end_row,
         period=request.period,
         source=None,
-        q=None,
         status=None,
         analysis_color=None,
         min_price=None,
@@ -73,7 +72,6 @@ async def pull_auction_lots_grid(
             session,
             period=request.period,
             source=None,
-            q=None,
             status=None,
             analysis_color=None,
             min_price=None,
@@ -113,7 +111,6 @@ async def get_auction_lots_grid_histogram(
         session,
         period=request.period,
         source=None,
-        q=None,
         status=None,
         analysis_color=None,
         min_price=None,
@@ -153,7 +150,6 @@ def _merge_query_options_into_filter_model(
 
 def _query_options_advanced_expression(request: AuctionLotsGridQueryOptions) -> dict[str, Any] | None:
     conditions: list[dict[str, Any]] = []
-    _append_text_condition(conditions, "__globalSearch", "contains", request.q)
     _append_text_condition(conditions, "source", "equals", request.source if request.source != "all" else None)
     _append_text_condition(conditions, "status", "equals", request.status)
     _append_text_condition(conditions, "analysisColor", "equals", request.analysis_color)
@@ -188,25 +184,14 @@ def _append_decimal_condition(conditions: list[dict[str, Any]], key: str, operat
 def _has_search_query(filter_model: dict[str, Any] | None) -> bool:
     if not isinstance(filter_model, dict):
         return False
-    return _expression_has_global_search(filter_model.get("advancedExpression"))
+    return _has_quick_filter_query(filter_model)
 
 
-def _expression_has_global_search(payload: Any) -> bool:
-    if not isinstance(payload, dict):
+def _has_quick_filter_query(filter_model: dict[str, Any] | None) -> bool:
+    if not isinstance(filter_model, dict):
         return False
-    kind = payload.get("kind")
-    if kind == "condition":
-        return (
-            payload.get("key") == "__globalSearch"
-            and payload.get("operator") == "contains"
-            and isinstance(payload.get("value"), str)
-            and len(payload["value"].strip()) >= 3
-        )
-    if kind == "group":
-        return any(_expression_has_global_search(child) for child in payload.get("children") or [])
-    if kind == "not":
-        return _expression_has_global_search(payload.get("child"))
-    return False
+    quick_filter = filter_model.get("quickFilter")
+    return isinstance(quick_filter, dict) and isinstance(quick_filter.get("query"), str) and bool(quick_filter["query"].strip())
 
 
 def _normalize_sort_model(sort_model: list[dict[str, Any]] | None) -> list[dict[str, str]] | None:

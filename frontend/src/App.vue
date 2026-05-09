@@ -1,10 +1,9 @@
 <script setup lang="ts">
-import { computed, defineComponent, h, nextTick, onMounted, onUnmounted, reactive, ref, shallowRef, watch, type PropType } from 'vue'
+import { computed, h, nextTick, onMounted, onUnmounted, reactive, ref, shallowRef, watch } from 'vue'
 import type { ComponentPublicInstance } from 'vue'
 import { storeToRefs } from 'pinia'
 import {
   DataGrid,
-  type DataGridAppToolbarModule,
   type DataGridAppColumnInput,
   type DataGridColumnMenuProp,
   type DataGridExposed,
@@ -401,7 +400,6 @@ type LotHistogramPayload = {
   options: Record<string, unknown>
   period: string
   source: string | null
-  q: string | null
   status: string | null
   analysis_color: string | null
   min_price: number | null
@@ -550,11 +548,6 @@ type CatalogRowModel = DataSourceBackedRowModel<GridLotRow> & {
   dataSource: CatalogDataSource
 }
 
-type FilterOption = {
-  label: string
-  value: string
-}
-
 type DatasetPeriod = 'week' | 'month' | 'year'
 
 type FilterPreset = {
@@ -635,7 +628,6 @@ type ServerQuickFiltersState = {
   period: DatasetPeriod
   source: string
   analysisColor: string
-  query: string
   status: string
   minPrice: string
   maxPrice: string
@@ -654,7 +646,6 @@ const catalogSummary = ref<AuctionServerGridSummary>({
   openApplicationsCount: 0,
   highRatingCount: 0,
 })
-const sources = ref<ApiSource[]>([])
 const presets = ref<FilterPreset[]>([])
 const analysisConfig = ref<AnalysisConfigResponse | null>(null)
 const selectedPresetId = ref('')
@@ -696,7 +687,6 @@ const CATALOG_ROW_MODEL_PREFETCH_TRIGGER_VIEWPORT_FACTOR = 1
 const CATALOG_ROW_MODEL_PREFETCH_WINDOW_VIEWPORT_FACTOR = 1
 const CATALOG_ROW_MODEL_PREFETCH_MIN_BATCH_SIZE = 128
 const CATALOG_ROW_MODEL_PREFETCH_MAX_BATCH_SIZE = 256
-const EMPTY_GRID_ROWS: readonly GridLotRow[] = []
 const catalogVirtualizationOptions = {
   rows: true,
   columns: true,
@@ -737,7 +727,6 @@ const gridRef = ref<DataGridExposed<GridLotRow> | null>(null)
 const gridSurfaceRef = ref<HTMLElement | null>(null)
 const gridColumnWidths = ref<GridColumnWidthsState>({})
 const gridRowsById = shallowRef(new Map<string, GridLotRow>())
-const loadedStatusValues = shallowRef<string[]>([])
 const gridSavedViewRestored = ref(false)
 const catalogGridHasLoadedOnce = ref(false)
 const catalogQueryPlaceholderVisible = ref(false)
@@ -775,7 +764,6 @@ let catalogQueryPlaceholderVisibleAt = 0
 let catalogNextViewportPullShouldDim = false
 let keepCatalogEditErrorOnNextPull = false
 const catalogFetchRequests = new Map<string, Promise<LotsResponse>>()
-let sourcesLoadRequest: Promise<void> | null = null
 let auctionGridChangesPollTimer: ReturnType<typeof window.setTimeout> | null = null
 let auctionGridChangesRefreshTimer: ReturnType<typeof window.setTimeout> | null = null
 let auctionGridChangesPolling = false
@@ -786,7 +774,6 @@ const DEFAULT_SERVER_FILTERS: ServerQuickFiltersState = {
   period: 'month',
   source: 'tbankrot',
   analysisColor: '',
-  query: '',
   status: '',
   minPrice: '',
   maxPrice: '',
@@ -900,243 +887,6 @@ const analysisConfigDialog = useDialogController({
   focusOrchestrator: analysisConfigDialogFocus,
 })
 let analysisConfigRuleSeed = 0
-
-const QuickFiltersToolbar = defineComponent({
-  name: 'QuickFiltersToolbar',
-  props: {
-    periodValue: {
-      type: String as PropType<DatasetPeriod>,
-      required: true,
-    },
-    sourceValue: {
-      type: String,
-      required: true,
-    },
-    analysisValue: {
-      type: String,
-      required: true,
-    },
-    statusValue: {
-      type: String,
-      required: true,
-    },
-    queryValue: {
-      type: String,
-      required: true,
-    },
-    minPriceValue: {
-      type: String,
-      required: true,
-    },
-    maxPriceValue: {
-      type: String,
-      required: true,
-    },
-    minRatingValue: {
-      type: Number,
-      required: true,
-    },
-    onlyNew: {
-      type: Boolean,
-      required: true,
-    },
-    shortlist: {
-      type: Boolean,
-      required: true,
-    },
-    activeFilterCount: {
-      type: Number,
-      required: true,
-    },
-    applying: {
-      type: Boolean,
-      required: true,
-    },
-    sourceOptions: {
-      type: Array as PropType<FilterOption[]>,
-      required: true,
-    },
-    analysisOptions: {
-      type: Array as PropType<FilterOption[]>,
-      required: true,
-    },
-    statusOptions: {
-      type: Array as PropType<FilterOption[]>,
-      required: true,
-    },
-    periodOptions: {
-      type: Array as PropType<FilterOption[]>,
-      required: true,
-    },
-    onPeriodChange: {
-      type: Function as PropType<(value: string) => void>,
-      required: true,
-    },
-    onSourceChange: {
-      type: Function as PropType<(value: string) => void>,
-      required: true,
-    },
-    onAnalysisChange: {
-      type: Function as PropType<(value: string) => void>,
-      required: true,
-    },
-    onStatusChange: {
-      type: Function as PropType<(value: string) => void>,
-      required: true,
-    },
-    onQueryChange: {
-      type: Function as PropType<(value: string) => void>,
-      required: true,
-    },
-    onMinPriceChange: {
-      type: Function as PropType<(value: string) => void>,
-      required: true,
-    },
-    onMaxPriceChange: {
-      type: Function as PropType<(value: string) => void>,
-      required: true,
-    },
-    onMinRatingChange: {
-      type: Function as PropType<(value: number) => void>,
-      required: true,
-    },
-    onOnlyNewChange: {
-      type: Function as PropType<(value: boolean) => void>,
-      required: true,
-    },
-    onShortlistChange: {
-      type: Function as PropType<(value: boolean) => void>,
-      required: true,
-    },
-    onReset: {
-      type: Function as PropType<() => void>,
-      required: true,
-    },
-  },
-  setup(props) {
-    return () =>
-      h('section', { class: 'quick-filters-bar', 'aria-label': 'Быстрые фильтры каталога' }, [
-        h('input', {
-          class: 'quick-filters-bar__input quick-filters-bar__input--search',
-          type: 'search',
-          value: props.queryValue,
-          placeholder: 'Поиск: название, организатор, номер',
-          title: 'Поиск по каталогу',
-          onInput: (event: Event) => props.onQueryChange((event.target as HTMLInputElement).value),
-        }),
-        h(AffinoCombobox, {
-          id: 'toolbar-period-filter',
-          modelValue: props.periodValue,
-          options: props.periodOptions,
-          placeholder: 'Период',
-          title: 'Период данных',
-          class: 'quick-filters-bar__select quick-filters-bar__select--period',
-          'onUpdate:modelValue': props.onPeriodChange,
-        }),
-        h(AffinoCombobox, {
-          id: 'toolbar-source-filter',
-          modelValue: props.sourceValue,
-          options: props.sourceOptions,
-          placeholder: 'Источник',
-          title: 'Источник',
-          class: 'quick-filters-bar__select quick-filters-bar__select--source',
-          'onUpdate:modelValue': props.onSourceChange,
-        }),
-        h(AffinoCombobox, {
-          id: 'toolbar-analysis-filter',
-          modelValue: props.analysisValue,
-          options: props.analysisOptions,
-          placeholder: 'Сигнал',
-          title: 'Аналитический сигнал',
-          class: 'quick-filters-bar__select quick-filters-bar__select--status',
-          'onUpdate:modelValue': props.onAnalysisChange,
-        }),
-        h(AffinoCombobox, {
-          id: 'toolbar-status-filter',
-          modelValue: props.statusValue,
-          options: props.statusOptions,
-          placeholder: 'Статус',
-          title: 'Статус',
-          class: 'quick-filters-bar__select quick-filters-bar__select--status',
-          'onUpdate:modelValue': props.onStatusChange,
-        }),
-        h('input', {
-          class: 'quick-filters-bar__input quick-filters-bar__input--narrow',
-          type: 'number',
-          min: '0',
-          step: '1000',
-          value: props.minPriceValue,
-          placeholder: 'Цена от',
-          title: 'Минимальная цена',
-          onInput: (event: Event) => props.onMinPriceChange((event.target as HTMLInputElement).value),
-        }),
-        h('input', {
-          class: 'quick-filters-bar__input quick-filters-bar__input--narrow',
-          type: 'number',
-          min: '0',
-          step: '1000',
-          value: props.maxPriceValue,
-          placeholder: 'Цена до',
-          title: 'Максимальная цена',
-          onInput: (event: Event) => props.onMaxPriceChange((event.target as HTMLInputElement).value),
-        }),
-        h('input', {
-          class: 'quick-filters-bar__input quick-filters-bar__input--rating',
-          type: 'number',
-          min: '0',
-          max: '100',
-          step: '5',
-          value: String(props.minRatingValue),
-          placeholder: 'Рейтинг',
-          title: 'Минимальный рейтинг',
-          onInput: (event: Event) => props.onMinRatingChange(Number((event.target as HTMLInputElement).value) || 0),
-        }),
-        h('label', { class: 'quick-filters-bar__toggle' }, [
-          h('input', {
-            type: 'checkbox',
-            checked: props.onlyNew,
-            onChange: (event: Event) => props.onOnlyNewChange((event.target as HTMLInputElement).checked),
-          }),
-          h('span', 'Новые'),
-        ]),
-        h('label', { class: 'quick-filters-bar__toggle' }, [
-          h('input', {
-            type: 'checkbox',
-            checked: props.shortlist,
-            onChange: (event: Event) => props.onShortlistChange((event.target as HTMLInputElement).checked),
-          }),
-          h('span', 'Шорт-лист'),
-        ]),
-        h('div', { class: 'quick-filters-bar__actions' }, [
-          props.applying
-            ? h(
-                'span',
-                {
-                  class: 'quick-filters-bar__status',
-                  role: 'status',
-                  'aria-live': 'polite',
-                },
-                [
-                  h('span', { class: 'quick-filters-bar__status-spinner', 'aria-hidden': 'true' }),
-                  h('span', 'Применяю фильтры'),
-                ],
-              )
-            : null,
-          props.activeFilterCount > 0
-            ? h(
-                'button',
-                {
-                  type: 'button',
-                  class: 'secondary-button',
-                  onClick: () => props.onReset(),
-                },
-                'Сбросить',
-              )
-            : null,
-        ]),
-      ])
-  },
-})
 
 const loadingSkeletonColumns = [
   { key: 'ratingScore', label: 'Рейтинг', width: 96, placeholderWidth: '54%' },
@@ -1699,81 +1449,11 @@ const advancedFilterOptions = {
     },
   },
 }
-
-const toolbarModules = computed<readonly DataGridAppToolbarModule[]>(() => [
-  {
-    key: 'quick-filters',
-    component: QuickFiltersToolbar,
-    props: {
-      periodValue: filters.period,
-      sourceValue: filters.source,
-      analysisValue: filters.analysisColor,
-      statusValue: filters.status,
-      queryValue: filters.query,
-      minPriceValue: filters.minPrice,
-      maxPriceValue: filters.maxPrice,
-      minRatingValue: filters.minRating,
-      onlyNew: filters.onlyNew,
-      shortlist: filters.shortlist,
-      activeFilterCount: activeFilterCount.value,
-      applying: loading.value || catalogViewportDimmed.value || catalogQueryPlaceholderVisible.value,
-      sourceOptions: sourceOptions.value,
-      analysisOptions: analysisOptions,
-      statusOptions: statusOptions.value,
-      periodOptions: periodOptions,
-      onPeriodChange: (value: string) => {
-        const nextPeriod = isDatasetPeriod(value) ? value : DEFAULT_SERVER_FILTERS.period
-        if (filters.period === nextPeriod) return
-        filters.period = nextPeriod
-      },
-      onSourceChange: (value: string) => {
-        filters.source = value
-      },
-      onAnalysisChange: (value: string) => {
-        filters.analysisColor = value
-      },
-      onStatusChange: (value: string) => {
-        filters.status = value
-      },
-      onQueryChange: (value: string) => {
-        filters.query = value
-      },
-      onMinPriceChange: (value: string) => {
-        filters.minPrice = value
-      },
-      onMaxPriceChange: (value: string) => {
-        filters.maxPrice = value
-      },
-      onMinRatingChange: (value: number) => {
-        filters.minRating = Math.min(100, Math.max(0, value))
-      },
-      onOnlyNewChange: (value: boolean) => {
-        filters.onlyNew = value
-      },
-      onShortlistChange: (value: boolean) => {
-        filters.shortlist = value
-      },
-      onReset: resetFilters,
-    },
-  },
-])
-
-const periodOptions: FilterOption[] = [
-  { label: 'Неделя', value: 'week' },
-  { label: 'Месяц', value: 'month' },
-  { label: 'Год', value: 'year' },
-]
-
-const sourceOptions = computed(() => sources.value.map((source) => ({ label: source.title, value: source.code })))
-
-const analysisOptions: FilterOption[] = [
-  { label: 'Любой сигнал', value: '' },
-  { label: 'Зеленый: интересный лот', value: 'green' },
-  { label: 'Желтый: считать детальнее', value: 'yellow' },
-  { label: 'Оранжевый: срочно', value: 'orange' },
-  { label: 'Красный: слабый интерес / юрист', value: 'red' },
-  { label: 'Серый: неполные данные / исключение', value: 'gray' },
-]
+const quickFilter = {
+  placeholder: 'Поиск: название, организатор, номер, регион',
+  columns: ['lotName', 'organizer', 'auctionNumber', 'location', 'sourceTitle', 'analysisCategory'],
+  mode: 'tokens' as const,
+}
 
 const presetOptions = computed(() => [
   { label: 'Подборки', value: '' },
@@ -1804,31 +1484,11 @@ const presetDialogSubmitLabel = computed(() => {
 })
 const analysisConfigUpdatedAt = computed(() => formatDateTime(analysisConfig.value?.updated_at ?? null))
 
-const statusOptions = computed(() => {
-  return [
-    { label: 'Любой', value: '' },
-    ...loadedStatusValues.value.map((status) => ({ label: status, value: status })),
-  ]
-})
-
 const totalRows = computed(() => catalogSummary.value.total || catalogTotal.value)
 const loadedRowsCount = computed(() => allRows.value.length)
 const openApplicationsCount = computed(() => catalogSummary.value.openApplicationsCount)
 const newCount = computed(() => catalogSummary.value.newCount)
 const highRatingCount = computed(() => catalogSummary.value.highRatingCount)
-const activeFilterCount = computed(() => {
-  return [
-    filters.source !== DEFAULT_SERVER_FILTERS.source,
-    filters.analysisColor,
-    filters.query,
-    filters.status,
-    filters.minPrice,
-    filters.maxPrice,
-    filters.onlyNew,
-    filters.shortlist,
-    filters.minRating > 0,
-  ].filter(Boolean).length
-})
 
 const detailTitle = computed(() => selectedLotDetails.value?.lot.name || selectedLot.value?.lotName || 'Без названия')
 const liveAuction = computed(() => selectedAuctionDetails.value?.auction ?? selectedLotDetails.value?.auction ?? null)
@@ -2187,7 +1847,6 @@ function sanitizeServerFilters(value: Partial<ServerQuickFiltersState> | null | 
   const period: DatasetPeriod = hasPeriod ? (value.period as DatasetPeriod) : DEFAULT_SERVER_FILTERS.period
   const source = hasPeriod && typeof value?.source === 'string' && value.source.trim() === 'tbankrot' ? 'tbankrot' : DEFAULT_SERVER_FILTERS.source
   const analysisColor = typeof value?.analysisColor === 'string' ? value.analysisColor : DEFAULT_SERVER_FILTERS.analysisColor
-  const query = typeof value?.query === 'string' ? value.query : DEFAULT_SERVER_FILTERS.query
   const status = typeof value?.status === 'string' ? value.status : DEFAULT_SERVER_FILTERS.status
   const minPrice = typeof value?.minPrice === 'string' ? value.minPrice : DEFAULT_SERVER_FILTERS.minPrice
   const maxPrice = typeof value?.maxPrice === 'string' ? value.maxPrice : DEFAULT_SERVER_FILTERS.maxPrice
@@ -2201,7 +1860,6 @@ function sanitizeServerFilters(value: Partial<ServerQuickFiltersState> | null | 
     period,
     source,
     analysisColor,
-    query,
     status,
     minPrice,
     maxPrice,
@@ -2557,13 +2215,19 @@ function restoreGridSavedView() {
   return true
 }
 
-function persistGridSavedView() {
+function persistGridSavedView(state?: unknown) {
   if (!gridSavedViewRestored.value || gridSavedViewApplying) return
 
   const savedView = gridRef.value?.getSavedView()
   if (!savedView) return
 
-  const stableView = sanitizeGridSavedView(savedView)
+  const eventState = state && typeof state === 'object'
+    ? state as DataGridSavedViewSnapshot<GridLotRow & Record<string, unknown>>['state']
+    : null
+  const stableView = sanitizeGridSavedView({
+    ...savedView,
+    state: eventState ?? savedView.state,
+  })
   setGridColumnWidths(stableView.state.columns.widths)
   writeDataGridSavedViewToStorage(window.localStorage, GRID_SAVED_VIEW_STORAGE_KEY, stableView)
   scheduleGridSummaryRefresh()
@@ -2621,10 +2285,12 @@ function apiUrl(path: string) {
 
 function hasGridFilterModel(filterModel: DataGridFilterSnapshot | null | undefined) {
   if (!filterModel) return false
+  const quickFilter = (filterModel as { quickFilter?: { query?: unknown } }).quickFilter
   return (
     Object.keys(filterModel.columnFilters ?? {}).length > 0 ||
     Object.keys(filterModel.advancedFilters ?? {}).length > 0 ||
-    Boolean(filterModel.advancedExpression)
+    Boolean(filterModel.advancedExpression) ||
+    (typeof quickFilter?.query === 'string' && quickFilter.query.trim().length > 0)
   )
 }
 
@@ -2636,30 +2302,12 @@ function isApiRequestStatus(error: unknown, status: number) {
   return error instanceof ApiRequestError && error.status === status
 }
 
-async function ensureAuctionSourcesLoaded() {
-  if (sources.value.length > 0) return
-  if (sourcesLoadRequest) {
-    await sourcesLoadRequest
-    return
-  }
-
-  sourcesLoadRequest = fetchJson<ApiSource[]>('/api/v1/auctions/sources')
-    .then((nextSources) => {
-      sources.value = nextSources
-    })
-    .finally(() => {
-      sourcesLoadRequest = null
-    })
-  await sourcesLoadRequest
-}
-
 function buildAuctionServerGridFilters(): AuctionServerGridFilters {
   const minPrice = parseFilterNumber(filters.minPrice)
   const maxPrice = parseFilterNumber(filters.maxPrice)
   return {
     period: filters.period,
     source: filters.source || null,
-    q: filters.query.trim() || null,
     status: filters.status || null,
     analysis_color: filters.analysisColor || null,
     min_price: minPrice,
@@ -2698,9 +2346,6 @@ function createAuctionServerCatalogDataSource(): CatalogAuctionServerDataSource 
       rememberLoadedRows(rows, { trackLoadedRows: !isBackgroundPrefetch })
       if (!isBackgroundPrefetch) {
         lastLoadedAt.value = new Date().toLocaleString('ru-RU')
-        void ensureAuctionSourcesLoaded().catch((error) => {
-          console.warn('[auction-grid] failed to load source options', error)
-        })
         startAuctionGridChangePolling()
       }
     },
@@ -2713,7 +2358,6 @@ function rememberLoadedRows(rows: GridLotRow[], options: { trackLoadedRows?: boo
   const trackLoadedRows = options.trackLoadedRows !== false
   const byId = gridRowsById.value
   for (const row of rows) {
-    rememberLoadedStatus(row.status)
     const existing = byId.get(row.id)
     if (existing) {
       Object.assign(existing, row, { rowRevision: existing.rowRevision })
@@ -2731,13 +2375,6 @@ function rememberLoadedRows(rows: GridLotRow[], options: { trackLoadedRows?: boo
     }
     rememberGridWorkSnapshot(row)
   }
-}
-
-function rememberLoadedStatus(status: string) {
-  const normalized = status.trim()
-  if (!normalized) return
-  if (loadedStatusValues.value.includes(normalized)) return
-  loadedStatusValues.value = [...loadedStatusValues.value, normalized].sort((left, right) => left.localeCompare(right, 'ru'))
 }
 
 const UI_PERF_WARN_THRESHOLD_MS = 32
@@ -3078,7 +2715,6 @@ function resetCatalogRowModel() {
   allRows.value = []
   loadedGridRowIds.clear()
   gridRowsById.value.clear()
-  loadedStatusValues.value = []
   catalogSummary.value = {
     total: 0,
     newCount: 0,
@@ -3093,9 +2729,6 @@ function resetCatalogRowModel() {
 
 async function loadLots() {
   if (!isAuthenticated.value) return
-  void ensureAuctionSourcesLoaded().catch((error) => {
-    console.warn('[auction-grid] failed to load source options', error)
-  })
   resetCatalogRowModel()
   savedGridWorkSnapshots.clear()
   await ensureGridSavedViewRestored()
@@ -3116,32 +2749,6 @@ function matchesQuickFilters(row: GridLotRow) {
 
   const maxPrice = parseFilterNumber(filters.maxPrice)
   if (maxPrice !== null && (row.price === null || row.price > maxPrice)) return false
-
-  const query = filters.query.trim().toLowerCase()
-  if (query) {
-    const haystack = [
-      row.lotName,
-      row.location,
-      row.locationRegion,
-      row.locationCity,
-      row.locationAddress,
-      row.locationCoordinates,
-      row.debtorName,
-      row.auctionNumber,
-      row.auctionName,
-      row.lotNumber,
-      row.lotDescription,
-      row.organizer,
-      row.status,
-      row.sourceTitle,
-      row.analysisLabel,
-      row.analysisCategory,
-      row.exclusionReason,
-    ]
-      .join(' ')
-      .toLowerCase()
-    if (!haystack.includes(query)) return false
-  }
 
   return true
 }
@@ -4523,7 +4130,6 @@ function resetCatalogState() {
   allRows.value = []
   loadedGridRowIds.clear()
   gridRowsById.value.clear()
-  loadedStatusValues.value = []
   catalogTotal.value = 0
   catalogSummary.value = {
     total: 0,
@@ -4689,14 +4295,6 @@ function handleGlobalKeydown(event: KeyboardEvent) {
   event.preventDefault()
   event.stopPropagation()
   closeLotDetails()
-}
-
-function resetFilters() {
-  const shouldReload = filters.period !== DEFAULT_SERVER_FILTERS.period
-  Object.assign(filters, DEFAULT_SERVER_FILTERS)
-  if (shouldReload) {
-    void loadLots()
-  }
 }
 
 function subscribeToAuctionEvents() {
@@ -4966,16 +4564,15 @@ onUnmounted(() => {
           v-else-if="catalogRowModel"
           v-show="catalogGridHasLoadedOnce || !loading || allRows.length > 0"
           ref="gridRef"
-          :rows="EMPTY_GRID_ROWS"
           :row-model="catalogRowModel"
           :columns="columns"
           :column-widths="gridColumnWidths"
           :base-row-height="26"
-          :toolbar-modules="toolbarModules"
           :theme="workspaceDataGridTheme"
           :is-cell-editable="isGridCellEditable"
           :virtualization="catalogVirtualizationOptions"
           :advanced-filter="advancedFilterOptions"
+          :quick-filter="quickFilter"
           :column-menu="columnMenuOptions"
           :column-layout="columnLayoutOptions"
           fill-handle
