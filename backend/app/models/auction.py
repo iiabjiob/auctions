@@ -51,6 +51,7 @@ class AuctionLotRecord(Base):
     scored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     score_input_hash: Mapped[str | None] = mapped_column(String(64), index=True)
     score_breakdown: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    search_text: Mapped[str | None] = mapped_column(Text)
     enrichment_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     last_enrichment_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     enrichment_attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

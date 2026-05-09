@@ -33,6 +33,7 @@ from app.services.lot_enrichment import (
 from app.services.auction_scoring import recalculate_record_rating
 from app.services.auction_scoring_invalidation import SOURCE_CONTENT_CHANGED
 from app.services.auction_scoring import invalidate_lot_score
+from app.services.auction_search import update_record_search_text
 from app.services.auction_workspace import ensure_lot_detail_cache, ensure_work_item
 from app.services.lot_decision_report import generate_and_persist_lot_decision_report_snapshot
 
@@ -142,6 +143,7 @@ async def sync_source_lots(
                 ),
                 normalized_item=snapshot.normalized_item,
             )
+            update_record_search_text(record)
             session.add(record)
             await session.flush()
             evaluation = classify_lot_enrichment(record)
@@ -192,6 +194,7 @@ async def sync_source_lots(
             record.initial_price = item.lot.initial_price
             record.datagrid_row = next_row
             record.normalized_item = snapshot.normalized_item
+            update_record_search_text(record)
             if content_changed:
                 invalidate_lot_score(record, reason=SOURCE_CONTENT_CHANGED)
                 evaluation = classify_lot_enrichment(record)
@@ -330,6 +333,7 @@ async def _sync_detail_if_needed(
         owner_profile=runtime_config.owner_profile,
         dimension_weights=runtime_config.dimension_weights,
     )
+    update_record_search_text(record)
     await generate_and_persist_lot_decision_report_snapshot(session, record, detail_cache, work_item)
     ttl_evaluation = evaluate_lot_ttl_refresh(record, detail_cache, current_time=observed_at)
     schedule_lot_ttl_refresh(record, ttl_evaluation, requested_at=observed_at)
@@ -354,6 +358,7 @@ async def _recalculate_record_with_cached_inputs(
         owner_profile=runtime_config.owner_profile,
         dimension_weights=runtime_config.dimension_weights,
     )
+    update_record_search_text(record)
     await generate_and_persist_lot_decision_report_snapshot(session, record, detail_cache, work_item)
 
 
@@ -585,6 +590,7 @@ def _apply_record_freshness(record: AuctionLotRecord, *, observed_at: datetime, 
         published_at=published_at,
         status_changed_at=record.status_changed_at,
     )
+    update_record_search_text(record)
 
 
 def _format_publication_date(value: datetime) -> str:

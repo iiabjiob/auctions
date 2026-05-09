@@ -714,7 +714,7 @@ const catalogRowModelPrefetchOptions = {
 const DETAIL_PANE_DEFAULT_WIDTH = 720
 const DETAIL_PANE_MIN_WIDTH = 420
 const DETAIL_PANE_MAX_WIDTH = 980
-const LOTS_RELOAD_DELAY_MS = 1200
+const LOTS_RELOAD_DELAY_MS = 400
 const SYNC_PROGRESS_RELOAD_INTERVAL_MS = 30_000
 const SERVER_ROW_MODEL_INITIAL_FETCH_SIZE = 256
 const DETAIL_FETCH_TIMEOUT_MS = 15_000
@@ -763,6 +763,7 @@ let lastLotsReloadStartedAt = 0
 let lastGridServerQuerySignature = ''
 let catalogPullRequestSeq = 0
 let catalogSoftReloadSeq = 0
+let catalogSoftRefreshAbortController: AbortController | null = null
 let catalogViewportDimRequests = 0
 let catalogViewportDimShowTimer: ReturnType<typeof window.setTimeout> | null = null
 let catalogViewportDimHideTimer: ReturnType<typeof window.setTimeout> | null = null
@@ -1588,7 +1589,7 @@ const typedColumns: DataGridAppColumnInput<GridLotRow>[] = [
 ]
 
 const columns = typedColumns as unknown as DataGridAppColumnInput[]
-const VALUE_FILTER_COLUMN_KEYS = new Set(['analysisLabel', 'analysisCategory'])
+const VALUE_FILTER_COLUMN_KEYS = new Set(['analysisLabel', 'analysisCategory', 'isNew'])
 const PERCENT_FILTER_COLUMN_KEYS = new Set(['roiValue', 'marketDiscount'])
 const columnMenuOptions = {
   trigger: 'button+contextmenu',
@@ -3032,12 +3033,16 @@ async function softRefreshCatalogRows(options: {
 
   const reloadSeq = catalogSoftReloadSeq + 1
   catalogSoftReloadSeq = reloadSeq
+  catalogSoftRefreshAbortController?.abort()
+  const controller = new AbortController()
+  catalogSoftRefreshAbortController = controller
   const range = options.range ?? resolveCatalogReloadRange()
   const dimActive = options.dimViewport === true && beginCatalogViewportDim()
   try {
     const result = await fetchLotsRange({
       start: range.start,
       end: range.end,
+      signal: controller.signal,
       sortModel: options.sortModel,
       filterModel: options.filterModel,
     })
@@ -3058,6 +3063,9 @@ async function softRefreshCatalogRows(options: {
       errorMessage.value = error instanceof Error ? error.message : 'Не удалось загрузить лоты'
     }
   } finally {
+    if (catalogSoftRefreshAbortController === controller) {
+      catalogSoftRefreshAbortController = null
+    }
     endCatalogViewportDim(dimActive)
     scheduleGridSummaryRefresh()
   }
@@ -4507,6 +4515,8 @@ function closeLotDetails() {
 
 function resetCatalogState() {
   resetAuctionGridChangePolling()
+  catalogSoftRefreshAbortController?.abort()
+  catalogSoftRefreshAbortController = null
   catalogRowModel.value?.dispose()
   catalogRowModel.value = null
   clearCatalogViewportDim()
@@ -4825,6 +4835,8 @@ onMounted(() => {
 onUnmounted(() => {
   detailAbortController?.abort()
   detailAbortController = null
+  catalogSoftRefreshAbortController?.abort()
+  catalogSoftRefreshAbortController = null
   clearDetailLiveRefreshTimeout()
   catalogRowModel.value?.dispose()
   catalogRowModel.value = null

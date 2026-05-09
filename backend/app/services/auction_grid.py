@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import select
@@ -13,6 +14,8 @@ from app.schemas.auction_grid import (
     AuctionLotsGridPullRequest,
     AuctionLotsGridPullResponse,
     AuctionLotsGridPullRow,
+    AuctionLotsGridQueryOptions,
+    AuctionLotsGridSummary,
 )
 from app.services.auction_catalog import (
     list_persisted_lot_column_histogram,
@@ -44,36 +47,42 @@ async def pull_auction_lots_grid(
     workspace_id: str = DEFAULT_GRID_WORKSPACE_ID,
 ) -> AuctionLotsGridPullResponse:
     dataset_version = await read_grid_dataset_version(session, workspace_id=workspace_id)
+    grid_filter = _merge_query_options_into_filter_model(request.filter_model, request)
+    has_search = _has_search_query(grid_filter)
     rows, total = await pull_persisted_lots_for_grid(
         session,
         start_row=request.resolved_start_row,
         end_row=request.resolved_end_row,
         period=request.period,
-        source=request.source,
-        q=request.q,
-        status=request.status,
-        analysis_color=request.analysis_color,
-        min_price=request.min_price,
-        max_price=request.max_price,
-        only_new=request.only_new,
-        shortlist=request.shortlist,
-        min_rating=request.min_rating,
+        source=None,
+        q=None,
+        status=None,
+        analysis_color=None,
+        min_price=None,
+        max_price=None,
+        only_new=False,
+        shortlist=False,
+        min_rating=None,
         sort_model=_normalize_sort_model(request.sort_model),
-        grid_filter=request.filter_model,
+        grid_filter=grid_filter,
     )
-    summary = await summarize_persisted_lots_for_grid(
-        session,
-        period=request.period,
-        source=request.source,
-        q=request.q,
-        status=request.status,
-        analysis_color=request.analysis_color,
-        min_price=request.min_price,
-        max_price=request.max_price,
-        only_new=request.only_new,
-        shortlist=request.shortlist,
-        min_rating=request.min_rating,
-        grid_filter=request.filter_model,
+    summary = (
+        AuctionLotsGridSummary(total=total)
+        if has_search
+        else await summarize_persisted_lots_for_grid(
+            session,
+            period=request.period,
+            source=None,
+            q=None,
+            status=None,
+            analysis_color=None,
+            min_price=None,
+            max_price=None,
+            only_new=False,
+            shortlist=False,
+            min_rating=None,
+            grid_filter=grid_filter,
+        )
     )
     return AuctionLotsGridPullResponse(
         rows=[
@@ -94,24 +103,111 @@ async def get_auction_lots_grid_histogram(
     session: AsyncSession,
     request: AuctionLotsGridHistogramRequest,
 ) -> AuctionLotsGridHistogramResponse:
+    grid_filter = _merge_query_options_into_filter_model(
+        _histogram_filter_model(request.filter_model, request.column_id, request.options),
+        request,
+    )
+    if _has_search_query(grid_filter):
+        return AuctionLotsGridHistogramResponse(column_id=request.column_id, entries=[])
     entries = await list_persisted_lot_column_histogram(
         session,
         period=request.period,
-        source=request.source,
-        q=request.q,
-        status=request.status,
-        analysis_color=request.analysis_color,
-        min_price=request.min_price,
-        max_price=request.max_price,
-        only_new=request.only_new,
-        shortlist=request.shortlist,
-        min_rating=request.min_rating,
+        source=None,
+        q=None,
+        status=None,
+        analysis_color=None,
+        min_price=None,
+        max_price=None,
+        only_new=False,
+        shortlist=False,
+        min_rating=None,
         column_id=request.column_id,
         histogram_options=request.options,
         sort_model=_normalize_sort_model(request.sort_model),
-        grid_filter=_histogram_filter_model(request.filter_model, request.column_id, request.options),
+        grid_filter=grid_filter,
     )
     return AuctionLotsGridHistogramResponse(column_id=request.column_id, entries=entries)
+
+
+def _merge_query_options_into_filter_model(
+    filter_model: dict[str, Any] | None,
+    request: AuctionLotsGridQueryOptions,
+) -> dict[str, Any] | None:
+    expression = _query_options_advanced_expression(request)
+    if expression is None:
+        return filter_model
+
+    next_filter_model = deepcopy(filter_model) if filter_model else {}
+    current_expression = next_filter_model.get("advancedExpression")
+    next_filter_model["advancedExpression"] = (
+        {
+            "kind": "group",
+            "operator": "and",
+            "children": [current_expression, expression],
+        }
+        if isinstance(current_expression, dict)
+        else expression
+    )
+    return next_filter_model
+
+
+def _query_options_advanced_expression(request: AuctionLotsGridQueryOptions) -> dict[str, Any] | None:
+    conditions: list[dict[str, Any]] = []
+    _append_text_condition(conditions, "__globalSearch", "contains", request.q)
+    _append_text_condition(conditions, "source", "equals", request.source if request.source != "all" else None)
+    _append_text_condition(conditions, "status", "equals", request.status)
+    _append_text_condition(conditions, "analysisColor", "equals", request.analysis_color)
+    _append_decimal_condition(conditions, "price", "gte", request.min_price)
+    _append_decimal_condition(conditions, "price", "lte", request.max_price)
+    if request.only_new:
+        conditions.append({"kind": "condition", "key": "isNew", "operator": "equals", "value": True})
+    if request.shortlist:
+        conditions.append({"kind": "condition", "key": "__shortlist", "operator": "equals", "value": True})
+    if request.min_rating is not None:
+        conditions.append({"kind": "condition", "key": "ratingScore", "operator": "gte", "value": request.min_rating})
+
+    if not conditions:
+        return None
+    if len(conditions) == 1:
+        return conditions[0]
+    return {"kind": "group", "operator": "and", "children": conditions}
+
+
+def _append_text_condition(conditions: list[dict[str, Any]], key: str, operator: str, value: str | None) -> None:
+    if value is None or not str(value).strip():
+        return
+    conditions.append({"kind": "condition", "key": key, "operator": operator, "value": str(value).strip()})
+
+
+def _append_decimal_condition(conditions: list[dict[str, Any]], key: str, operator: str, value: Decimal | None) -> None:
+    if value is None:
+        return
+    conditions.append({"kind": "condition", "key": key, "operator": operator, "value": str(value)})
+
+
+def _has_search_query(filter_model: dict[str, Any] | None) -> bool:
+    if not isinstance(filter_model, dict):
+        return False
+    return _expression_has_global_search(filter_model.get("advancedExpression"))
+
+
+def _expression_has_global_search(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    kind = payload.get("kind")
+    if kind == "condition":
+        return (
+            payload.get("key") == "__globalSearch"
+            and payload.get("operator") == "contains"
+            and isinstance(payload.get("value"), str)
+            and len(payload["value"].strip()) >= 3
+        )
+    if kind == "group":
+        return any(_expression_has_global_search(child) for child in payload.get("children") or [])
+    if kind == "not":
+        return _expression_has_global_search(payload.get("child"))
+    return False
+
 
 def _normalize_sort_model(sort_model: list[dict[str, Any]] | None) -> list[dict[str, str]] | None:
     normalized: list[dict[str, str]] = []

@@ -20,6 +20,7 @@ from app.services.lot_evidence import build_lot_evidence, build_lot_evidence_has
 from app.services.auction_scoring_invalidation import invalidate_lot_score
 from app.services.auction_analysis import LegalRiskRules, build_lot_analysis
 from app.services.auction_datagrid_payload import validate_datagrid_row_payload
+from app.services.auction_search import update_record_search_text
 from app.services.auction_values import parse_price
 from app.services.scoring_profile_fit import evaluate_lot_profile_fit, resolve_profile_fit_weights
 
@@ -351,6 +352,7 @@ def recalculate_record_rating_from_runtime_input(
     record.score_input_hash = input_hash
     record.score_breakdown = breakdown
     record.datagrid_row = row.model_dump(mode="json")
+    update_record_search_text(record)
     return rating
 
 
@@ -543,6 +545,7 @@ def sync_record_from_detail_cache(record: AuctionLotRecord, detail_cache: Auctio
         row["minimum_price"] = minimum_price
         row["minimum_price_value"] = str(minimum_price_value) if minimum_price_value is not None else None
     record.datagrid_row = row
+    update_record_search_text(record)
 
     normalized_item = dict(record.normalized_item or {})
     auction_payload = dict(normalized_item.get("auction") or {})
