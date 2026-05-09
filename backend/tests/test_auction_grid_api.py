@@ -4,9 +4,21 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from app.schemas.auction_grid import AuctionLotsGridPullRequest, AuctionLotsGridPullResponse, AuctionLotsGridSummary
+from app.schemas.auction_grid import (
+    AuctionLotsGridHistogramRequest,
+    AuctionLotsGridPullRequest,
+    AuctionLotsGridPullResponse,
+    AuctionLotsGridSummary,
+)
 from app.schemas.auctions import LotDatagridRow
-from app.services.auction_grid import _histogram_filter_model, _normalize_sort_model, pull_auction_lots_grid
+from app.services.auction_grid import (
+    _has_search_query,
+    _histogram_filter_model,
+    _merge_query_options_into_filter_model,
+    _normalize_sort_model,
+    get_auction_lots_grid_histogram,
+    pull_auction_lots_grid,
+)
 
 
 class AuctionGridApiTests(unittest.TestCase):
@@ -87,6 +99,58 @@ class AuctionGridApiTests(unittest.TestCase):
         self.assertEqual(filtered["advancedFilters"], {})
         self.assertIn("status", filter_model["columnFilters"])
 
+    def test_query_options_are_merged_into_advanced_expression(self) -> None:
+        request = AuctionLotsGridPullRequest.model_validate(
+            {
+                "startRow": 0,
+                "endRow": 10,
+                "source": "tbankrot",
+                "q": "квартира",
+                "status": "Идут торги",
+                "analysis_color": "green",
+                "min_price": "100000",
+                "max_price": "300000",
+                "only_new": True,
+                "shortlist": True,
+                "min_rating": 70,
+                "filterModel": {
+                    "advancedExpression": {
+                        "kind": "condition",
+                        "key": "lotName",
+                        "operator": "contains",
+                        "value": "офис",
+                    },
+                },
+            }
+        )
+
+        filter_model = _merge_query_options_into_filter_model(request.filter_model, request)
+
+        expression = filter_model["advancedExpression"]
+        self.assertEqual(expression["kind"], "group")
+        self.assertEqual(expression["operator"], "and")
+        merged = expression["children"][1]
+        self.assertEqual(merged["kind"], "group")
+        self.assertEqual(
+            {(condition["key"], condition["operator"]) for condition in merged["children"]},
+            {
+                ("__globalSearch", "contains"),
+                ("source", "equals"),
+                ("status", "equals"),
+                ("analysisColor", "equals"),
+                ("price", "gte"),
+                ("price", "lte"),
+                ("isNew", "equals"),
+                ("__shortlist", "equals"),
+                ("ratingScore", "gte"),
+            },
+        )
+
+    def test_search_query_detection_requires_effective_global_search(self) -> None:
+        self.assertFalse(_has_search_query(None))
+        self.assertFalse(_has_search_query({"advancedExpression": {"kind": "condition", "key": "__globalSearch", "operator": "contains", "value": "bm"}}))
+        self.assertTrue(_has_search_query({"advancedExpression": {"kind": "condition", "key": "__globalSearch", "operator": "contains", "value": "bmw"}}))
+
 
 class AuctionGridPullServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_pull_response_indexes_are_viewport_positions_not_record_ids(self) -> None:
@@ -122,6 +186,43 @@ class AuctionGridPullServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.summary.open_applications_count, 8)
         self.assertEqual(response.summary.high_rating_count, 7)
         self.assertEqual(response.dataset_version, 7)
+
+    async def test_pull_skips_summary_when_search_is_present(self) -> None:
+        request = AuctionLotsGridPullRequest.model_validate({"startRow": 0, "endRow": 2, "q": "bmw"})
+
+        with (
+            patch("app.services.auction_grid.read_grid_dataset_version", AsyncMock(return_value=7)),
+            patch("app.services.auction_grid.pull_persisted_lots_for_grid", AsyncMock(return_value=([], 42))),
+            patch("app.services.auction_grid.summarize_persisted_lots_for_grid", AsyncMock()) as summarize,
+        ):
+            response = await pull_auction_lots_grid(AsyncMock(), request)
+
+        summarize.assert_not_awaited()
+        self.assertEqual(response.summary.total, 42)
+        self.assertEqual(response.summary.new_count, 0)
+
+    async def test_pull_keeps_summary_without_search(self) -> None:
+        request = AuctionLotsGridPullRequest.model_validate({"startRow": 0, "endRow": 2})
+        summary = AuctionLotsGridSummary(total=42, new_count=3)
+
+        with (
+            patch("app.services.auction_grid.read_grid_dataset_version", AsyncMock(return_value=7)),
+            patch("app.services.auction_grid.pull_persisted_lots_for_grid", AsyncMock(return_value=([], 42))),
+            patch("app.services.auction_grid.summarize_persisted_lots_for_grid", AsyncMock(return_value=summary)) as summarize,
+        ):
+            response = await pull_auction_lots_grid(AsyncMock(), request)
+
+        summarize.assert_awaited_once()
+        self.assertEqual(response.summary.new_count, 3)
+
+    async def test_histogram_is_disabled_when_search_is_present(self) -> None:
+        request = AuctionLotsGridHistogramRequest.model_validate({"columnId": "lotName", "q": "bmw"})
+
+        with patch("app.services.auction_grid.list_persisted_lot_column_histogram", AsyncMock()) as histogram:
+            response = await get_auction_lots_grid_histogram(AsyncMock(), request)
+
+        histogram.assert_not_awaited()
+        self.assertEqual(response.entries, [])
 
 
 if __name__ == "__main__":

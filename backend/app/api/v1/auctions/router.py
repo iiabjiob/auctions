@@ -13,7 +13,7 @@ from sqlalchemy import case, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
-from app.infrastructure.db.database import AsyncSessionLocal, get_db
+from app.infrastructure.db.database import AsyncSessionLocal, get_db, get_read_db
 from app.models import AuctionLotDecisionReport, UserModel
 from app.schemas.analysis_config import AuctionAnalysisConfigResponse, AuctionAnalysisConfigUpdate
 from app.schemas.auctions import (
@@ -198,7 +198,7 @@ async def get_lots_datagrid(
     sort_direction: str = Query(default="asc", pattern="^(asc|desc)$"),
     sort_model: str | None = Query(default=None),
     grid_filter: str | None = Query(default=None),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_read_db),
     current_user: UserModel = Depends(get_current_user),
 ) -> LotDatagridResponse:
     resolved_page_size = page_size or limit or 100
@@ -248,7 +248,7 @@ async def get_lots_datagrid(
 @router.post("/lots/histogram", response_model=list[LotDatagridHistogramEntry])
 async def get_lots_column_histogram(
     payload: LotDatagridHistogramRequest,
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_read_db),
     current_user: UserModel = Depends(get_current_user),
 ) -> list[LotDatagridHistogramEntry]:
     try:

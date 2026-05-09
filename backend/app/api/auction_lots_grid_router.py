@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
-from app.infrastructure.db.database import get_db
+from app.infrastructure.db.database import get_db, get_read_db
 from app.models import UserModel
 from app.schemas.auction_grid import (
     AuctionLotsGridEditRequest,
@@ -28,7 +28,7 @@ router = APIRouter(prefix="/api/auction-lots", tags=["Auction Lots Grid"])
 async def pull_auction_lots(
     payload: AuctionLotsGridPullRequest,
     workspace_id: str | None = Header(default=None, alias="X-Workspace-Id"),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_read_db),
     current_user: UserModel = Depends(get_current_user),
 ) -> AuctionLotsGridPullResponse:
     del current_user
@@ -45,7 +45,7 @@ async def pull_auction_lots(
 @router.post("/histogram", response_model=AuctionLotsGridHistogramResponse)
 async def get_auction_lots_histogram(
     payload: AuctionLotsGridHistogramRequest,
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_read_db),
     current_user: UserModel = Depends(get_current_user),
 ) -> AuctionLotsGridHistogramResponse:
     del current_user

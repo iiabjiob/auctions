@@ -112,6 +112,33 @@ class FakeSession:
 
 
 class AuctionSyncInvalidationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_new_record_populates_search_text_during_sync(self) -> None:
+        item = make_list_item(lot_name="  BMW   X5  ", category="Авто", location_region="Москва")
+        session = FakeSession()
+        runtime_config = SimpleNamespace(
+            category_keywords={},
+            exclusion_keywords=(),
+            legal_risk_rules=SimpleNamespace(),
+            owner_profile=SimpleNamespace(),
+            dimension_weights=SimpleNamespace(),
+        )
+        provider = StaticSourceProvider([item])
+
+        with (
+            patch("app.services.auction_sync.get_source_provider", return_value=provider),
+            patch("app.services.auction_sync._find_lot_record", AsyncMock(return_value=None)),
+            patch("app.services.auction_sync._recalculate_record_with_cached_inputs", AsyncMock()),
+            patch("app.services.auction_sync._sync_detail_if_needed", AsyncMock(return_value=0)),
+            patch("app.services.auction_sync._backfill_publication_dates", AsyncMock()),
+            patch("app.services.auction_sync.bump_auction_lot_dataset_version", AsyncMock()),
+            patch("app.services.auction_sync.auction_analysis_config_service.get_runtime_config", AsyncMock(return_value=runtime_config)),
+            patch("app.services.auction_sync.classify_lot_enrichment", return_value=SimpleNamespace(needs_enrichment=False)),
+        ):
+            await sync_source_lots(session, source="tbankrot", limit=1)
+
+        record = next(item for item in session.added if isinstance(item, AuctionLotRecord))
+        self.assertEqual(record.search_text, "bmw x5 tbankrot авто organizer")
+
     def test_preserve_existing_real_media_when_next_sync_has_only_locked_placeholders(self) -> None:
         existing_item = make_list_item(
             images=[

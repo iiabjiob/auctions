@@ -24,6 +24,7 @@ from app.services.auction_scoring import (
     recalculate_record_rating,
     sync_record_from_detail_cache,
 )
+from app.services.auction_search import update_record_search_text
 from app.services.auction_workspace import ensure_work_item
 from app.services.lot_decision_report import generate_and_persist_lot_decision_report_snapshot
 from app.services.grid_state import (
@@ -185,6 +186,7 @@ async def _commit_auction_lot_grid_operations(
             owner_profile=runtime_config.owner_profile,
             dimension_weights=runtime_config.dimension_weights,
         )
+        update_record_search_text(record)
         await generate_and_persist_lot_decision_report_snapshot(session, record, detail_cache, work_item)
         updated_records[stable_row_id] = record
 

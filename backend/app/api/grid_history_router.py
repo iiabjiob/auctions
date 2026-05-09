@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
-from app.infrastructure.db.database import get_db
+from app.infrastructure.db.database import get_db, get_read_db
 from app.models import UserModel
 from app.schemas.grid_history import GridHistoryMutationRequest, GridHistoryMutationResponse, GridHistoryStatusResponse
 from app.services.auction_grid_history import (
@@ -80,7 +80,7 @@ async def get_grid_history_status(
     user_id: str | None = Query(default=None, alias="userId"),
     session_id: str | None = Query(default=None, alias="sessionId"),
     workspace_id: str | None = Header(default=None, alias="X-Workspace-Id"),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_read_db),
     current_user: UserModel = Depends(get_current_user),
 ) -> GridHistoryStatusResponse:
     try:
