@@ -8,8 +8,6 @@ import {
   type DataGridColumnMenuProp,
   type DataGridExposed,
   type DataGridSavedViewSnapshot,
-  readDataGridSavedViewFromStorage,
-  writeDataGridSavedViewToStorage,
 } from '@affino/datagrid-vue-app'
 import {
   createDataSourceBackedRowModel,
@@ -672,7 +670,7 @@ const detailLiveRefreshing = ref(false)
 const detailStatus = ref('')
 const catalogViewportDimmed = ref(false)
 const DETAIL_PANE_WIDTH_STORAGE_KEY = 'auction-detail-pane-width'
-const GRID_SAVED_VIEW_STORAGE_KEY = 'auction-grid-saved-view-v2'
+const GRID_STATE_PERSISTENCE_KEY = 'auction-grid-state-v1'
 const GRID_COLUMN_WIDTHS_STORAGE_KEY = 'auction-grid-column-widths-v1'
 const SERVER_FILTERS_STORAGE_KEY = 'auction-server-filters'
 const AUCTION_GRID_CHANGES_TABLE_ID = 'auction-lots'
@@ -725,15 +723,13 @@ const CATALOG_QUERY_PLACEHOLDER_MIN_VISIBLE_MS = 140
 const detailPaneWidth = ref(readStoredDetailPaneWidth())
 const gridRef = ref<DataGridExposed<GridLotRow> | null>(null)
 const gridSurfaceRef = ref<HTMLElement | null>(null)
-const gridColumnWidths = ref<GridColumnWidthsState>({})
+const gridColumnWidths = ref<GridColumnWidthsState>(readStoredGridColumnWidths())
 const gridRowsById = shallowRef(new Map<string, GridLotRow>())
-const gridSavedViewRestored = ref(false)
 const catalogGridHasLoadedOnce = ref(false)
 const catalogQueryPlaceholderVisible = ref(false)
 const gridRowRevision = ref(0)
 const latestAuctionGridDatasetVersion = ref<number | null>(null)
 const loadingSkeletonVisibleRows = ref(LOADING_SKELETON_MIN_ROWS)
-let gridSavedViewApplying = false
 let suppressGridCellChangeDepth = 0
 let suppressGridCommitEditsDepth = 0
 let resizeStartX = 0
@@ -1453,6 +1449,15 @@ const quickFilter = {
   placeholder: 'Поиск: название, организатор, номер, регион',
   columns: ['lotName', 'organizer', 'auctionNumber', 'location', 'sourceTitle', 'analysisCategory'],
   mode: 'tokens' as const,
+  applyMode: 'debounce' as const,
+  debounceMs: 400,
+}
+const gridStatePersistence = {
+  key: GRID_STATE_PERSISTENCE_KEY,
+  storage: 'local' as const,
+  includeViewportPosition: true,
+  restoreOnReady: true,
+  debounceMs: 300,
 }
 
 const presetOptions = computed(() => [
@@ -2074,27 +2079,6 @@ function sanitizeGridSavedView<TRow extends Record<string, unknown>>(
   }
 }
 
-function mergeStoredGridColumnWidths<TRow extends Record<string, unknown>>(
-  savedView: DataGridSavedViewSnapshot<TRow>,
-): DataGridSavedViewSnapshot<TRow> {
-  const storedWidths = readStoredGridColumnWidths()
-  if (Object.keys(storedWidths).length === 0) return savedView
-
-  return {
-    ...savedView,
-    state: {
-      ...savedView.state,
-      columns: {
-        ...savedView.state.columns,
-        widths: {
-          ...savedView.state.columns.widths,
-          ...storedWidths,
-        },
-      },
-    },
-  }
-}
-
 function buildGridServerQuerySignature<TRow extends Record<string, unknown>>(savedView: DataGridSavedViewSnapshot<TRow>) {
   const rowSnapshot = savedView.state.rows.snapshot
   return JSON.stringify({
@@ -2187,8 +2171,6 @@ function applyGridSavedViewWithoutIntermediatePulls(
 
   const rowModel = catalogRowModel.value
   const paused = rowModel?.pauseBackpressure() ?? false
-  const wasApplying = gridSavedViewApplying
-  gridSavedViewApplying = true
   try {
     const applied = gridRef.value.applySavedView(savedView, { applyViewport: false })
     resetCatalogServerViewportOnQueryChange(savedView, { force: options.forceViewportReset })
@@ -2196,7 +2178,6 @@ function applyGridSavedViewWithoutIntermediatePulls(
   } finally {
     void nextTick().then(() => {
       window.requestAnimationFrame(() => {
-        gridSavedViewApplying = wasApplying
         if (paused) {
           rowModel?.resumeBackpressure()
           void rowModel?.flushBackpressure()
@@ -2206,58 +2187,7 @@ function applyGridSavedViewWithoutIntermediatePulls(
   }
 }
 
-function readStoredGridSavedView() {
-  if (!gridRef.value) return null
-
-  const savedView = readDataGridSavedViewFromStorage(window.localStorage, GRID_SAVED_VIEW_STORAGE_KEY, (state, options) =>
-    gridRef.value?.migrateState(state, options) ?? null,
-  )
-  return savedView ? mergeStoredGridColumnWidths(sanitizeGridSavedView(savedView, { dropSort: true })) : null
-}
-
-function restoreGridSavedView() {
-  if (gridSavedViewRestored.value || !gridRef.value) return false
-
-  gridSavedViewRestored.value = true
-  const savedView = readStoredGridSavedView()
-  if (savedView) {
-    try {
-      setGridColumnWidths(savedView.state.columns.widths, { persist: false })
-      applyGridSavedViewWithoutIntermediatePulls(savedView, { forceViewportReset: hasSavedViewServerQueryState(savedView) })
-      writeDataGridSavedViewToStorage(window.localStorage, GRID_SAVED_VIEW_STORAGE_KEY, savedView)
-    } catch {
-      window.localStorage.removeItem(GRID_SAVED_VIEW_STORAGE_KEY)
-    }
-  } else {
-    const storedWidths = readStoredGridColumnWidths()
-    if (Object.keys(storedWidths).length > 0) {
-      setGridColumnWidths(storedWidths, { persist: false })
-    }
-  }
-  scheduleGridSummaryRefresh()
-  return true
-}
-
-function persistGridSavedView(state?: unknown) {
-  if (!gridSavedViewRestored.value || gridSavedViewApplying) return
-
-  const savedView = gridRef.value?.getSavedView()
-  if (!savedView) return
-
-  const eventState = state && typeof state === 'object'
-    ? state as DataGridSavedViewSnapshot<GridLotRow & Record<string, unknown>>['state']
-    : null
-  const stableView = sanitizeGridSavedView({
-    ...savedView,
-    state: eventState ?? savedView.state,
-  })
-  setGridColumnWidths(stableView.state.columns.widths)
-  writeDataGridSavedViewToStorage(window.localStorage, GRID_SAVED_VIEW_STORAGE_KEY, stableView)
-  scheduleGridSummaryRefresh()
-}
-
 function persistGridColumnWidths(widths: Readonly<Record<string, number | null>> | null) {
-  if (!gridSavedViewRestored.value || gridSavedViewApplying) return
   setGridColumnWidths(widths)
 }
 
@@ -2267,15 +2197,7 @@ function writeGridSavedView(view: unknown | null) {
   const stableView = sanitizeGridSavedView(migratedView)
   setGridColumnWidths(stableView.state.columns.widths)
   applyGridSavedViewWithoutIntermediatePulls(stableView, { forceViewportReset: true })
-  writeDataGridSavedViewToStorage(window.localStorage, GRID_SAVED_VIEW_STORAGE_KEY, stableView)
   scheduleGridSummaryRefresh()
-}
-
-async function ensureGridSavedViewRestored() {
-  if (gridSavedViewRestored.value) return false
-
-  await nextTick()
-  return restoreGridSavedView()
 }
 
 function authHeaders() {
@@ -2802,7 +2724,6 @@ function resetCatalogRowModel() {
     openApplicationsCount: 0,
     highRatingCount: 0,
   }
-  gridSavedViewRestored.value = false
   catalogGridHasLoadedOnce.value = false
   lastGridServerQuerySignature = ''
   catalogRowModel.value = createCatalogRowModel()
@@ -2812,7 +2733,6 @@ async function loadLots() {
   if (!isAuthenticated.value) return
   resetCatalogRowModel()
   savedGridWorkSnapshots.clear()
-  await ensureGridSavedViewRestored()
   await nextTick()
   ensureCatalogServerViewport({ start: 0, end: SERVER_ROW_MODEL_INITIAL_FETCH_SIZE - 1 })
 }
@@ -4654,6 +4574,7 @@ onUnmounted(() => {
           :virtualization="catalogVirtualizationOptions"
           :advanced-filter="advancedFilterOptions"
           :quick-filter="quickFilter"
+          :state-persistence="gridStatePersistence"
           :column-menu="columnMenuOptions"
           :column-layout="columnLayoutOptions"
           fill-handle
@@ -4664,7 +4585,6 @@ onUnmounted(() => {
           :chrome="{ toolbarPlacement: 'integrated', density: 'compact', toolbarGap: 0, workspaceGap: 8 }"
           :history="{ enabled: true, shortcuts: 'grid', controls: 'external-only' }"
           @update:column-widths="persistGridColumnWidths"
-          @update:state="persistGridSavedView"
         />
         <div
           v-if="catalogQueryPlaceholderVisible && catalogGridHasLoadedOnce"
