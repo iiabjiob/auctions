@@ -758,6 +758,7 @@ let catalogQueryPlaceholderShowTimer: ReturnType<typeof window.setTimeout> | nul
 let catalogQueryPlaceholderHideTimer: ReturnType<typeof window.setTimeout> | null = null
 let catalogQueryPlaceholderVisibleAt = 0
 let catalogNextViewportPullShouldDim = false
+let catalogViewportRecoveryTimer: ReturnType<typeof window.setTimeout> | null = null
 let keepCatalogEditErrorOnNextPull = false
 const catalogFetchRequests = new Map<string, Promise<LotsResponse>>()
 let auctionGridChangesPollTimer: ReturnType<typeof window.setTimeout> | null = null
@@ -2001,49 +2002,61 @@ function sanitizePercentPredicatePayloadForKey(payload: unknown, key: string) {
 }
 
 function sanitizePercentAdvancedFilters(value: unknown) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return value
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
 
   const next: Record<string, unknown> = {}
   for (const [key, payload] of Object.entries(value as Record<string, unknown>)) {
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-      next[key] = payload
       continue
     }
 
     const record = payload as Record<string, unknown>
-    next[key] = {
-      ...record,
-      clauses: Array.isArray(record.clauses)
-        ? record.clauses.map((clause) => {
+    const clauses = Array.isArray(record.clauses)
+      ? record.clauses
+          .map((clause) => {
             const sanitized = sanitizePercentPredicatePayload(clause)
             return sanitizePercentPredicatePayloadForKey(sanitized, key)
           })
-        : record.clauses,
+          .filter(isMeaningfulAdvancedClause)
+      : []
+    if (!clauses.length) continue
+
+    next[key] = {
+      ...record,
+      clauses,
     }
   }
-  return next
+  return Object.keys(next).length ? next : undefined
 }
 
 function sanitizePercentAdvancedExpression(value: unknown): unknown {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return value
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
 
   const record = value as Record<string, unknown>
   if (record.kind === 'condition') {
-    return sanitizePercentPredicatePayload(record)
+    const sanitized = sanitizePercentPredicatePayload(record)
+    return isMeaningfulAdvancedClause(sanitized) ? sanitized : null
   }
   if (record.kind === 'group') {
+    const children = Array.isArray(record.children)
+      ? record.children.map(sanitizePercentAdvancedExpression).filter((child) => child !== null)
+      : []
+    if (!children.length) return null
+    if (children.length === 1) return children[0]
     return {
       ...record,
-      children: Array.isArray(record.children) ? record.children.map(sanitizePercentAdvancedExpression) : record.children,
+      children,
     }
   }
   if (record.kind === 'not') {
+    const child = sanitizePercentAdvancedExpression(record.child)
+    if (child === null) return null
     return {
       ...record,
-      child: sanitizePercentAdvancedExpression(record.child),
+      child,
     }
   }
-  return value
+  return null
 }
 
 function sanitizeGridSavedView<TRow extends Record<string, unknown>>(
@@ -2234,7 +2247,7 @@ function hasGridFilterModel(filterModel: DataGridFilterSnapshot | null | undefin
   return (
     hasMeaningfulColumnFilters(filterModel.columnFilters) ||
     hasMeaningfulAdvancedFilters(filterModel.advancedFilters) ||
-    Boolean(filterModel.advancedExpression) ||
+    hasMeaningfulAdvancedExpression(filterModel.advancedExpression) ||
     (typeof quickFilter?.query === 'string' && quickFilter.query.trim().length > 0)
   )
 }
@@ -2278,6 +2291,22 @@ function isMeaningfulAdvancedClause(value: unknown) {
   }
   const clauseValue = clause.value
   return clauseValue !== null && clauseValue !== undefined && String(clauseValue).trim().length > 0
+}
+
+function hasMeaningfulAdvancedExpression(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+
+  const expression = value as Record<string, unknown>
+  if (expression.kind === 'condition') {
+    return isMeaningfulAdvancedClause(expression)
+  }
+  if (expression.kind === 'group') {
+    return Array.isArray(expression.children) && expression.children.some(hasMeaningfulAdvancedExpression)
+  }
+  if (expression.kind === 'not') {
+    return hasMeaningfulAdvancedExpression(expression.child)
+  }
+  return false
 }
 
 function isAbortLikeError(error: unknown) {
@@ -2532,6 +2561,10 @@ function clearCatalogViewportDim() {
     window.clearTimeout(catalogQueryPlaceholderHideTimer)
     catalogQueryPlaceholderHideTimer = null
   }
+  if (catalogViewportRecoveryTimer !== null) {
+    window.clearTimeout(catalogViewportRecoveryTimer)
+    catalogViewportRecoveryTimer = null
+  }
 }
 
 function shouldDimCatalogPull(reason: string) {
@@ -2541,6 +2574,20 @@ function shouldDimCatalogPull(reason: string) {
     return true
   }
   return false
+}
+
+function shouldResetCatalogPullViewport(reason: string) {
+  return reason === 'sort-change' || reason === 'filter-change' || reason === 'group-change'
+}
+
+function scheduleCatalogViewportRecovery(range: { start: number; end: number }) {
+  if (catalogViewportRecoveryTimer !== null) {
+    window.clearTimeout(catalogViewportRecoveryTimer)
+  }
+  catalogViewportRecoveryTimer = window.setTimeout(() => {
+    catalogViewportRecoveryTimer = null
+    ensureCatalogServerViewport(range)
+  }, 0)
 }
 
 function createCatalogDataSource(): CatalogDataSource {
@@ -2571,10 +2618,17 @@ function createCatalogDataSource(): CatalogDataSource {
       try {
         const effectiveFilterModel = resolveCatalogPullFilterModel(request.filterModel, request.reason)
         const sanitizedFilterModel = sanitizeGridValueSetFilters(effectiveFilterModel)
-        return await auctionServerDataSource.pull({
+        const shouldResetViewport = shouldResetCatalogPullViewport(request.reason)
+        const pullRange = shouldResetViewport ? buildCatalogServerViewportRange(request.range) : request.range
+        const result = await auctionServerDataSource.pull({
           ...request,
+          range: pullRange,
           filterModel: sanitizedFilterModel,
         })
+        if (shouldResetViewport) {
+          scheduleCatalogViewportRecovery(pullRange)
+        }
+        return result
       } catch (error) {
         if (!isBackgroundPrefetch && !isAbortLikeError(error) && requestSeq === catalogPullRequestSeq) {
           errorMessage.value = error instanceof Error ? error.message : 'Не удалось загрузить лоты'
@@ -4583,7 +4637,7 @@ onUnmounted(() => {
           :row-selection="false"
           :cell-menu="true"
           :chrome="{ toolbarPlacement: 'integrated', density: 'compact', toolbarGap: 0, workspaceGap: 8 }"
-          :history="{ enabled: true, shortcuts: 'grid', controls: 'external-only' }"
+          :history="{ enabled: true, shortcuts: 'grid', controls: true }"
           @update:column-widths="persistGridColumnWidths"
         />
         <div

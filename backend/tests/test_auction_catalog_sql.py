@@ -199,6 +199,24 @@ class AuctionCatalogSqlTests(unittest.TestCase):
         self.assertIn(" IN ", str(compiled))
         self.assertIn(["Идут торги", "Прием заявок"], compiled.params.values())
 
+    def test_grid_advanced_expression_text_in_operator_is_case_insensitive(self) -> None:
+        predicate = _grid_filter_predicate(
+            {
+                "advancedExpression": {
+                    "kind": "condition",
+                    "key": "analysisCategory",
+                    "operator": "in",
+                    "value": "земля и базы",
+                },
+            }
+        )
+
+        self.assertIsNotNone(predicate)
+        compiled = predicate.compile(dialect=postgresql.dialect())
+
+        self.assertIn("lower(", str(compiled))
+        self.assertIn(["земля и базы"], compiled.params.values())
+
     def test_grid_advanced_expression_contains_supports_boolean_columns(self) -> None:
         predicate = _grid_filter_predicate(
             {

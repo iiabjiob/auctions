@@ -763,6 +763,8 @@ def _predicate_filter_condition(key, operator, value=None, value2=None, case_sen
         return and_(comparable_expression >= normalized_value, comparable_expression <= normalized_value2)
     if operator == "in":
         values = _coerce_filter_list_value(value, value_type)
+        if values and value_type == "text":
+            return func.lower(text_expression).in_([str(item).lower() for item in values])
         return comparable_expression.in_(values) if values else None
     if operator in {"gt", "gte", "lt", "lte", "equals", "notEquals"}:
         if normalized_value is None:
