@@ -68,7 +68,7 @@ export const workspaceDataGridTheme: DataGridThemeProp = {
     gridSelectionAnchorBackgroundColor: 'var(--color-accent)',
     gridSelectionActiveBorderColor: 'var(--color-accent)',
     gridEditorBorderColor: 'var(--color-accent)',
-    gridEditorBackgroundColor: '#fff8dd',
+    gridEditorBackgroundColor: 'var(--color-surface)',
     gridEditorFocusBorderColor: 'var(--color-accent)',
     gridEditorFocusRingColor: 'rgba(31, 143, 82, 0.16)',
     gridStickyBackgroundColor: 'var(--color-surface)',

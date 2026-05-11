@@ -1383,8 +1383,7 @@ const isGridCellEditable = ({ column }: { column: { key: string } }) => EDITABLE
 const editableGridCellStyle: DataGridCellStyleResolver = (_row, _rowIndex, column) => {
   if (!EDITABLE_GRID_COLUMN_KEYS.has(column.key)) return null
   return {
-    backgroundColor: '#fff9e8',
-    boxShadow: 'inset 0 0 0 1px rgba(201, 146, 37, 0.18)',
+    backgroundColor: 'rgba(255, 244, 199, 0.28)',
   }
 }
 const columnLayoutOptions = {
