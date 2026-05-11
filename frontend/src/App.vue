@@ -5,6 +5,7 @@ import { storeToRefs } from 'pinia'
 import {
   DataGrid,
   type DataGridAppColumnInput,
+  type DataGridCellStyleResolver,
   type DataGridColumnMenuProp,
   type DataGridExposed,
   type DataGridSavedViewSnapshot,
@@ -1379,6 +1380,13 @@ function resolveClientGridRowId(row: Pick<GridLotRow, 'id'>) {
 
 const catalogRowModel = shallowRef<CatalogRowModel | null>(null)
 const isGridCellEditable = ({ column }: { column: { key: string } }) => EDITABLE_GRID_COLUMN_KEYS.has(column.key)
+const editableGridCellStyle: DataGridCellStyleResolver = (_row, _rowIndex, column) => {
+  if (!EDITABLE_GRID_COLUMN_KEYS.has(column.key)) return null
+  return {
+    backgroundColor: '#fff9e8',
+    boxShadow: 'inset 0 0 0 1px rgba(201, 146, 37, 0.18)',
+  }
+}
 const columnLayoutOptions = {
   buttonLabel: 'Колонки',
   labels: {
@@ -4637,6 +4645,7 @@ onUnmounted(() => {
           :base-row-height="26"
           :theme="workspaceDataGridTheme"
           :is-cell-editable="isGridCellEditable"
+          :cell-style="editableGridCellStyle"
           :virtualization="catalogVirtualizationOptions"
           :advanced-filter="advancedFilterOptions"
           :quick-filter="quickFilter"
