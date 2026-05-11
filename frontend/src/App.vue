@@ -4283,6 +4283,16 @@ function isRedoShortcut(event: KeyboardEvent) {
   return false
 }
 
+function applyAuctionGridHistoryMutation(response: { datasetVersion: number; updatedRows: Array<{ row: ApiLotRow | null | undefined }> }) {
+  latestAuctionGridDatasetVersion.value = response.datasetVersion
+  const updatedRows = response.updatedRows.map((entry) => entry.row).filter(Boolean) as ApiLotRow[]
+  if (updatedRows.length === 0) return false
+
+  applyWorkspaceRows(updatedRows, { clearOptimistic: true, refreshSummary: false })
+  syncSelectedWorkDraftFromGridRows(updatedRows)
+  return true
+}
+
 async function refreshAuctionGridAfterHistoryMutation(datasetVersion: number) {
   latestAuctionGridDatasetVersion.value = datasetVersion
   await softRefreshCatalogRows({ dimViewport: false, range: resolveCatalogReloadRange() })
@@ -4299,8 +4309,9 @@ function handleAuctionGridUndoRedo(event: KeyboardEvent) {
         const response = await requestAuctionGridUndo<ApiLotRow>({
           postJson: postAuctionServerGridJson,
         })
-        if (response.updatedRows.length === 0) return
-        await refreshAuctionGridAfterHistoryMutation(response.datasetVersion)
+        if (!applyAuctionGridHistoryMutation(response)) {
+          await refreshAuctionGridAfterHistoryMutation(response.datasetVersion)
+        }
       } catch (error) {
         console.warn('[auction-grid] history undo failed', error)
       }
@@ -4316,8 +4327,9 @@ function handleAuctionGridUndoRedo(event: KeyboardEvent) {
         const response = await requestAuctionGridRedo<ApiLotRow>({
           postJson: postAuctionServerGridJson,
         })
-        if (response.updatedRows.length === 0) return
-        await refreshAuctionGridAfterHistoryMutation(response.datasetVersion)
+        if (!applyAuctionGridHistoryMutation(response)) {
+          await refreshAuctionGridAfterHistoryMutation(response.datasetVersion)
+        }
       } catch (error) {
         console.warn('[auction-grid] history redo failed', error)
       }
