@@ -29,6 +29,14 @@ class TBankrotSourceProviderTests(unittest.TestCase):
 
         self.assertFalse(iter_list.call_args.kwargs["include_price_schedule"])
 
+    def test_iter_lots_forwards_start_page(self) -> None:
+        provider = TBankrotSourceProvider()
+
+        with patch("app.services.auction_sources.iter_tbankrot_auction_list", return_value=iter(())) as iter_list:
+            list(provider.iter_lots(limit=10, page=7))
+
+        self.assertEqual(iter_list.call_args.kwargs["page"], 7)
+
     def test_list_lots_can_load_price_schedule_when_enabled(self) -> None:
         provider = TBankrotSourceProvider()
 

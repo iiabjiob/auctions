@@ -78,6 +78,7 @@ async def sync_source_lots(
         source_state.website = source_info.website
         source_state.enabled = source_info.enabled
     source_state.last_synced_at = now
+    sync_start_page = _source_sync_start_page(source_info.code, source_state)
 
     result = SourceSyncResult(
         source=source_info.code,
@@ -91,9 +92,9 @@ async def sync_source_lots(
     processed_items = 0
 
     if hasattr(provider, "iter_lots"):
-        items_iterable = provider.iter_lots(limit)
+        items_iterable = provider.iter_lots(limit, page=sync_start_page)
     else:
-        items_iterable = await asyncio.to_thread(provider.list_lots, limit)
+        items_iterable = await asyncio.to_thread(provider.list_lots, limit, page=sync_start_page)
 
     for source_position, item in enumerate(items_iterable, start=1):
         if not item.auction.external_id or not item.lot.external_id:
@@ -282,6 +283,7 @@ async def sync_source_lots(
                 )
 
     await session.commit()
+    _advance_source_sync_cursor(source_info.code, source_state, start_page=sync_start_page, fetched=result.fetched)
     await _backfill_publication_dates(session, source_code=source_info.code, observed_at=now)
     await session.commit()
     logger.info(
@@ -295,6 +297,41 @@ async def sync_source_lots(
         detail_sync_count,
     )
     return result
+
+
+def _source_sync_start_page(source_code: str, source_state: AuctionSourceState) -> int:
+    if source_code != "tbankrot" or not settings.tbankrot_page_rotation_enabled:
+        return 1
+    cursor = source_state.sync_cursor if isinstance(source_state.sync_cursor, dict) else {}
+    next_page = cursor.get("next_page")
+    return max(1, int(next_page)) if isinstance(next_page, int | str) and str(next_page).isdigit() else 1
+
+
+def _advance_source_sync_cursor(
+    source_code: str,
+    source_state: AuctionSourceState,
+    *,
+    start_page: int,
+    fetched: int,
+) -> None:
+    if source_code != "tbankrot" or not settings.tbankrot_page_rotation_enabled:
+        return
+
+    window_size = max(1, settings.tbankrot_pages)
+    max_page = max(0, settings.tbankrot_page_rotation_max_page)
+    if fetched <= 0:
+        next_page = 1
+    else:
+        next_page = start_page + window_size
+        if max_page > 0 and next_page > max_page:
+            next_page = 1
+
+    cursor = dict(source_state.sync_cursor or {})
+    cursor["next_page"] = next_page
+    cursor["last_start_page"] = start_page
+    cursor["last_window_size"] = window_size
+    cursor["last_fetched"] = fetched
+    source_state.sync_cursor = cursor
 
 
 async def _sync_detail_if_needed(
@@ -392,9 +429,11 @@ async def _add_observation(session: AsyncSession, record: AuctionLotRecord, snap
 def _prepare_snapshot(item: AuctionListItem, source_title: str) -> PreparedLotSnapshot:
     datagrid_row = build_datagrid_row(item, source_title).model_dump(mode="json")
     normalized_item = item.model_dump(mode="json")
+    content_lot = dict(normalized_item["lot"])
+    content_lot.pop("price_schedule", None)
     content_payload = {
         "auction": normalized_item["auction"],
-        "lot": normalized_item["lot"],
+        "lot": content_lot,
         "organizer": normalized_item["organizer"],
         "winner": normalized_item.get("winner"),
     }
@@ -605,16 +644,27 @@ async def _backfill_publication_dates(
     source_code: str,
     observed_at: datetime,
 ) -> None:
-    max_publication_fetches = settings.auction_publication_sync_limit if settings.auction_publication_sync_limit > 0 else None
+    max_publication_fetches = settings.auction_publication_sync_limit
+    if max_publication_fetches <= 0:
+        return
 
     provider = get_source_provider(source_code)
-    statement = select(AuctionLotRecord).where(AuctionLotRecord.source_code == source_code).order_by(AuctionLotRecord.last_seen_at.desc())
+    statement = (
+        select(AuctionLotRecord)
+        .where(AuctionLotRecord.source_code == source_code)
+        .order_by(AuctionLotRecord.last_seen_at.desc())
+        .limit(max_publication_fetches)
+    )
     records = (await session.scalars(statement)).all()
+    if not records:
+        return
+
+    record_ids = [record.id for record in records]
     detail_caches = {
         detail_cache.lot_record_id: detail_cache
         for detail_cache in (
             await session.scalars(
-                select(AuctionLotDetailCache).where(AuctionLotDetailCache.lot_record_id.in_([record.id for record in records]))
+                select(AuctionLotDetailCache).where(AuctionLotDetailCache.lot_record_id.in_(record_ids))
             )
         ).all()
     }
@@ -652,7 +702,7 @@ async def _backfill_publication_dates(
                 record.normalized_item = normalized_item
             continue
         auction_ids_to_fetch.append(auction_id)
-        if max_publication_fetches is not None and len(auction_ids_to_fetch) >= max_publication_fetches:
+        if len(auction_ids_to_fetch) >= max_publication_fetches:
             break
 
     if not auction_ids_to_fetch:

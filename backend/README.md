@@ -17,10 +17,10 @@ For one-click startup in VS Code, run task `backend: start all` (Terminal → Ru
 	```bash
 	uv run python -m app.seeds.default_user
 	```
+1.3.  Seed default user on prodaction:
 
-2. FastAPI (REST + SSE events):
 	```bash
-	uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+	docker compose -f docker-compose.prod.yml exec backend python -m app.seeds.default_user
 	```
 
 3. Auction sync worker:

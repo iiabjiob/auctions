@@ -95,6 +95,8 @@ class Settings(BaseSettings):
     tbankrot_login: str | None = None
     tbankrot_password: str | None = None
     tbankrot_pages: int = 1
+    tbankrot_page_rotation_enabled: bool = False
+    tbankrot_page_rotation_max_page: int = 0
     tbankrot_include_price_schedule: bool = False
     tbankrot_request_min_delay_seconds: float = 2.5
     tbankrot_request_max_delay_seconds: float = 7.0

@@ -6,12 +6,18 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from app.models.auction import AuctionLotDetailCache, AuctionLotRecord, AuctionSourceState
-from app.schemas.auctions import AuctionListItem, AuctionSummary, LotImage, LotSummary, OrganizerInfo
+from app.schemas.auctions import AuctionListItem, AuctionSummary, LotImage, LotSummary, OrganizerInfo, PriceScheduleStep
 from app.services.auction_scoring import invalidate_lot_score
 from app.services.lot_enrichment import classify_lot_enrichment
 from app.services.lot_enrichment import schedule_lot_enrichment
 from app.services.lot_enrichment import schedule_lot_ttl_refresh
-from app.services.auction_sync import _prepare_snapshot, _preserve_existing_real_media, _sync_detail_if_needed, sync_source_lots
+from app.services.auction_sync import (
+    _backfill_publication_dates,
+    _prepare_snapshot,
+    _preserve_existing_real_media,
+    _sync_detail_if_needed,
+    sync_source_lots,
+)
 
 
 def make_list_item(
@@ -83,20 +89,25 @@ class StaticSourceProvider:
 
     def __init__(self, items: list[AuctionListItem]):
         self._items = items
+        self.pages = []
 
     def info(self):
         return SimpleNamespace(code=self.code, title=self.title, website=self.website, enabled=True)
 
-    def iter_lots(self, limit: int | None = None):
+    def iter_lots(self, limit: int | None = None, *, page: int = 1):
+        self.pages.append(page)
         return iter(self._items if limit is None else self._items[:limit])
 
 
 class FakeSession:
-    def __init__(self):
+    def __init__(self, *, source_state=None):
         self.added = []
         self.commits = 0
+        self.source_state = source_state
 
     async def get(self, model, key):
+        if self.source_state is not None and model is AuctionSourceState and key == self.source_state.code:
+            return self.source_state
         if model is AuctionSourceState and key == "tbankrot":
             return None
         return None
@@ -109,6 +120,29 @@ class FakeSession:
 
     async def commit(self):
         self.commits += 1
+
+
+class FakeScalarResult:
+    def __init__(self, items):
+        self._items = items
+
+    def all(self):
+        return list(self._items)
+
+
+class BackfillFakeSession:
+    def __init__(self, *, records=None, detail_caches=None, affected_records=None):
+        self._results = [
+            records or [],
+            detail_caches or [],
+            affected_records or [],
+        ]
+        self.statements = []
+
+    async def scalars(self, statement):
+        self.statements.append(statement)
+        items = self._results.pop(0) if self._results else []
+        return FakeScalarResult(items)
 
 
 class AuctionSyncInvalidationTests(unittest.IsolatedAsyncioTestCase):
@@ -139,6 +173,82 @@ class AuctionSyncInvalidationTests(unittest.IsolatedAsyncioTestCase):
         record = next(item for item in session.added if isinstance(item, AuctionLotRecord))
         self.assertEqual(record.search_text, "bmw x5 tbankrot авто organizer")
 
+    async def test_tbankrot_page_rotation_uses_source_cursor_and_advances_window(self) -> None:
+        item = make_list_item()
+        source_state = AuctionSourceState(
+            code="tbankrot",
+            title="TBankrot",
+            website="https://tbankrot.ru",
+            enabled=True,
+            sync_cursor={"next_page": 6},
+        )
+        session = FakeSession(source_state=source_state)
+        runtime_config = SimpleNamespace(
+            category_keywords={},
+            exclusion_keywords=(),
+            legal_risk_rules=SimpleNamespace(),
+            owner_profile=SimpleNamespace(),
+            dimension_weights=SimpleNamespace(),
+        )
+        provider = StaticSourceProvider([item])
+
+        with (
+            patch("app.services.auction_sync.settings.tbankrot_page_rotation_enabled", True),
+            patch("app.services.auction_sync.settings.tbankrot_pages", 5),
+            patch("app.services.auction_sync.settings.tbankrot_page_rotation_max_page", 20),
+            patch("app.services.auction_sync.get_source_provider", return_value=provider),
+            patch("app.services.auction_sync._find_lot_record", AsyncMock(return_value=None)),
+            patch("app.services.auction_sync._recalculate_record_with_cached_inputs", AsyncMock()),
+            patch("app.services.auction_sync._sync_detail_if_needed", AsyncMock(return_value=0)),
+            patch("app.services.auction_sync._backfill_publication_dates", AsyncMock()),
+            patch("app.services.auction_sync.bump_auction_lot_dataset_version", AsyncMock()),
+            patch("app.services.auction_sync.auction_analysis_config_service.get_runtime_config", AsyncMock(return_value=runtime_config)),
+            patch("app.services.auction_sync.classify_lot_enrichment", return_value=SimpleNamespace(needs_enrichment=False)),
+        ):
+            await sync_source_lots(session, source="tbankrot", limit=1)
+
+        self.assertEqual(provider.pages, [6])
+        self.assertEqual(source_state.sync_cursor["next_page"], 11)
+        self.assertEqual(source_state.sync_cursor["last_start_page"], 6)
+        self.assertEqual(source_state.sync_cursor["last_window_size"], 5)
+
+    async def test_tbankrot_page_rotation_wraps_after_max_page(self) -> None:
+        item = make_list_item()
+        source_state = AuctionSourceState(
+            code="tbankrot",
+            title="TBankrot",
+            website="https://tbankrot.ru",
+            enabled=True,
+            sync_cursor={"next_page": 18},
+        )
+        session = FakeSession(source_state=source_state)
+        runtime_config = SimpleNamespace(
+            category_keywords={},
+            exclusion_keywords=(),
+            legal_risk_rules=SimpleNamespace(),
+            owner_profile=SimpleNamespace(),
+            dimension_weights=SimpleNamespace(),
+        )
+        provider = StaticSourceProvider([item])
+
+        with (
+            patch("app.services.auction_sync.settings.tbankrot_page_rotation_enabled", True),
+            patch("app.services.auction_sync.settings.tbankrot_pages", 5),
+            patch("app.services.auction_sync.settings.tbankrot_page_rotation_max_page", 20),
+            patch("app.services.auction_sync.get_source_provider", return_value=provider),
+            patch("app.services.auction_sync._find_lot_record", AsyncMock(return_value=None)),
+            patch("app.services.auction_sync._recalculate_record_with_cached_inputs", AsyncMock()),
+            patch("app.services.auction_sync._sync_detail_if_needed", AsyncMock(return_value=0)),
+            patch("app.services.auction_sync._backfill_publication_dates", AsyncMock()),
+            patch("app.services.auction_sync.bump_auction_lot_dataset_version", AsyncMock()),
+            patch("app.services.auction_sync.auction_analysis_config_service.get_runtime_config", AsyncMock(return_value=runtime_config)),
+            patch("app.services.auction_sync.classify_lot_enrichment", return_value=SimpleNamespace(needs_enrichment=False)),
+        ):
+            await sync_source_lots(session, source="tbankrot", limit=1)
+
+        self.assertEqual(provider.pages, [18])
+        self.assertEqual(source_state.sync_cursor["next_page"], 1)
+
     def test_preserve_existing_real_media_when_next_sync_has_only_locked_placeholders(self) -> None:
         existing_item = make_list_item(
             images=[
@@ -167,6 +277,17 @@ class AuctionSyncInvalidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(next_snapshot.datagrid_row["primary_image_url"], "https://tbankrot.ru/upload/lot/photo.jpg")
         self.assertEqual(next_snapshot.datagrid_row["images"][0]["url"], "https://tbankrot.ru/upload/lot/photo.jpg")
         self.assertEqual(next_snapshot.normalized_item["lot"]["images"][0]["url"], "https://tbankrot.ru/upload/lot/photo.jpg")
+
+    def test_price_schedule_does_not_affect_list_content_hash(self) -> None:
+        without_schedule = make_list_item()
+        with_schedule = make_list_item()
+        with_schedule.lot.price_schedule = [PriceScheduleStep(starts_at="01.05.2026", price="900 000 руб.")]
+
+        first_snapshot = _prepare_snapshot(without_schedule, "TBankrot")
+        second_snapshot = _prepare_snapshot(with_schedule, "TBankrot")
+
+        self.assertEqual(first_snapshot.content_hash, second_snapshot.content_hash)
+        self.assertEqual(second_snapshot.normalized_item["lot"]["price_schedule"][0]["price"], "900 000 руб.")
 
     async def test_source_content_change_schedules_enrichment_when_evidence_is_missing(self) -> None:
         item = make_list_item(initial_price=None)
@@ -199,6 +320,51 @@ class AuctionSyncInvalidationTests(unittest.IsolatedAsyncioTestCase):
         classify_enrichment.assert_called_once()
         schedule_enrichment.assert_called_once()
         self.assertIsNotNone(record.enrichment_requested_at)
+
+    async def test_publication_backfill_is_disabled_when_limit_is_zero(self) -> None:
+        session = BackfillFakeSession(records=[make_record(_prepare_snapshot(make_list_item(), "TBankrot"), content_hash="hash")])
+
+        with patch("app.services.auction_sync.settings.auction_publication_sync_limit", 0):
+            await _backfill_publication_dates(
+                session,
+                source_code="tbankrot",
+                observed_at=datetime(2026, 5, 7, tzinfo=UTC),
+            )
+
+        self.assertEqual(session.statements, [])
+
+    async def test_publication_backfill_limits_record_scan_and_detail_cache_load(self) -> None:
+        records = []
+        for index in range(3):
+            item = make_list_item()
+            item.auction.external_id = f"auction-{index}"
+            item.lot.external_id = f"lot-{index}"
+            snapshot = _prepare_snapshot(item, "TBankrot")
+            record = make_record(snapshot, content_hash=snapshot.content_hash)
+            record.id = index + 1
+            record.auction_external_id = item.auction.external_id
+            record.lot_external_id = item.lot.external_id
+            record.datagrid_row = {"freshness": {}}
+            record.normalized_item = {"auction": {}, "lot": {}}
+            records.append(record)
+
+        session = BackfillFakeSession(records=records, detail_caches=[])
+        provider = SimpleNamespace(get_auction_publication_date=lambda auction_id: None)
+
+        with (
+            patch("app.services.auction_sync.settings.auction_publication_sync_limit", 2),
+            patch("app.services.auction_sync.get_source_provider", return_value=provider),
+        ):
+            await _backfill_publication_dates(
+                session,
+                source_code="tbankrot",
+                observed_at=datetime(2026, 5, 7, tzinfo=UTC),
+            )
+
+        self.assertEqual(len(session.statements), 2)
+        self.assertEqual(getattr(session.statements[0]._limit_clause, "value", None), 2)
+        detail_cache_statement = session.statements[1]
+        self.assertIn("auction_lot_detail_caches", str(detail_cache_statement))
 
     async def test_source_content_change_does_not_schedule_enrichment_when_local_evidence_is_sufficient(self) -> None:
         item = make_list_item()
