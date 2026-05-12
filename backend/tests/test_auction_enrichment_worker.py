@@ -31,11 +31,15 @@ class AuctionEnrichmentWorkerTests(unittest.IsolatedAsyncioTestCase):
             "candidate_record_ids": [1],
         }
 
-        fake_session = object()
+        fake_session = AsyncMock()
         fake_context = FakeSessionContext(fake_session)
 
         with (
             patch("app.worker.auction_enrichment_worker.AsyncSessionLocal", return_value=fake_context),
+            patch(
+                "app.worker.auction_enrichment_worker.schedule_priority_lot_enrichment",
+                AsyncMock(return_value=None),
+            ) as schedule_priority,
             patch(
                 "app.worker.auction_enrichment_worker.execute_lot_enrichment_candidates",
                 AsyncMock(return_value=LotEnrichmentExecutionResult(**result_payload)),
@@ -45,7 +49,9 @@ class AuctionEnrichmentWorkerTests(unittest.IsolatedAsyncioTestCase):
         ):
             result = await auction_enrichment_worker.run_enrichment_batch()
 
+        schedule_priority.assert_awaited_once_with(fake_session)
         execute_enrichment.assert_awaited_once_with(fake_session, limit=50, item_pause_seconds=0.0)
+        fake_session.commit.assert_awaited_once()
         fetch_detail.assert_not_called()
         self.assertEqual(result, result_payload)
 

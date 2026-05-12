@@ -4,7 +4,7 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from collections.abc import Sequence
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -53,6 +53,16 @@ class LotTtlRefreshEvaluation(BaseModel):
     stale_for_hours: int | None = None
 
 
+class PriorityLotEnrichmentScheduleResult(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    candidate_count: int
+    scheduled_count: int
+    skipped_count: int
+    candidate_record_ids: list[int] = Field(default_factory=list)
+    scheduled_record_ids: list[int] = Field(default_factory=list)
+
+
 TERMINAL_LOT_STATUS_MARKERS: tuple[str, ...] = (
     "архив",
     "archived",
@@ -79,6 +89,11 @@ ENRICHMENT_WORKER_ID = "auction-enrichment-worker"
 TTL_REFRESH_HOURS = 7 * 24
 TTL_REFRESH_HIGH_SCORE_THRESHOLD = 75
 TTL_REFRESH_NEAR_DEADLINE_HOURS = 48
+PRIORITY_REFRESH_TOP_30_TTL_HOURS = 24
+PRIORITY_REFRESH_TOP_100_TTL_HOURS = 72
+PRIORITY_REFRESH_NEAR_DEADLINE_WINDOW_HOURS = 72
+PRIORITY_REFRESH_NEAR_DEADLINE_SOON_TTL_HOURS = 12
+PRIORITY_REFRESH_NEAR_DEADLINE_LATE_TTL_HOURS = 24
 
 
 def evaluate_lot_enrichment_requirements(evidence: LotEvidence) -> LotEnrichmentRequirementEvaluation:
@@ -268,6 +283,95 @@ async def dry_run_lot_enrichment_candidates(
         ready_for_scoring_count=len(candidates) - needs_enrichment_count,
         candidate_record_ids=candidate_record_ids,
         candidate_row_ids=[row_id for row_id in candidate_row_ids if isinstance(row_id, str) and row_id],
+    )
+
+
+async def schedule_priority_lot_enrichment(
+    session: AsyncSession,
+    *,
+    current_time: datetime | None = None,
+) -> PriorityLotEnrichmentScheduleResult:
+    current_time = current_time or datetime.now(UTC)
+    top_ranked_records = await _list_priority_refresh_records(
+        session,
+        current_time=current_time,
+        limit=100,
+        order_by_deadline=False,
+    )
+    deadline_records = await _list_priority_refresh_records(
+        session,
+        current_time=current_time,
+        limit=None,
+        order_by_deadline=True,
+    )
+
+    candidate_records: list[AuctionLotRecord] = []
+    seen_record_ids: set[int] = set()
+    for record in top_ranked_records + deadline_records:
+        record_id = getattr(record, "id", None)
+        if record_id is None or record_id in seen_record_ids:
+            continue
+        seen_record_ids.add(record_id)
+        candidate_records.append(record)
+    top_ranked_record_ids = {record.id for record in top_ranked_records if record.id is not None}
+
+    detail_cache_map = await _load_detail_caches_by_record_id(session, candidate_records)
+    scheduled_count = 0
+    skipped_count = 0
+    scheduled_record_ids: list[int] = []
+
+    for rank, record in enumerate(top_ranked_records, start=1):
+        detail_cache = detail_cache_map.get(record.id)
+        ttl_hours = _priority_refresh_ttl_hours(record, current_time=current_time, rank=rank)
+        if ttl_hours is None:
+            continue
+        if _priority_refresh_is_blocked(record, current_time=current_time):
+            skipped_count += 1
+            continue
+        if not _priority_refresh_needs_schedule(record, detail_cache, current_time=current_time, ttl_hours=ttl_hours):
+            continue
+        if schedule_lot_ttl_refresh(
+            record,
+            LotTtlRefreshEvaluation(
+                needs_refresh=True,
+                reason_category="priority_ttl_expired",
+                stale_for_hours=_priority_refresh_stale_for_hours(detail_cache, current_time=current_time),
+            ),
+            requested_at=current_time,
+        ):
+            scheduled_count += 1
+            scheduled_record_ids.append(record.id)
+
+    deadline_only_records = [record for record in candidate_records if record.id not in top_ranked_record_ids]
+    for record in deadline_only_records:
+        detail_cache = detail_cache_map.get(record.id)
+        ttl_hours = _priority_refresh_ttl_hours(record, current_time=current_time, rank=None)
+        if ttl_hours is None:
+            continue
+        if _priority_refresh_is_blocked(record, current_time=current_time):
+            skipped_count += 1
+            continue
+        if not _priority_refresh_needs_schedule(record, detail_cache, current_time=current_time, ttl_hours=ttl_hours):
+            continue
+        if schedule_lot_ttl_refresh(
+            record,
+            LotTtlRefreshEvaluation(
+                needs_refresh=True,
+                reason_category="priority_ttl_expired",
+                stale_for_hours=_priority_refresh_stale_for_hours(detail_cache, current_time=current_time),
+            ),
+            requested_at=current_time,
+        ):
+            scheduled_count += 1
+            scheduled_record_ids.append(record.id)
+
+    await session.flush()
+    return PriorityLotEnrichmentScheduleResult(
+        candidate_count=len(candidate_records),
+        scheduled_count=scheduled_count,
+        skipped_count=skipped_count,
+        candidate_record_ids=[record.id for record in candidate_records if record.id is not None],
+        scheduled_record_ids=scheduled_record_ids,
     )
 
 
@@ -522,6 +626,130 @@ def _parse_deadline(value: str) -> datetime | None:
         except ValueError:
             continue
     return None
+
+
+async def _list_priority_refresh_records(
+    session: AsyncSession,
+    *,
+    current_time: datetime,
+    limit: int | None,
+    order_by_deadline: bool,
+) -> list[AuctionLotRecord]:
+    statement = select(AuctionLotRecord).where(AuctionLotRecord.lifecycle_status == "active")
+    if order_by_deadline:
+        statement = statement.where(
+            or_(
+                _priority_deadline_within_window_statement(current_time),
+                _priority_auction_within_window_statement(current_time),
+            )
+        ).order_by(
+            AuctionLotRecord.application_deadline_at.asc().nulls_last(),
+            AuctionLotRecord.auction_at.asc().nulls_last(),
+            AuctionLotRecord.rating_score.desc(),
+            AuctionLotRecord.id.asc(),
+        )
+    else:
+        statement = statement.order_by(AuctionLotRecord.rating_score.desc(), AuctionLotRecord.id.asc())
+    if limit is not None:
+        statement = statement.limit(max(0, limit))
+    return (await session.scalars(statement)).all()
+
+
+async def _load_detail_caches_by_record_id(
+    session: AsyncSession,
+    records: Sequence[AuctionLotRecord],
+) -> dict[int, AuctionLotDetailCache]:
+    record_ids = [record.id for record in records if record.id is not None]
+    if not record_ids:
+        return {}
+    statement = select(AuctionLotDetailCache).where(AuctionLotDetailCache.lot_record_id.in_(record_ids))
+    detail_caches = (await session.scalars(statement)).all()
+    return {detail_cache.lot_record_id: detail_cache for detail_cache in detail_caches}
+
+
+def _priority_refresh_ttl_hours(
+    record: AuctionLotRecord,
+    *,
+    current_time: datetime,
+    rank: int | None,
+) -> int | None:
+    if rank is not None:
+        if rank <= 30:
+            ttl_hours = PRIORITY_REFRESH_TOP_30_TTL_HOURS
+        elif rank <= 100:
+            ttl_hours = PRIORITY_REFRESH_TOP_100_TTL_HOURS
+        else:
+            ttl_hours = None
+    else:
+        ttl_hours = None
+
+    deadline_hours = _candidate_hours_to_deadline(record, current_time=current_time)
+    if deadline_hours is None or deadline_hours > PRIORITY_REFRESH_NEAR_DEADLINE_WINDOW_HOURS:
+        return ttl_hours
+
+    deadline_ttl = (
+        PRIORITY_REFRESH_NEAR_DEADLINE_SOON_TTL_HOURS
+        if deadline_hours <= 24
+        else PRIORITY_REFRESH_NEAR_DEADLINE_LATE_TTL_HOURS
+    )
+    if ttl_hours is None:
+        return deadline_ttl
+    return min(ttl_hours, deadline_ttl)
+
+
+def _priority_refresh_needs_schedule(
+    record: AuctionLotRecord,
+    detail_cache: AuctionLotDetailCache | None,
+    *,
+    current_time: datetime,
+    ttl_hours: int,
+) -> bool:
+    if record.enrichment_requested_at is not None:
+        return False
+    if detail_cache is None or detail_cache.fetched_at is None:
+        return True
+    stale_for_hours = int((current_time - detail_cache.fetched_at).total_seconds() // 3600)
+    return stale_for_hours >= ttl_hours
+
+
+def _priority_refresh_stale_for_hours(
+    detail_cache: AuctionLotDetailCache | None,
+    *,
+    current_time: datetime,
+) -> int | None:
+    if detail_cache is None or detail_cache.fetched_at is None:
+        return None
+    return int((current_time - detail_cache.fetched_at).total_seconds() // 3600)
+
+
+def _priority_refresh_is_blocked(record: AuctionLotRecord, *, current_time: datetime) -> bool:
+    claim_expires_at = getattr(record, "enrichment_claim_expires_at", None)
+    if getattr(record, "enrichment_claimed_at", None) is not None and (
+        claim_expires_at is None or claim_expires_at > current_time
+    ):
+        return True
+    next_retry = getattr(record, "next_enrichment_attempt_at", None)
+    if next_retry is not None and next_retry > current_time:
+        return True
+    if _is_terminal_status(record.status):
+        return True
+    return False
+
+
+def _priority_deadline_within_window_statement(current_time: datetime):
+    window_end = current_time + timedelta(hours=PRIORITY_REFRESH_NEAR_DEADLINE_WINDOW_HOURS)
+    return and_(
+        AuctionLotRecord.application_deadline_at.is_not(None),
+        AuctionLotRecord.application_deadline_at <= window_end,
+    )
+
+
+def _priority_auction_within_window_statement(current_time: datetime):
+    window_end = current_time + timedelta(hours=PRIORITY_REFRESH_NEAR_DEADLINE_WINDOW_HOURS)
+    return and_(
+        AuctionLotRecord.auction_at.is_not(None),
+        AuctionLotRecord.auction_at <= window_end,
+    )
 
 
 def _has_price_facts(evidence: LotEvidence) -> bool:

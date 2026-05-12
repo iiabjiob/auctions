@@ -5,7 +5,11 @@ import logging
 
 from app.core.config import get_settings
 from app.infrastructure.db.database import AsyncSessionLocal
-from app.services.lot_enrichment import DEFAULT_ENRICHMENT_CANDIDATE_LIMIT, execute_lot_enrichment_candidates
+from app.services.lot_enrichment import (
+    DEFAULT_ENRICHMENT_CANDIDATE_LIMIT,
+    execute_lot_enrichment_candidates,
+    schedule_priority_lot_enrichment,
+)
 from app.worker.safety import safe_worker_sleep_seconds
 
 
@@ -35,11 +39,13 @@ def calculate_enrichment_worker_delay(
 
 async def run_enrichment_batch() -> dict[str, object]:
     async with AsyncSessionLocal() as session:
+        await schedule_priority_lot_enrichment(session)
         result = await execute_lot_enrichment_candidates(
             session,
             limit=settings.auction_enrichment_batch_size or DEFAULT_ENRICHMENT_CANDIDATE_LIMIT,
             item_pause_seconds=max(0.0, settings.auction_enrichment_item_pause_seconds),
         )
+        await session.commit()
     logger.info("Auction enrichment completed: %s", result.model_dump(mode="json"))
     return result.model_dump(mode="json")
 
