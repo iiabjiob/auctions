@@ -7,7 +7,11 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.auction import AuctionLotRecord, AuctionSourceState
-from app.schemas.auction_pipeline_observability import AuctionPipelineCounters
+from app.schemas.auction_pipeline_observability import (
+    AuctionPipelineCounters,
+    AuctionPipelineHealthResponse,
+    AuctionSourceSyncStatus,
+)
 from app.services.auction_scoring import SCORING_VERSION
 from app.services.lot_enrichment import ENRICHMENT_MAX_ATTEMPTS
 
@@ -19,11 +23,11 @@ async def get_auction_pipeline_counters(
     session: AsyncSession,
     *,
     current_time: datetime | None = None,
-) -> AuctionPipelineCounters:
+) -> AuctionPipelineHealthResponse:
     current_time = current_time or datetime.now(UTC)
     statement = build_auction_pipeline_counters_statement(current_time=current_time)
     row = (await session.execute(statement)).one()
-    return AuctionPipelineCounters.model_validate(
+    counters = AuctionPipelineCounters.model_validate(
         {
             "enrichment_requested": int(row.enrichment_requested or 0),
             "enrichment_due_now": int(row.enrichment_due_now or 0),
@@ -34,6 +38,28 @@ async def get_auction_pipeline_counters(
             "scoring_stale_or_incomplete": int(row.scoring_stale_or_incomplete or 0),
             "scored_current": int(row.scored_current or 0),
         }
+    )
+    source_states = await list_auction_source_sync_statuses(session)
+    return AuctionPipelineHealthResponse(counters=counters, sources=source_states)
+
+
+async def list_auction_source_sync_statuses(session: AsyncSession) -> list[AuctionSourceSyncStatus]:
+    statement = select(AuctionSourceState).order_by(AuctionSourceState.code.asc())
+    source_states = (await session.scalars(statement)).all()
+    return [build_auction_source_sync_status(source_state) for source_state in source_states]
+
+
+def build_auction_source_sync_status(source_state: AuctionSourceState) -> AuctionSourceSyncStatus:
+    cursor = source_state.sync_cursor if isinstance(source_state.sync_cursor, dict) else {}
+    return AuctionSourceSyncStatus(
+        code=source_state.code,
+        title=source_state.title,
+        enabled=bool(source_state.enabled),
+        last_sync_started_at=_parse_sync_cursor_datetime(cursor.get("last_sync_started_at")),
+        last_sync_completed_at=_parse_sync_cursor_datetime(cursor.get("last_sync_completed_at")),
+        next_sync_not_before=_parse_sync_cursor_datetime(cursor.get("next_sync_not_before")),
+        next_sync_not_after=_parse_sync_cursor_datetime(cursor.get("next_sync_not_after")),
+        last_sync_error=cursor.get("last_sync_error") if isinstance(cursor.get("last_sync_error"), str) else None,
     )
 
 
@@ -119,3 +145,15 @@ def _terminal_status_clause():
         status_text.contains("заверш"),
         status_text.contains("отмен"),
     )
+
+
+def _parse_sync_cursor_datetime(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return None
+    try:
+        return datetime.fromisoformat(normalized)
+    except ValueError:
+        return None

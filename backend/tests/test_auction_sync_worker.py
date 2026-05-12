@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 from urllib.error import HTTPError
 from unittest.mock import AsyncMock, patch
@@ -46,6 +47,55 @@ class AuctionSyncWorkerTests(unittest.TestCase):
         self.assertEqual(
             auction_analysis_worker.calculate_analysis_worker_delay(-30),
             DEFAULT_MIN_WORKER_POLL_INTERVAL_SECONDS,
+        )
+
+    def test_calculate_next_sync_window_uses_delay_and_jitter(self) -> None:
+        from datetime import UTC, datetime
+
+        not_before, not_after = auction_sync_worker.calculate_next_sync_window(
+            current_time=datetime(2026, 5, 7, 12, tzinfo=UTC),
+            delay_seconds=3600,
+            jitter_seconds=900,
+        )
+
+        self.assertEqual(not_before, datetime(2026, 5, 7, 13, tzinfo=UTC))
+        self.assertEqual(not_after, datetime(2026, 5, 7, 13, 15, tzinfo=UTC))
+
+    def test_persist_next_sync_window_uses_session_helper(self) -> None:
+        from datetime import UTC, datetime
+
+        class FakeSessionContext:
+            def __init__(self, session) -> None:
+                self._session = session
+
+            async def __aenter__(self):
+                return self._session
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return None
+
+        fake_session = object()
+        fake_context = FakeSessionContext(fake_session)
+
+        with (
+            patch("app.worker.auction_sync_worker.AsyncSessionLocal", return_value=fake_context),
+            patch(
+                "app.worker.auction_sync_worker.persist_all_source_sync_windows",
+                AsyncMock(return_value=2),
+            ) as persist_windows,
+        ):
+            updated = asyncio.run(
+                auction_sync_worker.persist_next_sync_window(
+                    next_sync_not_before=datetime(2026, 5, 7, 13, tzinfo=UTC),
+                    next_sync_not_after=datetime(2026, 5, 7, 13, 15, tzinfo=UTC),
+                )
+            )
+
+        self.assertEqual(updated, 2)
+        persist_windows.assert_awaited_once_with(
+            fake_session,
+            next_sync_not_before=datetime(2026, 5, 7, 13, tzinfo=UTC),
+            next_sync_not_after=datetime(2026, 5, 7, 13, 15, tzinfo=UTC),
         )
 
     def test_source_sync_error_payload_classifies_403_as_expected_source_error(self) -> None:
@@ -112,11 +162,13 @@ class AuctionSyncWorkerAsyncTests(unittest.IsolatedAsyncioTestCase):
             patch.object(auction_sync_worker.settings, "auction_sync_interval_seconds", 0),
             patch.object(auction_sync_worker.settings, "auction_sync_interval_jitter_seconds", 0),
             patch("app.worker.auction_sync_worker.sync_all_sources", AsyncMock()) as sync_all_sources,
+            patch("app.worker.auction_sync_worker.persist_next_sync_window", AsyncMock()) as persist_window,
             patch("app.worker.auction_sync_worker.asyncio.sleep", AsyncMock()) as sleep,
         ):
             await auction_sync_worker.run_worker(run_once=True)
 
         sync_all_sources.assert_not_awaited()
+        persist_window.assert_awaited_once()
         sleep.assert_awaited_once_with(DEFAULT_MIN_WORKER_POLL_INTERVAL_SECONDS)
 
 

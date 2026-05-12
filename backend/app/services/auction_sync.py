@@ -43,6 +43,7 @@ settings = get_settings()
 logger = logging.getLogger(__name__)
 NEWNESS_WINDOW_DAYS = 3
 SCRAPED_DATETIME_FORMATS = ("%d.%m.%Y %H:%M", "%d.%m.%Y", "%d/%m/%Y %H:%M", "%d/%m/%Y")
+_MISSING = object()
 
 
 @dataclass(slots=True)
@@ -51,6 +52,33 @@ class PreparedLotSnapshot:
     datagrid_row: dict
     normalized_item: dict
     content_hash: str
+
+
+def _update_source_sync_cursor(
+    source_state: AuctionSourceState,
+    *,
+    last_sync_started_at: datetime | None = None,
+    last_sync_completed_at: datetime | None = None,
+    next_sync_not_before: datetime | None = None,
+    next_sync_not_after: datetime | None = None,
+    last_sync_error: str | None | object = _MISSING,
+) -> None:
+    cursor = dict(source_state.sync_cursor or {})
+    if last_sync_started_at is not None:
+        cursor["last_sync_started_at"] = last_sync_started_at.isoformat()
+    if last_sync_completed_at is not None:
+        cursor["last_sync_completed_at"] = last_sync_completed_at.isoformat()
+    if next_sync_not_before is not None:
+        cursor["next_sync_not_before"] = next_sync_not_before.isoformat()
+    if next_sync_not_after is not None:
+        cursor["next_sync_not_after"] = next_sync_not_after.isoformat()
+    if last_sync_error is _MISSING:
+        pass
+    elif last_sync_error is None:
+        cursor.pop("last_sync_error", None)
+    else:
+        cursor["last_sync_error"] = str(last_sync_error)
+    source_state.sync_cursor = cursor
 async def sync_source_lots(
     session: AsyncSession,
     *,
@@ -79,6 +107,7 @@ async def sync_source_lots(
         source_state.website = source_info.website
         source_state.enabled = source_info.enabled
     source_state.last_synced_at = now
+    _update_source_sync_cursor(source_state, last_sync_started_at=now, last_sync_error=None)
     sync_start_page = _source_sync_start_page(source_info.code, source_state)
 
     result = SourceSyncResult(
@@ -289,6 +318,9 @@ async def sync_source_lots(
                     }
                 )
 
+    completed_at = datetime.now(UTC)
+    source_state.last_synced_at = completed_at
+    _update_source_sync_cursor(source_state, last_sync_completed_at=completed_at, last_sync_error=None)
     await session.commit()
     _advance_source_sync_cursor(source_info.code, source_state, start_page=sync_start_page, fetched=result.fetched)
     await _backfill_publication_dates(session, source_code=source_info.code, observed_at=now)
@@ -339,6 +371,45 @@ def _advance_source_sync_cursor(
     cursor["last_window_size"] = window_size
     cursor["last_fetched"] = fetched
     source_state.sync_cursor = cursor
+
+
+async def persist_source_sync_error(
+    session: AsyncSession,
+    *,
+    source_code: str,
+    error_message: str,
+    completed_at: datetime | None = None,
+) -> None:
+    source_state = await session.get(AuctionSourceState, source_code)
+    if source_state is None:
+        return
+    completed_at = completed_at or datetime.now(UTC)
+    source_state.last_synced_at = completed_at
+    _update_source_sync_cursor(
+        source_state,
+        last_sync_completed_at=completed_at,
+        last_sync_error=error_message,
+    )
+    await session.commit()
+
+
+async def persist_all_source_sync_windows(
+    session: AsyncSession,
+    *,
+    next_sync_not_before: datetime,
+    next_sync_not_after: datetime,
+) -> int:
+    statement = select(AuctionSourceState)
+    source_states = (await session.scalars(statement)).all()
+    for source_state in source_states:
+        _update_source_sync_cursor(
+            source_state,
+            next_sync_not_before=next_sync_not_before,
+            next_sync_not_after=next_sync_not_after,
+        )
+    if source_states:
+        await session.commit()
+    return len(source_states)
 
 
 async def _sync_detail_if_needed(
