@@ -410,7 +410,7 @@ class LotEnrichmentRequirementTests(unittest.TestCase):
             async def scalars(self, statement):
                 class FakeScalars:
                     def all(self_inner):
-                        return [low_score, high_score]
+                        return [high_score, low_score]
 
                 return FakeScalars()
 
@@ -442,7 +442,7 @@ class LotEnrichmentRequirementTests(unittest.TestCase):
             async def scalars(self, statement):
                 class FakeScalars:
                     def all(self_inner):
-                        return [far_deadline, near_deadline]
+                        return [near_deadline, far_deadline]
 
                 return FakeScalars()
 
@@ -523,7 +523,9 @@ class LotEnrichmentRequirementTests(unittest.TestCase):
         self.assertIn("enrichment_claim_expires_at", sql)
         self.assertIn("auction_source_states.enabled IS true", sql)
         self.assertIn("auction_lot_records.source_code = %(source_code_1)s", sql)
-        self.assertIn("ORDER BY auction_lot_records.enrichment_requested_at ASC", sql)
+        self.assertIn("ORDER BY auction_lot_records.rating_score DESC", sql)
+        self.assertIn("auction_lot_records.last_seen_at DESC", sql)
+        self.assertIn("least(", sql)
         self.assertIn("LIMIT %(param_1)s", sql)
 
     def test_claimed_records_are_excluded_from_another_claim_while_lease_is_active(self) -> None:
@@ -599,7 +601,7 @@ class LotEnrichmentRequirementTests(unittest.TestCase):
             async def scalars(self, statement):
                 class FakeScalars:
                     def all(self_inner):
-                        return [third, first, second]
+                        return [first, second, third]
 
                 return FakeScalars()
 

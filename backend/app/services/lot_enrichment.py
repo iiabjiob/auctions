@@ -4,7 +4,7 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from collections.abc import Sequence
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -94,6 +94,7 @@ PRIORITY_REFRESH_TOP_100_TTL_HOURS = 72
 PRIORITY_REFRESH_NEAR_DEADLINE_WINDOW_HOURS = 72
 PRIORITY_REFRESH_NEAR_DEADLINE_SOON_TTL_HOURS = 12
 PRIORITY_REFRESH_NEAR_DEADLINE_LATE_TTL_HOURS = 24
+ENRICHMENT_PRIORITY_FAR_FUTURE = datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC)
 
 
 def evaluate_lot_enrichment_requirements(evidence: LotEvidence) -> LotEnrichmentRequirementEvaluation:
@@ -185,6 +186,7 @@ def build_lot_enrichment_candidate_statement(
     limit: int | None = 50,
 ):
     current_time = current_time or datetime.now(UTC)
+    priority_order = _lot_enrichment_claim_priority_order()
     statement = (
         select(AuctionLotRecord)
         .join(AuctionSourceState, AuctionSourceState.code == AuctionLotRecord.source_code)
@@ -205,7 +207,7 @@ def build_lot_enrichment_candidate_statement(
         .where(AuctionLotRecord.enrichment_attempt_count < ENRICHMENT_MAX_ATTEMPTS)
         .where(AuctionSourceState.enabled.is_(True))
         .where(~_terminal_status_predicate())
-        .order_by(AuctionLotRecord.enrichment_requested_at.asc(), AuctionLotRecord.id.asc())
+        .order_by(*priority_order)
     )
     if source_code:
         statement = statement.where(AuctionLotRecord.source_code == source_code)
@@ -495,6 +497,35 @@ def _terminal_status_predicate():
     return or_(*(status_text.contains(marker) for marker in TERMINAL_LOT_STATUS_MARKERS))
 
 
+def _lot_enrichment_claim_priority_order() -> tuple[object, ...]:
+    deadline_expression = func.least(
+        func.coalesce(AuctionLotRecord.application_deadline_at, literal(ENRICHMENT_PRIORITY_FAR_FUTURE)),
+        func.coalesce(AuctionLotRecord.auction_at, literal(ENRICHMENT_PRIORITY_FAR_FUTURE)),
+    )
+    return (
+        AuctionLotRecord.rating_score.desc(),
+        deadline_expression.asc(),
+        AuctionLotRecord.last_seen_at.desc(),
+        AuctionLotRecord.enrichment_requested_at.asc(),
+        AuctionLotRecord.id.asc(),
+    )
+
+
+def _filter_lot_enrichment_candidates_in_order(
+    records: Sequence[AuctionLotRecord],
+    *,
+    current_time: datetime | None = None,
+    limit: int | None = DEFAULT_ENRICHMENT_CANDIDATE_LIMIT,
+) -> list[AuctionLotRecord]:
+    current_time = current_time or datetime.now(UTC)
+    eligible = [record for record in records if _is_enrichment_candidate(record, current_time=current_time)]
+    if limit is None:
+        return eligible
+    if limit <= 0:
+        return []
+    return eligible[:limit]
+
+
 def _is_enrichment_maxed_out(record: AuctionLotRecord) -> bool:
     return int(getattr(record, "enrichment_attempt_count", 0) or 0) >= ENRICHMENT_MAX_ATTEMPTS
 
@@ -537,7 +568,7 @@ async def claim_lot_enrichment_candidates(
     statement = build_lot_enrichment_candidate_statement(source_code=source_code, current_time=current_time, limit=None)
     statement = statement.with_for_update(skip_locked=True, of=AuctionLotRecord)
     records = (await session.scalars(statement)).all()
-    claimed = collect_lot_enrichment_candidates(records, current_time=current_time, limit=limit)
+    claimed = _filter_lot_enrichment_candidates_in_order(records, current_time=current_time, limit=limit)
     if not claimed:
         return []
     claim_expires_at = current_time + timedelta(seconds=max(1, lease_seconds))
