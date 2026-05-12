@@ -6,9 +6,24 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from app.services.auction_workspace import reanalyze_lot_workspace, request_lot_workspace_live_refresh
+from app.services.auction_workspace import find_lot_record
 
 
 class AuctionWorkspaceManualRefreshTests(unittest.IsolatedAsyncioTestCase):
+    async def test_find_lot_record_falls_back_to_lot_id_when_auction_id_misses(self) -> None:
+        record = SimpleNamespace(id=1, lot_external_id="lot-1", auction_external_id="auction-1")
+        session = SimpleNamespace(scalar=AsyncMock(side_effect=[None, record]))
+
+        result = await find_lot_record(
+            session,
+            source="tbankrot",
+            lot_id="lot-1",
+            auction_id="wrong-auction",
+        )
+
+        self.assertIs(result, record)
+        self.assertEqual(session.scalar.await_count, 2)
+
     async def test_live_refresh_queues_and_records_user_operation(self) -> None:
         record = SimpleNamespace(
             id=1,

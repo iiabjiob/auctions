@@ -465,16 +465,25 @@ async def find_lot_record(
     auction_id: str | None = None,
     include_normalized_item: bool = True,
 ) -> AuctionLotRecord | None:
-    statement = select(AuctionLotRecord).where(
+    base_statement = select(AuctionLotRecord).where(
         AuctionLotRecord.source_code == source,
         AuctionLotRecord.lot_external_id == lot_id,
     )
+    statement = base_statement
     if auction_id:
         statement = statement.where(AuctionLotRecord.auction_external_id == auction_id)
     if not include_normalized_item:
         statement = statement.options(defer(AuctionLotRecord.normalized_item))
     statement = statement.order_by(AuctionLotRecord.last_seen_at.desc()).limit(1)
-    return await session.scalar(statement)
+    record = await session.scalar(statement)
+    if record is not None or not auction_id:
+        return record
+
+    fallback_statement = base_statement
+    if not include_normalized_item:
+        fallback_statement = fallback_statement.options(defer(AuctionLotRecord.normalized_item))
+    fallback_statement = fallback_statement.order_by(AuctionLotRecord.last_seen_at.desc()).limit(1)
+    return await session.scalar(fallback_statement)
 
 
 async def ensure_lot_detail_cache(
