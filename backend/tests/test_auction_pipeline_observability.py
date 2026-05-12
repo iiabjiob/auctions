@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from datetime import UTC, datetime
 
 from sqlalchemy.dialects import postgresql
+from unittest.mock import AsyncMock, patch
 
 from app.services.auction_pipeline_observability import (
     AuctionPipelineHealthResponse,
@@ -20,13 +21,13 @@ class AuctionPipelineObservabilityTests(unittest.IsolatedAsyncioTestCase):
             code="tbankrot",
             title="TBankrot",
             enabled=True,
-            sync_cursor={
-                "last_sync_started_at": "2026-05-07T12:00:00+00:00",
-                "last_sync_completed_at": "2026-05-07T12:05:00+00:00",
-                "next_sync_not_before": "2026-05-07T13:00:00+00:00",
-                "next_sync_not_after": "2026-05-07T13:15:00+00:00",
-                "last_sync_error": "temporary failure",
-            },
+        )
+        sync_state = SimpleNamespace(
+            last_sync_started_at=datetime.fromisoformat("2026-05-07T12:00:00+00:00"),
+            last_sync_completed_at=datetime.fromisoformat("2026-05-07T12:05:00+00:00"),
+            next_sync_not_before=datetime.fromisoformat("2026-05-07T13:00:00+00:00"),
+            next_sync_not_after=datetime.fromisoformat("2026-05-07T13:15:00+00:00"),
+            last_sync_error="temporary failure",
         )
 
         class FakeSession:
@@ -48,14 +49,15 @@ class AuctionPipelineObservabilityTests(unittest.IsolatedAsyncioTestCase):
                     )
                 )
 
-            async def scalars(self, statement):  # noqa: ANN001
-                class FakeScalars:
-                    def all(self_inner):
-                        return [source_state]
+            async def execute(self, statement):  # noqa: ANN001
+                self.statement = statement
+                return SimpleNamespace(all=lambda: [(source_state, sync_state)])
 
-                return FakeScalars()
-
-        counters = await get_auction_pipeline_counters(FakeSession())
+        with patch(
+            "app.services.auction_pipeline_observability.list_auction_source_sync_statuses",
+            AsyncMock(return_value=[build_auction_source_sync_status(source_state, sync_state=sync_state)]),
+        ):
+            counters = await get_auction_pipeline_counters(FakeSession())
 
         self.assertIsInstance(counters, AuctionPipelineHealthResponse)
         self.assertEqual(counters.counters.enrichment_requested, 4)
@@ -78,16 +80,16 @@ class AuctionPipelineObservabilityTests(unittest.IsolatedAsyncioTestCase):
             code="tbankrot",
             title="TBankrot",
             enabled=True,
-            sync_cursor={
-                "last_sync_started_at": "2026-05-07T12:00:00+00:00",
-                "last_sync_completed_at": "2026-05-07T12:05:00+00:00",
-                "next_sync_not_before": "2026-05-07T13:00:00+00:00",
-                "next_sync_not_after": "2026-05-07T13:15:00+00:00",
-                "last_sync_error": "temporary failure",
-            },
+        )
+        sync_state = SimpleNamespace(
+            last_sync_started_at=datetime.fromisoformat("2026-05-07T12:00:00+00:00"),
+            last_sync_completed_at=datetime.fromisoformat("2026-05-07T12:05:00+00:00"),
+            next_sync_not_before=datetime.fromisoformat("2026-05-07T13:00:00+00:00"),
+            next_sync_not_after=datetime.fromisoformat("2026-05-07T13:15:00+00:00"),
+            last_sync_error="temporary failure",
         )
 
-        status = build_auction_source_sync_status(source_state)
+        status = build_auction_source_sync_status(source_state, sync_state=sync_state)
 
         self.assertEqual(status.code, "tbankrot")
         self.assertEqual(status.last_sync_started_at, datetime.fromisoformat("2026-05-07T12:00:00+00:00"))

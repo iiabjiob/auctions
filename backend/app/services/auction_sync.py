@@ -17,6 +17,8 @@ from app.models.auction import (
     AuctionLotObservation,
     AuctionLotRecord,
     AuctionLotWorkItem,
+    AuctionSourceSyncRun,
+    AuctionSourceSyncState,
     AuctionSourceState,
 )
 from app.schemas.auctions import AuctionListItem, SourceSyncResult
@@ -79,6 +81,70 @@ def _update_source_sync_cursor(
     else:
         cursor["last_sync_error"] = str(last_sync_error)
     source_state.sync_cursor = cursor
+
+
+async def _upsert_source_sync_state(
+    session: AsyncSession,
+    source_code: str,
+    *,
+    last_sync_started_at: datetime | None | object = _MISSING,
+    last_sync_completed_at: datetime | None | object = _MISSING,
+    next_sync_not_before: datetime | None | object = _MISSING,
+    next_sync_not_after: datetime | None | object = _MISSING,
+    last_sync_result: str | None | object = _MISSING,
+    last_sync_error: str | None | object = _MISSING,
+    last_sync_error_code: str | None | object = _MISSING,
+    last_sync_fetched: int | None | object = _MISSING,
+) -> None:
+    sync_state = await session.get(AuctionSourceSyncState, source_code)
+    if sync_state is None:
+        sync_state = AuctionSourceSyncState(source_code=source_code)
+        session.add(sync_state)
+
+    if last_sync_started_at is not _MISSING:
+        sync_state.last_sync_started_at = last_sync_started_at
+    if last_sync_completed_at is not _MISSING:
+        sync_state.last_sync_completed_at = last_sync_completed_at
+    if next_sync_not_before is not _MISSING:
+        sync_state.next_sync_not_before = next_sync_not_before
+    if next_sync_not_after is not _MISSING:
+        sync_state.next_sync_not_after = next_sync_not_after
+    if last_sync_result is not _MISSING:
+        sync_state.last_sync_result = last_sync_result
+    if last_sync_error is not _MISSING:
+        sync_state.last_sync_error = last_sync_error
+    if last_sync_error_code is not _MISSING:
+        sync_state.last_sync_error_code = last_sync_error_code
+    if last_sync_fetched is not _MISSING:
+        sync_state.last_sync_fetched = last_sync_fetched
+
+
+async def _append_source_sync_run(
+    session: AsyncSession,
+    *,
+    source_code: str,
+    started_at: datetime,
+    completed_at: datetime | None,
+    result: str,
+    fetched_count: int,
+    next_sync_not_before: datetime | None = None,
+    next_sync_not_after: datetime | None = None,
+    error_code: str | None = None,
+    error_message: str | None = None,
+) -> None:
+    session.add(
+        AuctionSourceSyncRun(
+            source_code=source_code,
+            started_at=started_at,
+            completed_at=completed_at,
+            result=result,
+            fetched_count=fetched_count,
+            next_sync_not_before=next_sync_not_before,
+            next_sync_not_after=next_sync_not_after,
+            error_code=error_code,
+            error_message=error_message,
+        )
+    )
 async def sync_source_lots(
     session: AsyncSession,
     *,
@@ -108,6 +174,14 @@ async def sync_source_lots(
         source_state.enabled = source_info.enabled
     source_state.last_synced_at = now
     _update_source_sync_cursor(source_state, last_sync_started_at=now, last_sync_error=None)
+    await _upsert_source_sync_state(
+        session,
+        source_info.code,
+        last_sync_started_at=now,
+        last_sync_result="running",
+        last_sync_error=None,
+        last_sync_error_code=None,
+    )
     sync_start_page = _source_sync_start_page(source_info.code, source_state)
 
     result = SourceSyncResult(
@@ -321,6 +395,23 @@ async def sync_source_lots(
     completed_at = datetime.now(UTC)
     source_state.last_synced_at = completed_at
     _update_source_sync_cursor(source_state, last_sync_completed_at=completed_at, last_sync_error=None)
+    await _upsert_source_sync_state(
+        session,
+        source_info.code,
+        last_sync_completed_at=completed_at,
+        last_sync_result="success",
+        last_sync_error=None,
+        last_sync_error_code=None,
+        last_sync_fetched=result.fetched,
+    )
+    await _append_source_sync_run(
+        session,
+        source_code=source_info.code,
+        started_at=now,
+        completed_at=completed_at,
+        result="success",
+        fetched_count=result.fetched,
+    )
     await session.commit()
     _advance_source_sync_cursor(source_info.code, source_state, start_page=sync_start_page, fetched=result.fetched)
     await _backfill_publication_dates(session, source_code=source_info.code, observed_at=now)
@@ -378,17 +469,39 @@ async def persist_source_sync_error(
     *,
     source_code: str,
     error_message: str,
+    error_code: str | None = None,
     completed_at: datetime | None = None,
 ) -> None:
     source_state = await session.get(AuctionSourceState, source_code)
     if source_state is None:
         return
     completed_at = completed_at or datetime.now(UTC)
+    started_at = source_state.last_synced_at or completed_at
     source_state.last_synced_at = completed_at
     _update_source_sync_cursor(
         source_state,
         last_sync_completed_at=completed_at,
         last_sync_error=error_message,
+    )
+    await _upsert_source_sync_state(
+        session,
+        source_code,
+        last_sync_started_at=started_at,
+        last_sync_completed_at=completed_at,
+        last_sync_result="failed",
+        last_sync_error=error_message,
+        last_sync_error_code=error_code,
+        last_sync_fetched=0,
+    )
+    await _append_source_sync_run(
+        session,
+        source_code=source_code,
+        started_at=started_at,
+        completed_at=completed_at,
+        result="failed",
+        fetched_count=0,
+        error_code=error_code,
+        error_message=error_message,
     )
     await session.commit()
 
@@ -404,6 +517,12 @@ async def persist_all_source_sync_windows(
     for source_state in source_states:
         _update_source_sync_cursor(
             source_state,
+            next_sync_not_before=next_sync_not_before,
+            next_sync_not_after=next_sync_not_after,
+        )
+        await _upsert_source_sync_state(
+            session,
+            source_state.code,
             next_sync_not_before=next_sync_not_before,
             next_sync_not_after=next_sync_not_after,
         )

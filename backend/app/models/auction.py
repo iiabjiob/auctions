@@ -41,6 +41,43 @@ class AuctionSourceState(Base):
     lots: Mapped[list["AuctionLotRecord"]] = relationship(back_populates="source_state")
 
 
+class AuctionSourceSyncState(Base):
+    __tablename__ = "auction_source_sync_states"
+
+    source_code: Mapped[str] = mapped_column(ForeignKey("auction_source_states.code"), primary_key=True)
+    last_sync_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    last_sync_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    next_sync_not_before: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    next_sync_not_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    last_sync_result: Mapped[str | None] = mapped_column(String(32), index=True)
+    last_sync_error: Mapped[str | None] = mapped_column(Text)
+    last_sync_error_code: Mapped[str | None] = mapped_column(String(64), index=True)
+    last_sync_fetched: Mapped[int | None] = mapped_column(Integer)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    source_state: Mapped[AuctionSourceState] = relationship()
+
+
+class AuctionSourceSyncRun(Base):
+    __tablename__ = "auction_source_sync_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_code: Mapped[str] = mapped_column(ForeignKey("auction_source_states.code"), nullable=False, index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    result: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    fetched_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_sync_not_before: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    next_sync_not_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), index=True)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    source_state: Mapped[AuctionSourceState] = relationship()
+
+
 class AuctionLotRecord(Base):
     __tablename__ = "auction_lot_records"
     __table_args__ = (

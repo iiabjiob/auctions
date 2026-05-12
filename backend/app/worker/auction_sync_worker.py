@@ -85,6 +85,7 @@ async def sync_all_sources() -> None:
                     error_session,
                     source_code=source_code,
                     error_message=payload["message"],
+                    error_code=payload["error_code"],
                 )
             if payload["expected"]:
                 logger.warning(

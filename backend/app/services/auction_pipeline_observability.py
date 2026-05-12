@@ -7,6 +7,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.auction import AuctionLotRecord, AuctionSourceState
+from app.models.auction import AuctionSourceSyncState
 from app.schemas.auction_pipeline_observability import (
     AuctionPipelineCounters,
     AuctionPipelineHealthResponse,
@@ -44,22 +45,35 @@ async def get_auction_pipeline_counters(
 
 
 async def list_auction_source_sync_statuses(session: AsyncSession) -> list[AuctionSourceSyncStatus]:
-    statement = select(AuctionSourceState).order_by(AuctionSourceState.code.asc())
-    source_states = (await session.scalars(statement)).all()
-    return [build_auction_source_sync_status(source_state) for source_state in source_states]
+    statement = (
+        select(AuctionSourceState, AuctionSourceSyncState)
+        .outerjoin(AuctionSourceSyncState, AuctionSourceSyncState.source_code == AuctionSourceState.code)
+        .order_by(AuctionSourceState.code.asc())
+    )
+    rows = (await session.execute(statement)).all()
+    return [build_auction_source_sync_status(source_state, sync_state=sync_state) for source_state, sync_state in rows]
 
 
-def build_auction_source_sync_status(source_state: AuctionSourceState) -> AuctionSourceSyncStatus:
+def build_auction_source_sync_status(
+    source_state: AuctionSourceState,
+    *,
+    sync_state: AuctionSourceSyncState | None = None,
+) -> AuctionSourceSyncStatus:
     cursor = source_state.sync_cursor if isinstance(source_state.sync_cursor, dict) else {}
+    last_sync_started_at = sync_state.last_sync_started_at if sync_state is not None else _parse_sync_cursor_datetime(cursor.get("last_sync_started_at"))
+    last_sync_completed_at = sync_state.last_sync_completed_at if sync_state is not None else _parse_sync_cursor_datetime(cursor.get("last_sync_completed_at"))
+    next_sync_not_before = sync_state.next_sync_not_before if sync_state is not None else _parse_sync_cursor_datetime(cursor.get("next_sync_not_before"))
+    next_sync_not_after = sync_state.next_sync_not_after if sync_state is not None else _parse_sync_cursor_datetime(cursor.get("next_sync_not_after"))
+    last_sync_error = sync_state.last_sync_error if sync_state is not None else cursor.get("last_sync_error")
     return AuctionSourceSyncStatus(
         code=source_state.code,
         title=source_state.title,
         enabled=bool(source_state.enabled),
-        last_sync_started_at=_parse_sync_cursor_datetime(cursor.get("last_sync_started_at")),
-        last_sync_completed_at=_parse_sync_cursor_datetime(cursor.get("last_sync_completed_at")),
-        next_sync_not_before=_parse_sync_cursor_datetime(cursor.get("next_sync_not_before")),
-        next_sync_not_after=_parse_sync_cursor_datetime(cursor.get("next_sync_not_after")),
-        last_sync_error=cursor.get("last_sync_error") if isinstance(cursor.get("last_sync_error"), str) else None,
+        last_sync_started_at=last_sync_started_at,
+        last_sync_completed_at=last_sync_completed_at,
+        next_sync_not_before=next_sync_not_before,
+        next_sync_not_after=next_sync_not_after,
+        last_sync_error=last_sync_error if isinstance(last_sync_error, str) else None,
     )
 
 
