@@ -11,6 +11,7 @@ from app.services.lot_actuality import (
     classify_lot_actuality,
     extract_lot_actuality_dates,
     parse_lot_datetime,
+    _list_actuality_sweep_candidates,
     run_lot_actuality_sweep,
 )
 
@@ -263,6 +264,25 @@ class LotActualityTests(unittest.TestCase):
         self.assertEqual(record.lifecycle_status, "active")
         self.assertIsNone(record.archived_at)
         self.assertIsNone(record.archive_reason)
+
+    def test_actuality_sweep_prioritizes_high_rated_records_in_sql_order(self) -> None:
+        current_time = datetime(2026, 5, 7, 12, tzinfo=UTC)
+        session = FakeSweepSession()
+
+        import asyncio
+
+        asyncio.run(
+            _list_actuality_sweep_candidates(
+                session,
+                current_time=current_time,
+                limit=10,
+                grace=timedelta(hours=24),
+                stale_after=timedelta(days=30),
+            )
+        )
+
+        self.assertTrue(session.scalars_calls)
+        self.assertIn("ORDER BY auction_lot_records.rating_score DESC", str(session.scalars_calls[0]))
 
 
 if __name__ == "__main__":

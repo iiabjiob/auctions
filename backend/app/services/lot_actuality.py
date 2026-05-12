@@ -5,7 +5,7 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import case, or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -372,6 +372,10 @@ async def _list_actuality_sweep_candidates(
     grace_cutoff = current_time - grace
     stale_cutoff = current_time - stale_after
     refresh_cutoff = current_time - grace
+    deadline_expression = func.least(
+        func.coalesce(AuctionLotRecord.application_deadline_at, datetime.max.replace(tzinfo=UTC)),
+        func.coalesce(AuctionLotRecord.auction_at, datetime.max.replace(tzinfo=UTC)),
+    )
     statement = (
         select(AuctionLotRecord)
         .where(
@@ -392,8 +396,9 @@ async def _list_actuality_sweep_candidates(
             )
         )
         .order_by(
-            case((AuctionLotRecord.actuality_checked_at.is_(None), 0), else_=1),
-            AuctionLotRecord.last_seen_at.asc(),
+            AuctionLotRecord.rating_score.desc(),
+            deadline_expression.asc(),
+            AuctionLotRecord.last_seen_at.desc(),
             AuctionLotRecord.actuality_checked_at.asc().nulls_first(),
             AuctionLotRecord.id.asc(),
         )
