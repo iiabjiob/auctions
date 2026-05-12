@@ -73,6 +73,25 @@ services:
     networks:
       - net
 
+  auction-actuality-worker:
+    build:
+      context: .
+      dockerfile: .devcontainer/Dockerfile
+      tags:
+        - auctions-dev:latest
+    container_name: auctions-actuality-worker-dev
+    working_dir: /workspace/backend
+    command: uv run python -m app.worker.auction_actuality_worker
+    volumes:
+      - .:/workspace
+    env_file:
+      - ./backend/.env.dev
+    depends_on:
+      - db
+      - redis
+    networks:
+      - net
+
   auction-enrichment-worker:
     build:
       context: .
