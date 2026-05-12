@@ -610,6 +610,7 @@ def _grid_column_expression(key: str | None):
         "initialPrice": (_json_decimal_value("initial_price_value"), "number"),
         "isNew": (AuctionLotRecord.is_new, "boolean"),
         "lastSeenAt": (AuctionLotRecord.last_seen_at, "datetime"),
+        "lifecycleStatus": (AuctionLotRecord.lifecycle_status, "text"),
         "legalCost": (_json_decimal_value("legal_cost"), "number"),
         "location": (_json_text_value("location"), "text"),
         "locationAddress": (_json_text_value("location_address"), "text"),

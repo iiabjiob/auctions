@@ -19,6 +19,7 @@ from app.services.auction_grid import (
     get_auction_lots_grid_histogram,
     pull_auction_lots_grid,
 )
+from app.services.auction_catalog import _grid_column_expression
 
 
 class AuctionGridApiTests(unittest.TestCase):
@@ -100,6 +101,12 @@ class AuctionGridApiTests(unittest.TestCase):
         self.assertEqual(filtered["columnFilters"], {"source": {"kind": "valueSet", "tokens": ["string:tbankrot"]}})
         self.assertEqual(filtered["advancedFilters"], {})
         self.assertIn("status", filter_model["columnFilters"])
+
+    def test_grid_column_expression_supports_lifecycle_status(self) -> None:
+        expression, value_type = _grid_column_expression("lifecycleStatus")
+
+        self.assertIsNotNone(expression)
+        self.assertEqual(value_type, "text")
 
     def test_query_options_are_merged_into_advanced_expression(self) -> None:
         request = AuctionLotsGridPullRequest.model_validate(
