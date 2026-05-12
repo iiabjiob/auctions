@@ -371,12 +371,16 @@ async def _list_actuality_sweep_candidates(
 ) -> list[AuctionLotRecord]:
     grace_cutoff = current_time - grace
     stale_cutoff = current_time - stale_after
+    refresh_cutoff = current_time - grace
     statement = (
         select(AuctionLotRecord)
         .where(
+            AuctionLotRecord.lifecycle_status == "active",
+        )
+        .where(
             or_(
-                AuctionLotRecord.lifecycle_status != "archived",
-                AuctionLotRecord.last_seen_at >= stale_cutoff,
+                AuctionLotRecord.actuality_checked_at.is_(None),
+                AuctionLotRecord.actuality_checked_at <= refresh_cutoff,
             )
         )
         .where(
