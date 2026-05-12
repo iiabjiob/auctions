@@ -20,6 +20,17 @@ from app.services.auction_sync import (
 )
 
 
+FIXED_SYNC_NOW = datetime(2026, 5, 7, 12, tzinfo=UTC)
+
+
+class FixedDateTime(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        if tz is None:
+            return FIXED_SYNC_NOW
+        return FIXED_SYNC_NOW.astimezone(tz)
+
+
 def make_list_item(
     *,
     lot_name: str = "Экскаватор",
@@ -114,6 +125,9 @@ class FakeSession:
 
     def add(self, item) -> None:
         self.added.append(item)
+
+    async def scalar(self, statement):
+        return None
 
     async def flush(self):
         return None
@@ -498,6 +512,117 @@ class AuctionSyncInvalidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(classify_enrichment.call_count, 1)
         self.assertEqual(schedule_enrichment.call_count, 1)
         self.assertEqual(record.enrichment_requested_at, first_requested_at)
+
+    async def test_sync_sets_actuality_columns_for_active_records(self) -> None:
+        item = make_list_item(application_deadline="10.05.2026 18:00")
+        session = FakeSession()
+        runtime_config = SimpleNamespace(
+            category_keywords={},
+            exclusion_keywords=(),
+            legal_risk_rules=SimpleNamespace(),
+            owner_profile=SimpleNamespace(),
+            dimension_weights=SimpleNamespace(),
+        )
+        provider = StaticSourceProvider([item])
+
+        with (
+            patch("app.services.auction_sync.datetime", FixedDateTime),
+            patch("app.services.auction_sync.get_source_provider", return_value=provider),
+            patch("app.services.auction_sync._find_lot_record", AsyncMock(return_value=None)),
+            patch("app.services.auction_sync._recalculate_record_with_cached_inputs", AsyncMock()),
+            patch("app.services.auction_sync._sync_detail_if_needed", AsyncMock(return_value=0)),
+            patch("app.services.auction_sync._backfill_publication_dates", AsyncMock()),
+            patch("app.services.auction_sync.bump_auction_lot_dataset_version", AsyncMock()),
+            patch("app.services.auction_sync.auction_analysis_config_service.get_runtime_config", AsyncMock(return_value=runtime_config)),
+            patch("app.services.auction_sync.classify_lot_enrichment", return_value=SimpleNamespace(needs_enrichment=False)),
+        ):
+            await sync_source_lots(session, source="tbankrot", limit=1)
+
+        record = next(item for item in session.added if isinstance(item, AuctionLotRecord))
+        self.assertEqual(record.lifecycle_status, "active")
+        self.assertEqual(record.publication_at, datetime(2026, 5, 1, tzinfo=UTC))
+        self.assertEqual(record.application_deadline_at, datetime(2026, 5, 10, 18, tzinfo=UTC))
+        self.assertIsNone(record.archived_at)
+        self.assertIsNone(record.archive_reason)
+        self.assertEqual(record.actuality_checked_at, FIXED_SYNC_NOW)
+        self.assertIsNone(record.enrichment_requested_at)
+
+    async def test_sync_marks_expired_records_and_clears_enrichment_state(self) -> None:
+        item = make_list_item(application_deadline="05.05.2026 18:00")
+        snapshot = _prepare_snapshot(item, "TBankrot")
+        record = make_record(snapshot, content_hash="old-content-hash")
+        record.enrichment_requested_at = datetime(2026, 5, 6, tzinfo=UTC)
+        session = FakeSession()
+        runtime_config = SimpleNamespace(
+            category_keywords={},
+            exclusion_keywords=(),
+            legal_risk_rules=SimpleNamespace(),
+            owner_profile=SimpleNamespace(),
+            dimension_weights=SimpleNamespace(),
+        )
+        provider = StaticSourceProvider([item])
+
+        with (
+            patch("app.services.auction_sync.datetime", FixedDateTime),
+            patch("app.services.auction_sync.get_source_provider", return_value=provider),
+            patch("app.services.auction_sync._find_lot_record", AsyncMock(return_value=record)),
+            patch("app.services.auction_sync._recalculate_record_with_cached_inputs", AsyncMock()),
+            patch("app.services.auction_sync._sync_detail_if_needed", AsyncMock(return_value=0)),
+            patch("app.services.auction_sync._backfill_publication_dates", AsyncMock()),
+            patch("app.services.auction_sync.bump_auction_lot_dataset_version", AsyncMock()),
+            patch("app.services.auction_sync.auction_analysis_config_service.get_runtime_config", AsyncMock(return_value=runtime_config)),
+            patch("app.services.auction_sync.classify_lot_enrichment", return_value=SimpleNamespace(needs_enrichment=True)),
+            patch("app.services.auction_sync.schedule_lot_enrichment", wraps=schedule_lot_enrichment) as schedule_enrichment,
+        ):
+            await sync_source_lots(session, source="tbankrot", limit=1)
+
+        schedule_enrichment.assert_not_called()
+        self.assertEqual(record.lifecycle_status, "expired")
+        self.assertEqual(record.finished_at, datetime(2026, 5, 5, 18, tzinfo=UTC))
+        self.assertEqual(record.archived_at, FIXED_SYNC_NOW)
+        self.assertEqual(record.archive_reason, "application_deadline_passed")
+        self.assertEqual(record.actuality_checked_at, FIXED_SYNC_NOW)
+        self.assertIsNone(record.enrichment_requested_at)
+
+    async def test_sync_restores_active_records_after_terminal_status(self) -> None:
+        item = make_list_item(application_deadline="10.05.2026 18:00")
+        snapshot = _prepare_snapshot(item, "TBankrot")
+        record = make_record(snapshot, content_hash="old-content-hash", score_input_hash="score-hash")
+        record.status = "Торги состоялись"
+        record.lifecycle_status = "archived"
+        record.archived_at = datetime(2026, 5, 6, tzinfo=UTC)
+        record.archive_reason = "terminal_status"
+        record.finished_at = datetime(2026, 5, 6, tzinfo=UTC)
+        record.enrichment_requested_at = datetime(2026, 5, 6, tzinfo=UTC)
+        session = FakeSession()
+        runtime_config = SimpleNamespace(
+            category_keywords={},
+            exclusion_keywords=(),
+            legal_risk_rules=SimpleNamespace(),
+            owner_profile=SimpleNamespace(),
+            dimension_weights=SimpleNamespace(),
+        )
+        provider = StaticSourceProvider([item])
+
+        with (
+            patch("app.services.auction_sync.datetime", FixedDateTime),
+            patch("app.services.auction_sync.get_source_provider", return_value=provider),
+            patch("app.services.auction_sync._find_lot_record", AsyncMock(return_value=record)),
+            patch("app.services.auction_sync._recalculate_record_with_cached_inputs", AsyncMock()),
+            patch("app.services.auction_sync._sync_detail_if_needed", AsyncMock(return_value=0)),
+            patch("app.services.auction_sync._backfill_publication_dates", AsyncMock()),
+            patch("app.services.auction_sync.bump_auction_lot_dataset_version", AsyncMock()),
+            patch("app.services.auction_sync.auction_analysis_config_service.get_runtime_config", AsyncMock(return_value=runtime_config)),
+            patch("app.services.auction_sync.classify_lot_enrichment", return_value=SimpleNamespace(needs_enrichment=False)),
+        ):
+            await sync_source_lots(session, source="tbankrot", limit=1)
+
+        self.assertEqual(record.lifecycle_status, "active")
+        self.assertIsNone(record.archived_at)
+        self.assertIsNone(record.archive_reason)
+        self.assertIsNone(record.finished_at)
+        self.assertEqual(record.actuality_checked_at, FIXED_SYNC_NOW)
+        self.assertIsNone(record.enrichment_requested_at)
 
     async def test_stale_high_value_detail_cache_schedules_ttl_refresh_via_detail_sync(self) -> None:
         item = make_list_item()

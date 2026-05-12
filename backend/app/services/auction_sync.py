@@ -36,6 +36,7 @@ from app.services.auction_scoring import invalidate_lot_score
 from app.services.auction_search import update_record_search_text
 from app.services.auction_workspace import ensure_lot_detail_cache, ensure_work_item
 from app.services.lot_decision_report import generate_and_persist_lot_decision_report_snapshot
+from app.services.lot_actuality import LotActualityClassification, classify_lot_actuality
 
 
 settings = get_settings()
@@ -147,9 +148,11 @@ async def sync_source_lots(
             update_record_search_text(record)
             session.add(record)
             await session.flush()
-            evaluation = classify_lot_enrichment(record)
-            if evaluation.needs_enrichment:
-                schedule_lot_enrichment(record, evaluation, requested_at=now, force=True)
+            actuality = await _sync_record_actuality(session, record, checked_at=now)
+            if actuality.lifecycle_status == "active":
+                evaluation = classify_lot_enrichment(record)
+                if evaluation.needs_enrichment:
+                    schedule_lot_enrichment(record, evaluation, requested_at=now, force=True)
             await _recalculate_record_with_cached_inputs(session, record, runtime_config=runtime_config)
             result.created += 1
             await _add_observation(session, record, snapshot)
@@ -161,6 +164,7 @@ async def sync_source_lots(
                 observed_at=now,
                 runtime_config=runtime_config,
             )
+            await _sync_record_actuality(session, record, checked_at=now)
             await bump_auction_lot_dataset_version(
                 session,
                 record,
@@ -196,7 +200,8 @@ async def sync_source_lots(
             record.datagrid_row = next_row
             record.normalized_item = snapshot.normalized_item
             update_record_search_text(record)
-            if content_changed:
+            actuality = await _sync_record_actuality(session, record, checked_at=now)
+            if actuality.lifecycle_status == "active" and content_changed:
                 invalidate_lot_score(record, reason=SOURCE_CONTENT_CHANGED)
                 evaluation = classify_lot_enrichment(record)
                 if evaluation.needs_enrichment or record.enrichment_requested_at is not None:
@@ -230,6 +235,7 @@ async def sync_source_lots(
                     observed_at=now,
                     runtime_config=runtime_config,
                 )
+                await _sync_record_actuality(session, record, checked_at=now)
             else:
                 result.unchanged += 1
                 detail_sync_count = await _sync_detail_if_needed(
@@ -240,6 +246,7 @@ async def sync_source_lots(
                     observed_at=now,
                     runtime_config=runtime_config,
                 )
+                await _sync_record_actuality(session, record, checked_at=now)
             if content_changed or status_changed:
                 changed_fields = []
                 if content_changed:
@@ -377,6 +384,35 @@ async def _sync_detail_if_needed(
     return detail_sync_count + 1
 
 
+async def _sync_record_actuality(
+    session: AsyncSession,
+    record: AuctionLotRecord,
+    *,
+    checked_at: datetime,
+) -> LotActualityClassification:
+    detail_cache = None
+    if record.id is not None:
+        detail_cache = await session.scalar(
+            select(AuctionLotDetailCache).where(AuctionLotDetailCache.lot_record_id == record.id)
+        )
+    actuality = classify_lot_actuality(record, detail_cache, current_time=checked_at)
+    record.publication_at = actuality.dates.publication_at
+    record.application_start_at = actuality.dates.application_start_at
+    record.application_deadline_at = actuality.dates.application_deadline_at
+    record.auction_at = actuality.dates.auction_at
+    record.lifecycle_status = actuality.lifecycle_status
+    record.finished_at = actuality.finished_at
+    record.actuality_checked_at = checked_at
+    if actuality.lifecycle_status == "active":
+        record.archived_at = None
+        record.archive_reason = None
+    else:
+        record.archived_at = checked_at
+        record.archive_reason = actuality.archive_reason
+        _clear_lot_enrichment_state(record)
+    return actuality
+
+
 async def _recalculate_record_with_cached_inputs(
     session: AsyncSession,
     record: AuctionLotRecord,
@@ -397,6 +433,17 @@ async def _recalculate_record_with_cached_inputs(
     )
     update_record_search_text(record)
     await generate_and_persist_lot_decision_report_snapshot(session, record, detail_cache, work_item)
+
+
+def _clear_lot_enrichment_state(record: AuctionLotRecord) -> None:
+    record.enrichment_requested_at = None
+    record.last_enrichment_attempt_at = None
+    record.enrichment_attempt_count = 0
+    record.next_enrichment_attempt_at = None
+    record.last_enrichment_error = None
+    record.enrichment_claimed_at = None
+    record.enrichment_claimed_by = None
+    record.enrichment_claim_expires_at = None
 
 
 async def _find_lot_record(
