@@ -62,6 +62,7 @@ async def pull_auction_lots_grid(
         only_new=False,
         shortlist=False,
         min_rating=None,
+        include_archived=request.include_archived,
         sort_model=_normalize_sort_model(request.sort_model),
         grid_filter=grid_filter,
     )
@@ -79,6 +80,7 @@ async def pull_auction_lots_grid(
             only_new=False,
             shortlist=False,
             min_rating=None,
+            include_archived=request.include_archived,
             grid_filter=grid_filter,
         )
     )
@@ -118,6 +120,7 @@ async def get_auction_lots_grid_histogram(
         only_new=False,
         shortlist=False,
         min_rating=None,
+        include_archived=request.include_archived,
         column_id=request.column_id,
         histogram_options=request.options,
         sort_model=_normalize_sort_model(request.sort_model),

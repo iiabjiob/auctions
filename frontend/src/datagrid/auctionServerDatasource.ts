@@ -24,6 +24,7 @@ export type AuctionServerGridFilters = {
   only_new: boolean
   shortlist: boolean
   min_rating: number | null
+  include_archived: boolean
 }
 
 export type AuctionServerPullWindowRequest = {

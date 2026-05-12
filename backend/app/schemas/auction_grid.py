@@ -28,6 +28,7 @@ class AuctionLotsGridQueryOptions(BaseModel):
     only_new: bool = False
     shortlist: bool = False
     min_rating: int | None = Field(default=None, ge=0, le=100)
+    include_archived: bool = False
     sort_model: list[dict[str, Any]] = Field(default_factory=list, alias="sortModel")
     filter_model: dict[str, Any] | None = Field(default=None, alias="filterModel")
 

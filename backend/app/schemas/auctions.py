@@ -265,6 +265,7 @@ class LotDatagridFilters(BaseModel):
     only_new: bool = False
     shortlist: bool = False
     min_rating: int | None = None
+    include_archived: bool = False
 
 
 class LotDatagridPagination(BaseModel):

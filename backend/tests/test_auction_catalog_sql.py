@@ -43,6 +43,25 @@ class AuctionCatalogSqlTests(unittest.TestCase):
         self.assertIn("auction_lot_work_items", sql)
         self.assertNotIn("LIMIT", sql)
 
+    def test_persisted_statement_defaults_to_active_lifecycle_scope(self) -> None:
+        statement = _build_persisted_lots_statement(LotDatagridFilters(source="tbankrot"), ("tbankrot",))
+        compiled = statement.compile(dialect=postgresql.dialect())
+        sql = str(compiled)
+
+        self.assertIn("auction_lot_records.lifecycle_status", sql)
+        self.assertIn("active", compiled.params.values())
+
+    def test_persisted_statement_can_include_archived_records_when_requested(self) -> None:
+        statement = _build_persisted_lots_statement(
+            LotDatagridFilters(source="tbankrot", include_archived=True),
+            ("tbankrot",),
+        )
+        compiled = statement.compile(dialect=postgresql.dialect())
+        sql = str(compiled)
+
+        self.assertNotIn("auction_lot_records.lifecycle_status = ", sql)
+        self.assertNotIn("active", compiled.params.values())
+
     def test_default_record_sort_is_sql_level(self) -> None:
         statement = _apply_default_record_sort(
             _build_persisted_lots_statement(LotDatagridFilters(source="tbankrot"), ("tbankrot",))

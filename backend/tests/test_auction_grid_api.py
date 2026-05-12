@@ -29,12 +29,14 @@ class AuctionGridApiTests(unittest.TestCase):
                 "endRow": 25,
                 "sortModel": [{"colId": "ratingScore", "sort": "desc"}],
                 "filterModel": {"columnFilters": {}},
+                "include_archived": True,
             }
         )
 
         self.assertEqual(request.resolved_start_row, 10)
         self.assertEqual(request.resolved_end_row, 25)
         self.assertEqual(request.sort_model, [{"colId": "ratingScore", "sort": "desc"}])
+        self.assertTrue(request.include_archived)
 
     def test_pull_request_accepts_nested_range_fields(self) -> None:
         request = AuctionLotsGridPullRequest.model_validate({"range": {"startRow": 0, "endRow": 50}})
@@ -112,6 +114,7 @@ class AuctionGridApiTests(unittest.TestCase):
                 "only_new": True,
                 "shortlist": True,
                 "min_rating": 70,
+                "include_archived": True,
                 "filterModel": {
                     "advancedExpression": {
                         "kind": "condition",
@@ -143,6 +146,7 @@ class AuctionGridApiTests(unittest.TestCase):
                 ("ratingScore", "gte"),
             },
         )
+        self.assertTrue(request.include_archived)
 
     def test_search_query_detection_requires_effective_global_search(self) -> None:
         self.assertFalse(_has_search_query(None))

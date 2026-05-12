@@ -633,6 +633,7 @@ type ServerQuickFiltersState = {
   onlyNew: boolean
   shortlist: boolean
   minRating: number
+  includeArchived: boolean
 }
 
 type GridColumnWidthsState = Record<string, number | null>
@@ -778,6 +779,7 @@ const DEFAULT_SERVER_FILTERS: ServerQuickFiltersState = {
   onlyNew: false,
   shortlist: false,
   minRating: 0,
+  includeArchived: false,
 }
 const SHORTLIST_DECISIONS = new Set(['watch', 'calculate', 'inspection', 'bid'])
 
@@ -1868,6 +1870,7 @@ function sanitizeServerFilters(value: Partial<ServerQuickFiltersState> | null | 
   const minRating = Number.isFinite(value?.minRating)
     ? Math.min(100, Math.max(0, Number(value?.minRating)))
     : DEFAULT_SERVER_FILTERS.minRating
+  const includeArchived = value?.includeArchived === true
 
   return {
     period,
@@ -1879,6 +1882,7 @@ function sanitizeServerFilters(value: Partial<ServerQuickFiltersState> | null | 
     onlyNew,
     shortlist,
     minRating,
+    includeArchived,
   }
 }
 
@@ -2337,6 +2341,7 @@ function buildAuctionServerGridFilters(): AuctionServerGridFilters {
     only_new: filters.onlyNew,
     shortlist: filters.shortlist,
     min_rating: filters.minRating > 0 ? filters.minRating : null,
+    include_archived: filters.includeArchived,
   }
 }
 
@@ -4561,6 +4566,14 @@ onUnmounted(() => {
             Удалить
           </button>
         </div>
+        <button
+          class="secondary-button"
+          type="button"
+          :aria-pressed="filters.includeArchived"
+          @click="filters.includeArchived = !filters.includeArchived"
+        >
+          {{ filters.includeArchived ? 'Архив показан' : 'Архив скрыт' }}
+        </button>
         <span v-if="currentUser" class="user-chip">{{ currentUser.full_name }}</span>
         <button class="secondary-button" type="button" @click="authStore.logout">Выйти</button>
       </div>

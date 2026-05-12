@@ -200,6 +200,7 @@ async def list_persisted_lots_for_datagrid(
     only_new: bool = False,
     shortlist: bool = False,
     min_rating: int | None = None,
+    include_archived: bool = False,
     page: int = 1,
     page_size: int = 100,
     offset: int | None = None,
@@ -219,6 +220,7 @@ async def list_persisted_lots_for_datagrid(
         only_new=only_new,
         shortlist=shortlist,
         min_rating=min_rating,
+        include_archived=include_archived,
     )
     active_sources = tuple(SOURCE_PROVIDERS)
     if source and source != "all" and source not in SOURCE_PROVIDERS:
@@ -269,6 +271,7 @@ async def pull_persisted_lots_for_grid(
     only_new: bool = False,
     shortlist: bool = False,
     min_rating: int | None = None,
+    include_archived: bool = False,
     sort_model: list[dict] | None = None,
     grid_filter: dict | None = None,
 ) -> tuple[list[tuple[AuctionLotRecord, LotDatagridRow]], int]:
@@ -285,6 +288,7 @@ async def pull_persisted_lots_for_grid(
         only_new=only_new,
         shortlist=shortlist,
         min_rating=min_rating,
+        include_archived=include_archived,
     )
     active_sources = tuple(SOURCE_PROVIDERS)
     if source and source != "all" and source not in SOURCE_PROVIDERS:
@@ -326,6 +330,7 @@ async def summarize_persisted_lots_for_grid(
     only_new: bool = False,
     shortlist: bool = False,
     min_rating: int | None = None,
+    include_archived: bool = False,
     grid_filter: dict | None = None,
 ) -> AuctionLotsGridSummary:
     filters = LotDatagridFilters(
@@ -338,6 +343,7 @@ async def summarize_persisted_lots_for_grid(
         only_new=only_new,
         shortlist=shortlist,
         min_rating=min_rating,
+        include_archived=include_archived,
     )
     active_sources = tuple(SOURCE_PROVIDERS)
     if source and source != "all" and source not in SOURCE_PROVIDERS:
@@ -389,6 +395,7 @@ async def list_persisted_lot_column_histogram(
     only_new: bool = False,
     shortlist: bool = False,
     min_rating: int | None = None,
+    include_archived: bool = False,
     column_id: str,
     histogram_options: dict[str, Any] | None = None,
     sort_model: list[dict] | None = None,
@@ -408,6 +415,7 @@ async def list_persisted_lot_column_histogram(
         only_new=only_new,
         shortlist=shortlist,
         min_rating=min_rating,
+        include_archived=include_archived,
     )
     active_sources = tuple(SOURCE_PROVIDERS)
     if source and source != "all" and source not in SOURCE_PROVIDERS:
@@ -458,6 +466,8 @@ def _build_persisted_lots_statement(
         statement = statement.where(AuctionLotRecord.source_code == filters.source)
     else:
         statement = statement.where(AuctionLotRecord.source_code.in_(active_sources))
+    if not filters.include_archived:
+        statement = statement.where(AuctionLotRecord.lifecycle_status == "active")
     if filters.status:
         statement = statement.where(AuctionLotRecord.status == filters.status)
     if filters.analysis_color:
