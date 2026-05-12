@@ -2482,20 +2482,9 @@ function rememberLoadedRows(rows: GridLotRow[], options: { trackLoadedRows?: boo
   }
 }
 
-const UI_PERF_WARN_THRESHOLD_MS = 32
-
-function startUiPerfTrace(name: string, context: Record<string, unknown> = {}) {
-  const startedAt = performance.now()
+function startUiPerfTrace(_name: string, _context: Record<string, unknown> = {}) {
   return {
-    end(extra: Record<string, unknown> = {}) {
-      const elapsedMs = performance.now() - startedAt
-      if (elapsedMs < UI_PERF_WARN_THRESHOLD_MS) return
-      console.warn('[ui-perf]', name, {
-        elapsedMs: Math.round(elapsedMs),
-        ...context,
-        ...extra,
-      })
-    },
+    end(_extra: Record<string, unknown> = {}) {},
   }
 }
 
@@ -4268,13 +4257,6 @@ function reanalyzeSelectedLotDetails() {
 
 async function openLotDetails(row: GridLotRow) {
   const trace = startUiPerfTrace('openLotDetails', { rowId: row.id, lotId: row.lotId })
-  const startedAt = performance.now()
-  const logDetailPhase = (phase: string) => {
-    console.info('[auction-detail]', phase, {
-      lotId: row.lotId,
-      elapsedMs: Math.round(performance.now() - startedAt),
-    })
-  }
   const requestId = ++detailRequestId
   captureDetailGridFocusAnchor(row)
   selectedLot.value = row
@@ -4300,11 +4282,9 @@ async function openLotDetails(row: GridLotRow) {
     detailAbortController?.abort()
   }, DETAIL_FETCH_TIMEOUT_MS)
   try {
-    logDetailPhase('request:start')
     const workspace = await fetchJson<LotWorkspaceResponse>(buildLotWorkspacePath(row, '', { includeDetail: false }), {
       signal: detailAbortController.signal,
     })
-    logDetailPhase('request:done')
 
     if (requestId !== detailRequestId) return
 
@@ -4315,11 +4295,9 @@ async function openLotDetails(row: GridLotRow) {
     await nextTick()
     applyDetailWorkspace(workspace, { updateGrid: false })
     void loadSelectedDecisionReport(workspace.record_id, requestId)
-    logDetailPhase('render:done')
     trace.end({ stage: 'rendered' })
   } catch (error) {
     if (isAbortLikeError(error)) {
-      logDetailPhase('request:aborted')
       trace.end({ stage: 'aborted' })
       return
     }
