@@ -121,6 +121,23 @@ class PriorityLotEnrichmentSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(record.enrichment_requested_at)
         session.flush.assert_awaited_once()
 
+    async def test_scheduler_refreshes_top_30_trading_window_after_twelve_hours(self) -> None:
+        current_time = datetime(2026, 5, 7, tzinfo=UTC)
+        record = make_record(
+            record_id=1,
+            rating_score=95,
+            application_deadline="08.05.2026 10:00",
+        )
+        detail_cache = make_detail_cache(record_id=1, fetched_at=current_time - timedelta(hours=13))
+        session = FakeSession(top_ranked_records=[record], deadline_records=[record], detail_caches=[detail_cache])
+
+        result = await schedule_priority_lot_enrichment(session, current_time=current_time)
+
+        self.assertEqual(result.candidate_count, 1)
+        self.assertEqual(result.scheduled_count, 1)
+        self.assertEqual(record.enrichment_requested_at, current_time)
+        session.flush.assert_awaited_once()
+
     async def test_scheduler_skips_archived_and_expired_records(self) -> None:
         current_time = datetime(2026, 5, 7, tzinfo=UTC)
         archived = make_record(

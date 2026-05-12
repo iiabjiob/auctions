@@ -91,7 +91,9 @@ TTL_REFRESH_HOURS = 7 * 24
 TTL_REFRESH_HIGH_SCORE_THRESHOLD = 75
 TTL_REFRESH_NEAR_DEADLINE_HOURS = 48
 PRIORITY_REFRESH_TOP_30_TTL_HOURS = 24
+PRIORITY_REFRESH_TOP_30_TRADING_WINDOW_TTL_HOURS = 12
 PRIORITY_REFRESH_TOP_100_TTL_HOURS = 72
+PRIORITY_REFRESH_TOP_100_TRADING_WINDOW_TTL_HOURS = 24
 PRIORITY_REFRESH_NEAR_DEADLINE_WINDOW_HOURS = 72
 PRIORITY_REFRESH_NEAR_DEADLINE_SOON_TTL_HOURS = 12
 PRIORITY_REFRESH_NEAR_DEADLINE_LATE_TTL_HOURS = 24
@@ -725,11 +727,20 @@ def _priority_refresh_ttl_hours(
     current_time: datetime,
     rank: int | None,
 ) -> int | None:
+    trading_window = _priority_refresh_is_trading_window(record, current_time=current_time)
     if rank is not None:
         if rank <= 30:
-            ttl_hours = PRIORITY_REFRESH_TOP_30_TTL_HOURS
+            ttl_hours = (
+                PRIORITY_REFRESH_TOP_30_TRADING_WINDOW_TTL_HOURS
+                if trading_window
+                else PRIORITY_REFRESH_TOP_30_TTL_HOURS
+            )
         elif rank <= 100:
-            ttl_hours = PRIORITY_REFRESH_TOP_100_TTL_HOURS
+            ttl_hours = (
+                PRIORITY_REFRESH_TOP_100_TRADING_WINDOW_TTL_HOURS
+                if trading_window
+                else PRIORITY_REFRESH_TOP_100_TTL_HOURS
+            )
         else:
             ttl_hours = None
     else:
@@ -747,6 +758,15 @@ def _priority_refresh_ttl_hours(
     if ttl_hours is None:
         return deadline_ttl
     return min(ttl_hours, deadline_ttl)
+
+
+def _priority_refresh_is_trading_window(
+    record: AuctionLotRecord,
+    *,
+    current_time: datetime,
+) -> bool:
+    deadline_hours = _candidate_hours_to_deadline(record, current_time=current_time)
+    return deadline_hours is not None and deadline_hours <= PRIORITY_REFRESH_NEAR_DEADLINE_WINDOW_HOURS
 
 
 def _priority_refresh_needs_schedule(
