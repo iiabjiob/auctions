@@ -333,9 +333,23 @@ type LotWorkspaceResponse = {
   changes: LotChangeSummary
 }
 
+type LotWorkspaceEnrichmentState = {
+  requested_at: string | null
+  requested_reason: string | null
+  last_attempt_at: string | null
+  attempt_count: number
+  next_attempt_at: string | null
+  last_error: string | null
+  claimed_at: string | null
+  claimed_by: string | null
+  claim_expires_at: string | null
+}
+
 type LotWorkspaceRefreshResponse = {
-  status: string
+  status: 'queued' | 'rate_limited' | 'already_pending'
   queued: boolean
+  next_allowed_at: string | null
+  current_enrichment_state: LotWorkspaceEnrichmentState
 }
 
 type AuctionDetailResponse = {
@@ -669,6 +683,7 @@ const decisionReportStatus = ref<'idle' | 'empty' | 'error'>('idle')
 const decisionReportError = ref('')
 const detailLoading = ref(false)
 const detailLiveRefreshing = ref(false)
+const detailReanalyzing = ref(false)
 const detailStatus = ref('')
 const catalogViewportDimmed = ref(false)
 const DETAIL_PANE_WIDTH_STORAGE_KEY = 'auction-detail-pane-width'
@@ -708,8 +723,6 @@ const LOTS_RELOAD_DELAY_MS = 400
 const SYNC_PROGRESS_RELOAD_INTERVAL_MS = 30_000
 const SERVER_ROW_MODEL_INITIAL_FETCH_SIZE = 256
 const DETAIL_FETCH_TIMEOUT_MS = 15_000
-const DETAIL_LIVE_REFRESH_ENQUEUE_TIMEOUT_MS = 5_000
-const DETAIL_LIVE_REFRESH_RESULT_TIMEOUT_MS = 30_000
 const DETAIL_RENDER_RAW_FIELDS_LIMIT = 120
 const DETAIL_RENDER_DOCUMENTS_LIMIT = 120
 const DETAIL_RENDER_IMAGES_LIMIT = 80
@@ -4051,28 +4064,50 @@ async function refreshLiveLotDetails(row: GridLotRow, requestId: number) {
   clearDetailLiveRefreshTimeout()
   detailLiveRefreshing.value = true
   detailStatus.value = 'Ставлю live refresh в очередь'
-  detailLiveRefreshTimeout = window.setTimeout(() => {
-    if (requestId !== detailRequestId) return
-    finishDetailLiveRefresh('Live refresh не ответил за отведенное время')
-  }, DETAIL_LIVE_REFRESH_RESULT_TIMEOUT_MS)
-
-  const controller = new AbortController()
-  const enqueueTimeout = window.setTimeout(() => controller.abort(), DETAIL_LIVE_REFRESH_ENQUEUE_TIMEOUT_MS)
   try {
     const refresh = await fetchJson<LotWorkspaceRefreshResponse>(buildLotWorkspacePath(row, '/refresh'), {
       method: 'POST',
-      signal: controller.signal,
     })
     if (requestId !== detailRequestId) return
-
-    detailStatus.value = refresh.queued
-      ? 'Live refresh выполняется на backend'
-      : 'Live refresh уже выполняется на backend'
+    if (refresh.status === 'queued') {
+      finishDetailLiveRefresh('Live refresh поставлен в очередь')
+      return
+    }
+    if (refresh.status === 'already_pending') {
+      finishDetailLiveRefresh('Live refresh уже ожидает обработки')
+      return
+    }
+    const allowedAt = refresh.next_allowed_at ? formatDateTime(refresh.next_allowed_at) : 'позже'
+    finishDetailLiveRefresh(`Live refresh временно недоступен до ${allowedAt}`)
   } catch (error) {
     if (requestId !== detailRequestId) return
     finishDetailLiveRefresh(error instanceof Error ? `Live refresh не запущен: ${error.message}` : 'Live refresh не запущен')
   } finally {
-    window.clearTimeout(enqueueTimeout)
+    if (requestId === detailRequestId) {
+      detailLiveRefreshing.value = false
+    }
+  }
+}
+
+async function reanalyzeLocalLotDetails(row: GridLotRow, requestId: number) {
+  if (!row.lotId) return
+
+  detailReanalyzing.value = true
+  detailStatus.value = 'Пересчитываю карточку локально'
+  try {
+    const workspace = await fetchJson<LotWorkspaceResponse>(buildLotWorkspacePath(row, '/reanalyze', { includeDetail: true }), {
+      method: 'POST',
+    })
+    if (requestId !== detailRequestId) return
+    applyDetailWorkspace(workspace)
+    detailStatus.value = 'Локальный пересчет завершен'
+  } catch (error) {
+    if (requestId !== detailRequestId) return
+    detailStatus.value = error instanceof Error ? `Локальный пересчет не удался: ${error.message}` : 'Локальный пересчет не удался'
+  } finally {
+    if (requestId === detailRequestId) {
+      detailReanalyzing.value = false
+    }
   }
 }
 
@@ -4095,8 +4130,14 @@ async function reloadSelectedWorkspaceAfterLiveRefresh(requestId: number) {
 
 function refreshSelectedLotLiveDetails() {
   const row = selectedLot.value
-  if (!row?.lotId || detailLiveRefreshing.value) return
+  if (!row?.lotId || detailLiveRefreshing.value || detailReanalyzing.value) return
   void refreshLiveLotDetails(row, detailRequestId)
+}
+
+function reanalyzeSelectedLotDetails() {
+  const row = selectedLot.value
+  if (!row?.lotId || detailLiveRefreshing.value || detailReanalyzing.value) return
+  void reanalyzeLocalLotDetails(row, detailRequestId)
 }
 
 async function openLotDetails(row: GridLotRow) {
@@ -4118,6 +4159,7 @@ async function openLotDetails(row: GridLotRow) {
   resetWorkDraft()
   errorMessage.value = ''
   detailLiveRefreshing.value = false
+  detailReanalyzing.value = false
   detailStatus.value = 'Открыта карточка из каталога'
 
   if (!row.lotId) return
@@ -4182,6 +4224,7 @@ function closeLotDetails() {
   resetWorkDraft()
   detailLoading.value = false
   detailLiveRefreshing.value = false
+  detailReanalyzing.value = false
   detailStatus.value = ''
   void restoreDetailGridFocus()
   trace.end({ stage: 'closed' })
@@ -4217,6 +4260,7 @@ function resetCatalogState() {
   detailLoading.value = false
   clearDetailLiveRefreshTimeout()
   detailLiveRefreshing.value = false
+  detailReanalyzing.value = false
   backgroundStatus.value = 'Ожидаем фоновое обновление'
   resetWorkDraft()
   catalogGridHasLoadedOnce.value = false
@@ -4515,6 +4559,7 @@ onUnmounted(() => {
   catalogSoftRefreshAbortController?.abort()
   catalogSoftRefreshAbortController = null
   clearDetailLiveRefreshTimeout()
+  detailReanalyzing.value = false
   catalogRowModel.value?.dispose()
   catalogRowModel.value = null
   clearCatalogViewportDim()
@@ -4784,8 +4829,8 @@ onUnmounted(() => {
           </ul>
         </section>
 
-        <div v-if="detailLoading || detailLiveRefreshing || detailStatus" class="detail-live-status" role="status" aria-live="polite">
-          <span v-if="detailLoading || detailLiveRefreshing" class="detail-live-status__spinner" aria-hidden="true"></span>
+        <div v-if="detailLoading || detailLiveRefreshing || detailReanalyzing || detailStatus" class="detail-live-status" role="status" aria-live="polite">
+          <span v-if="detailLoading || detailLiveRefreshing || detailReanalyzing" class="detail-live-status__spinner" aria-hidden="true"></span>
           <span>{{ detailStatus || 'Подгружаю live-данные с площадки' }}</span>
         </div>
 
@@ -5007,10 +5052,19 @@ onUnmounted(() => {
           v-if="selectedLot.lotId"
           class="secondary-button"
           type="button"
-          :disabled="detailLiveRefreshing"
+          :disabled="detailLiveRefreshing || detailReanalyzing"
           @click="refreshSelectedLotLiveDetails"
         >
-          {{ detailLiveRefreshing ? 'Обновление' : 'Live' }}
+          {{ detailLiveRefreshing ? 'В очереди' : 'Live' }}
+        </button>
+        <button
+          v-if="selectedLot.lotId"
+          class="secondary-button"
+          type="button"
+          :disabled="detailLiveRefreshing || detailReanalyzing"
+          @click="reanalyzeSelectedLotDetails"
+        >
+          {{ detailReanalyzing ? 'Пересчет' : 'Локально' }}
         </button>
         <a v-if="detailLotUrl" class="secondary-button" :href="detailLotUrl" target="_blank" rel="noreferrer">
           Лот

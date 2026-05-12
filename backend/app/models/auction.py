@@ -85,6 +85,7 @@ class AuctionLotRecord(Base):
     archive_reason: Mapped[str | None] = mapped_column(Text)
     actuality_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     enrichment_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    enrichment_requested_reason: Mapped[str | None] = mapped_column(String(64), index=True)
     last_enrichment_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     enrichment_attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     next_enrichment_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)

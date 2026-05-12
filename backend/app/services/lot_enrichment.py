@@ -43,6 +43,7 @@ class LotEnrichmentExecutionResult(BaseModel):
     still_missing_count: int
     skipped_count: int
     candidate_record_ids: list[int] = Field(default_factory=list)
+    completed_record_ids: list[int] = Field(default_factory=list)
 
 
 class LotTtlRefreshEvaluation(BaseModel):
@@ -95,6 +96,7 @@ PRIORITY_REFRESH_NEAR_DEADLINE_WINDOW_HOURS = 72
 PRIORITY_REFRESH_NEAR_DEADLINE_SOON_TTL_HOURS = 12
 PRIORITY_REFRESH_NEAR_DEADLINE_LATE_TTL_HOURS = 24
 ENRICHMENT_PRIORITY_FAR_FUTURE = datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC)
+MANUAL_LIVE_REFRESH_REASON = "manual_live"
 
 
 def evaluate_lot_enrichment_requirements(evidence: LotEvidence) -> LotEnrichmentRequirementEvaluation:
@@ -261,6 +263,7 @@ def schedule_lot_enrichment(
     if record.enrichment_requested_at is None and record.next_enrichment_attempt_at is None and not record.last_enrichment_error:
         return False
     record.enrichment_requested_at = None
+    record.enrichment_requested_reason = None
     record.next_enrichment_attempt_at = None
     record.last_enrichment_error = None
     return True
@@ -397,6 +400,7 @@ async def execute_lot_enrichment_candidates(
     still_missing_count = 0
     skipped_count = 0
     candidate_record_ids: list[int] = []
+    completed_record_ids: list[int] = []
 
     for record in candidates:
         processed_count += 1
@@ -407,7 +411,8 @@ async def execute_lot_enrichment_candidates(
             continue
         candidate_record_ids.append(record.id)
         evaluation_before = classify_lot_enrichment(record)
-        if not evaluation_before.needs_enrichment:
+        force_live_refresh = getattr(record, "enrichment_requested_reason", None) == MANUAL_LIVE_REFRESH_REASON
+        if not evaluation_before.needs_enrichment and not force_live_refresh:
             if schedule_lot_enrichment(record, evaluation_before):
                 cleared_count += 1
             else:
@@ -424,6 +429,20 @@ async def execute_lot_enrichment_candidates(
         fetched_at_before = detail_cache_before.fetched_at if detail_cache_before is not None else None
         detail_cache = await ensure_lot_detail_cache(session, record, refresh=True)
         fetched_count += 1
+        refresh_failed = force_live_refresh and (
+            detail_cache is None or (fetched_at_before is not None and detail_cache.fetched_at == fetched_at_before)
+        )
+        if refresh_failed:
+            _schedule_lot_retry(
+                record,
+                now=now,
+                reason=_enrichment_failure_reason(evaluation_before, detail_cache, fetched_at_before=fetched_at_before),
+            )
+            _release_lot_enrichment_claim(record)
+            still_missing_count += 1
+            if item_pause_seconds > 0:
+                await asyncio.sleep(item_pause_seconds)
+            continue
         evaluation_after = evaluate_lot_enrichment_requirements(build_lot_evidence(record, detail_cache))
         if evaluation_after.needs_enrichment:
             _schedule_lot_retry(
@@ -441,6 +460,7 @@ async def execute_lot_enrichment_candidates(
 
         if schedule_lot_enrichment(record, evaluation_after):
             cleared_count += 1
+        completed_record_ids.append(record.id)
         _release_lot_enrichment_claim(record)
         if item_pause_seconds > 0:
             await asyncio.sleep(item_pause_seconds)
@@ -453,6 +473,7 @@ async def execute_lot_enrichment_candidates(
         still_missing_count=still_missing_count,
         skipped_count=skipped_count,
         candidate_record_ids=candidate_record_ids,
+        completed_record_ids=completed_record_ids,
     )
 
 

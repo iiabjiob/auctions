@@ -5,7 +5,7 @@ import hashlib
 import json
 import logging
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from time import perf_counter
 from urllib.error import HTTPError, URLError
 
@@ -20,6 +20,7 @@ from app.models.auction import (
     AuctionLotRecord,
     AuctionLotWorkItem,
 )
+from app.models.grid import GridOperationModel
 from app.schemas.auctions import (
     AuctionDetailResponse,
     AuctionDocument,
@@ -32,11 +33,14 @@ from app.schemas.auctions import (
     LotWorkspaceBatchRejectedItem,
     LotWorkItemResponse,
     LotWorkItemUpdate,
+    LotWorkspaceEnrichmentState,
+    LotWorkspaceRefreshResponse,
     LotWorkspaceResponse,
 )
 from app.infrastructure.redis.streams import publish_auction_event
 from app.services.auction_analysis_config import auction_analysis_config_service
 from app.services.auction_datagrid_payload import validate_datagrid_row_payload
+from app.services.auction_grid_state import AUCTION_LOTS_TABLE_ID, DEFAULT_GRID_WORKSPACE_ID
 from app.services.auction_grid_state import bump_auction_lot_dataset_version
 from app.services.auction_scoring import (
     calculate_lot_economy,
@@ -49,6 +53,7 @@ from app.services.auction_search import update_record_search_text
 from app.services.lot_decision_report import generate_and_persist_lot_decision_report_snapshot
 from app.services.auction_scoring_invalidation import DETAIL_CONTENT_CHANGED, MANUAL_ECONOMICS_CHANGED
 from app.services.auction_sources import get_source_provider
+from app.services.grid_state import record_grid_operation
 
 
 logger = logging.getLogger(__name__)
@@ -58,6 +63,11 @@ WORKSPACE_DETAIL_RAW_TABLES_LIMIT = 20
 WORKSPACE_DETAIL_PRICE_SCHEDULE_LIMIT = 120
 WORKSPACE_DETAIL_TEXT_LIMIT = 4000
 WORKSPACE_CHANGE_VALUE_LIMIT = 1000
+MANUAL_LIVE_REFRESH_REASON = "manual_live"
+MANUAL_LIVE_REFRESH_OPERATION_TYPE = "manual_live_refresh"
+MANUAL_REANALYZE_OPERATION_TYPE = "manual_reanalyze"
+MANUAL_LIVE_REFRESH_LOT_COOLDOWN = timedelta(minutes=30)
+MANUAL_LIVE_REFRESH_USER_COOLDOWN = timedelta(hours=1)
 
 
 async def get_lot_workspace(
@@ -203,6 +213,136 @@ async def refresh_lot_workspace_live(
         },
     )
     return response
+
+
+async def reanalyze_lot_workspace(
+    session: AsyncSession,
+    *,
+    source: str,
+    lot_id: str,
+    auction_id: str | None = None,
+    user_id: str | None = None,
+) -> LotWorkspaceResponse:
+    record = await find_lot_record(session, source=source, lot_id=lot_id, auction_id=auction_id)
+    if record is None:
+        raise LookupError("Lot record was not found in persisted catalog")
+
+    detail_cache = await get_cached_lot_detail_cache(session, record)
+    work_item = await ensure_work_item(session, record)
+    runtime_config = await auction_analysis_config_service.get_runtime_config(session)
+    recalculate_record_rating(
+        record,
+        detail_cache,
+        work_item,
+        category_keywords=runtime_config.category_keywords,
+        exclusion_keywords=runtime_config.exclusion_keywords,
+        legal_risk_rules=runtime_config.legal_risk_rules,
+        owner_profile=runtime_config.owner_profile,
+        dimension_weights=runtime_config.dimension_weights,
+    )
+    update_record_search_text(record)
+    await generate_and_persist_lot_decision_report_snapshot(session, record, detail_cache, work_item)
+    await bump_auction_lot_dataset_version(
+        session,
+        record,
+        event_type="row_updated",
+        payload={"source": "workspace_reanalyze", "changed_fields": ["rating"]},
+    )
+    await record_grid_operation(
+        session,
+        workspace_id=DEFAULT_GRID_WORKSPACE_ID,
+        table_id=AUCTION_LOTS_TABLE_ID,
+        operation_type=MANUAL_REANALYZE_OPERATION_TYPE,
+        user_id=user_id,
+        payload={"source": source, "lot_id": lot_id, "auction_id": auction_id},
+    )
+    await session.commit()
+    await _publish_row_updated(record)
+    return await build_workspace_response(
+        session,
+        record,
+        detail_cache,
+        work_item,
+        include_change_fields=True,
+        include_embedded_row_payload=True,
+        detail_cached_at=detail_cache.fetched_at if detail_cache else None,
+    )
+
+
+async def request_lot_workspace_live_refresh(
+    session: AsyncSession,
+    *,
+    source: str,
+    lot_id: str,
+    auction_id: str | None = None,
+    user_id: str | None = None,
+) -> LotWorkspaceRefreshResponse:
+    record = await find_lot_record(session, source=source, lot_id=lot_id, auction_id=auction_id)
+    if record is None:
+        raise LookupError("Lot record was not found in persisted catalog")
+
+    now = datetime.now(UTC)
+    if record.enrichment_requested_at is not None:
+        return LotWorkspaceRefreshResponse(
+            status="already_pending",
+            queued=False,
+            next_allowed_at=record.enrichment_requested_at + MANUAL_LIVE_REFRESH_LOT_COOLDOWN,
+            current_enrichment_state=_lot_workspace_enrichment_state(record),
+        )
+
+    effective_auction_id = auction_id if auction_id is not None else record.auction_external_id
+    lot_refresh_at = await _latest_manual_refresh_at(
+        session,
+        source=source,
+        lot_id=lot_id,
+        auction_id=effective_auction_id,
+        user_id=None,
+    )
+    if lot_refresh_at is not None and lot_refresh_at + MANUAL_LIVE_REFRESH_LOT_COOLDOWN > now:
+        return LotWorkspaceRefreshResponse(
+            status="rate_limited",
+            queued=False,
+            next_allowed_at=lot_refresh_at + MANUAL_LIVE_REFRESH_LOT_COOLDOWN,
+            current_enrichment_state=_lot_workspace_enrichment_state(record),
+        )
+
+    if user_id is not None:
+        user_refresh_at = await _latest_manual_refresh_at(
+            session,
+            source=None,
+            lot_id=None,
+            auction_id=None,
+            user_id=user_id,
+        )
+        if user_refresh_at is not None and user_refresh_at + MANUAL_LIVE_REFRESH_USER_COOLDOWN > now:
+            return LotWorkspaceRefreshResponse(
+                status="rate_limited",
+                queued=False,
+                next_allowed_at=user_refresh_at + MANUAL_LIVE_REFRESH_USER_COOLDOWN,
+                current_enrichment_state=_lot_workspace_enrichment_state(record),
+            )
+
+    _queue_manual_live_refresh(record, now=now)
+    await record_grid_operation(
+        session,
+        workspace_id=DEFAULT_GRID_WORKSPACE_ID,
+        table_id=AUCTION_LOTS_TABLE_ID,
+        operation_type=MANUAL_LIVE_REFRESH_OPERATION_TYPE,
+        user_id=user_id,
+        payload={
+            "source": source,
+            "lot_id": lot_id,
+            "auction_id": auction_id,
+            "requested_at": now.isoformat(),
+        },
+    )
+    await session.commit()
+    return LotWorkspaceRefreshResponse(
+        status="queued",
+        queued=True,
+        next_allowed_at=now + MANUAL_LIVE_REFRESH_LOT_COOLDOWN,
+        current_enrichment_state=_lot_workspace_enrichment_state(record),
+    )
 
 
 async def update_lot_work_item(
@@ -626,6 +766,56 @@ def _truncate_text(value: str | None, limit: int) -> str | None:
     if value is None or len(value) <= limit:
         return value
     return f"{value[:limit].rstrip()}..."
+
+
+def _queue_manual_live_refresh(record: AuctionLotRecord, *, now: datetime) -> None:
+    record.enrichment_requested_at = now
+    record.enrichment_requested_reason = MANUAL_LIVE_REFRESH_REASON
+    record.enrichment_attempt_count = 0
+    record.last_enrichment_attempt_at = None
+    record.last_enrichment_error = None
+    record.next_enrichment_attempt_at = None
+    record.enrichment_claimed_at = None
+    record.enrichment_claimed_by = None
+    record.enrichment_claim_expires_at = None
+
+
+def _lot_workspace_enrichment_state(record: AuctionLotRecord) -> LotWorkspaceEnrichmentState:
+    return LotWorkspaceEnrichmentState(
+        requested_at=record.enrichment_requested_at,
+        requested_reason=record.enrichment_requested_reason,
+        last_attempt_at=record.last_enrichment_attempt_at,
+        attempt_count=int(getattr(record, "enrichment_attempt_count", 0) or 0),
+        next_attempt_at=record.next_enrichment_attempt_at,
+        last_error=record.last_enrichment_error,
+        claimed_at=record.enrichment_claimed_at,
+        claimed_by=record.enrichment_claimed_by,
+        claim_expires_at=record.enrichment_claim_expires_at,
+    )
+
+
+async def _latest_manual_refresh_at(
+    session: AsyncSession,
+    *,
+    source: str | None,
+    lot_id: str | None,
+    auction_id: str | None,
+    user_id: str | None,
+) -> datetime | None:
+    statement = select(func.max(GridOperationModel.created_at)).where(
+        GridOperationModel.workspace_id == DEFAULT_GRID_WORKSPACE_ID,
+        GridOperationModel.table_id == AUCTION_LOTS_TABLE_ID,
+        GridOperationModel.operation_type == MANUAL_LIVE_REFRESH_OPERATION_TYPE,
+    )
+    if source is not None:
+        statement = statement.where(GridOperationModel.payload["source"].as_string() == source)
+    if lot_id is not None:
+        statement = statement.where(GridOperationModel.payload["lot_id"].as_string() == lot_id)
+    if auction_id is not None:
+        statement = statement.where(GridOperationModel.payload["auction_id"].as_string() == auction_id)
+    if user_id is not None:
+        statement = statement.where(GridOperationModel.user_id == user_id)
+    return await session.scalar(statement)
 
 
 async def _publish_row_updated(record: AuctionLotRecord) -> None:

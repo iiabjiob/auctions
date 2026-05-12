@@ -434,6 +434,21 @@ class LotWorkspaceBatchCommitResponse(BaseModel):
     rejected: list[LotWorkspaceBatchRejectedItem] = Field(default_factory=list)
 
 
+class LotWorkspaceEnrichmentState(BaseModel):
+    requested_at: datetime | None = None
+    requested_reason: str | None = None
+    last_attempt_at: datetime | None = None
+    attempt_count: int = 0
+    next_attempt_at: datetime | None = None
+    last_error: str | None = None
+    claimed_at: datetime | None = None
+    claimed_by: str | None = None
+    claim_expires_at: datetime | None = None
+
+
 class LotWorkspaceRefreshResponse(BaseModel):
-    status: str
+    status: Literal["queued", "rate_limited", "already_pending"]
     queued: bool
+    next_allowed_at: datetime | None = None
+    current_enrichment_state: LotWorkspaceEnrichmentState
+from typing import Literal

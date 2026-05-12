@@ -5,15 +5,14 @@ import json
 import logging
 from decimal import Decimal
 from typing import Literal
-from urllib.error import HTTPError, URLError
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy import case, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
-from app.infrastructure.db.database import AsyncSessionLocal, get_db, get_read_db
+from app.infrastructure.db.database import get_db, get_read_db
 from app.models import AuctionLotDecisionReport, UserModel
 from app.schemas.analysis_config import AuctionAnalysisConfigResponse, AuctionAnalysisConfigUpdate
 from app.schemas.auctions import (
@@ -41,7 +40,8 @@ from app.services.auction_workspace import (
     batch_update_lot_work_items,
     find_lot_record,
     get_lot_workspace,
-    refresh_lot_workspace_live,
+    reanalyze_lot_workspace,
+    request_lot_workspace_live_refresh,
     update_lot_work_item,
 )
 from app.infrastructure.redis.streams import publish_auction_event, read_auction_events
@@ -49,7 +49,6 @@ from app.infrastructure.redis.streams import publish_auction_event, read_auction
 
 router = APIRouter(prefix="/api/v1/auctions", tags=["Auctions"])
 logger = logging.getLogger(__name__)
-_LIVE_WORKSPACE_REFRESH_TASKS: set[tuple[str, str, str | None]] = set()
 
 
 def _format_sse(event: dict) -> str:
@@ -59,100 +58,6 @@ def _format_sse(event: dict) -> str:
     if event_id:
         return f"id: {event_id}\nevent: {event_type}\ndata: {payload}\n\n"
     return f"event: {event_type}\ndata: {payload}\n\n"
-
-
-async def _refresh_lot_workspace_background(source: str, lot_id: str, auction_id: str | None) -> None:
-    key = (source, lot_id, auction_id)
-    try:
-        logger.info(
-            "Background lot workspace live refresh started",
-            extra={"source_code": source, "lot_id": lot_id, "auction_id": auction_id},
-        )
-        async with AsyncSessionLocal() as session:
-            await refresh_lot_workspace_live(session, source=source, lot_id=lot_id, auction_id=auction_id)
-        logger.info(
-            "Background lot workspace live refresh completed",
-            extra={"source_code": source, "lot_id": lot_id, "auction_id": auction_id},
-        )
-    except Exception as error:
-        payload = _lot_detail_refresh_error_payload(source=source, lot_id=lot_id, auction_id=auction_id, error=error)
-        if payload["expected"]:
-            logger.warning(
-                "Background lot workspace live refresh failed: %s",
-                payload["message"],
-                extra={
-                    "source_code": source,
-                    "lot_id": lot_id,
-                    "auction_id": auction_id,
-                    "error_code": payload["error_code"],
-                    "http_status": payload.get("http_status"),
-                },
-            )
-        else:
-            logger.exception(
-                "Background lot workspace live refresh failed",
-                extra={"source_code": source, "lot_id": lot_id, "auction_id": auction_id},
-            )
-        await publish_auction_event(
-            "lot.detail_refresh_failed",
-            {key: value for key, value in payload.items() if key != "expected"},
-        )
-    finally:
-        _LIVE_WORKSPACE_REFRESH_TASKS.discard(key)
-
-
-def _lot_detail_refresh_error_payload(
-    *,
-    source: str,
-    lot_id: str,
-    auction_id: str | None,
-    error: Exception,
-) -> dict:
-    payload = {
-        "source": source,
-        "lot_id": lot_id,
-        "auction_id": auction_id,
-        "error_code": "unexpected_error",
-        "message": "Live refresh failed unexpectedly",
-        "retryable": False,
-        "expected": False,
-    }
-    if isinstance(error, HTTPError):
-        payload["http_status"] = error.code
-        payload["expected"] = True
-        if error.code == 403:
-            payload["error_code"] = "source_forbidden"
-            payload["message"] = "Source returned 403 Forbidden"
-            payload["retryable"] = False
-        elif error.code == 429:
-            payload["error_code"] = "source_rate_limited"
-            payload["message"] = "Source rate limit reached"
-            payload["retryable"] = True
-        else:
-            payload["error_code"] = "source_http_error"
-            payload["message"] = f"Source returned HTTP {error.code}"
-            payload["retryable"] = 500 <= error.code < 600
-        return payload
-    if isinstance(error, TimeoutError):
-        payload["error_code"] = "source_timeout"
-        payload["message"] = "Source request timed out"
-        payload["retryable"] = True
-        payload["expected"] = True
-        return payload
-    if isinstance(error, URLError):
-        payload["error_code"] = "source_network_error"
-        payload["message"] = str(error.reason) if getattr(error, "reason", None) else "Could not connect to source"
-        payload["retryable"] = True
-        payload["expected"] = True
-        return payload
-    if isinstance(error, OSError):
-        payload["error_code"] = "source_io_error"
-        payload["message"] = str(error) or "Source read failed"
-        payload["retryable"] = True
-        payload["expected"] = True
-        return payload
-    payload["message"] = str(error) or payload["message"]
-    return payload
 
 
 @router.get("/sources", response_model=list[AuctionSourceInfo])
@@ -426,11 +331,33 @@ async def get_source_lot_workspace(
         raise HTTPException(status_code=404, detail=str(error)) from error
 
 
+@router.post("/{source}/lots/{lot_id}/workspace/reanalyze", response_model=LotWorkspaceResponse)
+async def reanalyze_source_lot_workspace(
+    source: str,
+    lot_id: str,
+    auction_id: str | None = Query(default=None),
+    session: AsyncSession = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
+) -> LotWorkspaceResponse:
+    try:
+        get_source_provider(source)
+        return await reanalyze_lot_workspace(
+            session,
+            source=source,
+            lot_id=lot_id,
+            auction_id=auction_id,
+            user_id=current_user.id,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
 @router.post("/{source}/lots/{lot_id}/workspace/refresh", response_model=LotWorkspaceRefreshResponse, status_code=202)
 async def queue_source_lot_workspace_refresh(
     source: str,
     lot_id: str,
-    background_tasks: BackgroundTasks,
     auction_id: str | None = Query(default=None),
     session: AsyncSession = Depends(get_db),
     current_user: UserModel = Depends(get_current_user),
@@ -443,14 +370,16 @@ async def queue_source_lot_workspace_refresh(
     record = await find_lot_record(session, source=source, lot_id=lot_id, auction_id=auction_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Lot record was not found in persisted catalog")
-
-    key = (source, lot_id, auction_id)
-    if key in _LIVE_WORKSPACE_REFRESH_TASKS:
-        return LotWorkspaceRefreshResponse(status="already_running", queued=False)
-
-    _LIVE_WORKSPACE_REFRESH_TASKS.add(key)
-    background_tasks.add_task(_refresh_lot_workspace_background, source, lot_id, auction_id)
-    return LotWorkspaceRefreshResponse(status="queued", queued=True)
+    try:
+        return await request_lot_workspace_live_refresh(
+            session,
+            source=source,
+            lot_id=lot_id,
+            auction_id=auction_id,
+            user_id=current_user.id,
+        )
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
 
 
 @router.patch("/{source}/lots/{lot_id}/workspace", response_model=LotWorkspaceResponse)

@@ -29,6 +29,7 @@ class AuctionEnrichmentWorkerTests(unittest.IsolatedAsyncioTestCase):
             "still_missing_count": 0,
             "skipped_count": 0,
             "candidate_record_ids": [1],
+            "completed_record_ids": [],
         }
 
         fake_session = AsyncMock()
@@ -64,6 +65,7 @@ class AuctionEnrichmentWorkerTests(unittest.IsolatedAsyncioTestCase):
             "still_missing_count": 0,
             "skipped_count": 0,
             "candidate_record_ids": [],
+            "completed_record_ids": [],
         }
 
         with patch(

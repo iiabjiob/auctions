@@ -726,6 +726,34 @@ class LotEnrichmentRequirementTests(unittest.TestCase):
         self.assertEqual(result.candidate_record_ids, [1])
         self.assertIsNone(record.enrichment_claimed_at)
 
+    def test_execute_lot_enrichment_candidates_forces_detail_refresh_for_manual_live_request(self) -> None:
+        record = make_candidate_record(record_id=1, requested_at=datetime(2026, 5, 7, 8, tzinfo=UTC))
+        record.enrichment_requested_reason = "manual_live"
+        detail_cache = make_detail_cache()
+
+        class FakeSession:
+            async def scalar(self, statement):
+                return None
+
+            async def scalars(self, statement):
+                class FakeScalars:
+                    def all(self_inner):
+                        return [record]
+
+                return FakeScalars()
+
+            async def flush(self):
+                return None
+
+        with patch("app.services.lot_enrichment.ensure_lot_detail_cache", return_value=detail_cache) as ensure_detail:
+            result = asyncio.run(execute_lot_enrichment_candidates(FakeSession(), limit=10))
+
+        ensure_detail.assert_awaited_once()
+        self.assertEqual(result.fetched_count, 1)
+        self.assertIsNone(record.enrichment_requested_at)
+        self.assertIsNone(record.enrichment_requested_reason)
+        self.assertIsNone(record.enrichment_claimed_at)
+
     def test_failed_enrichment_schedules_later_retry(self) -> None:
         record = make_candidate_record(record_id=1, requested_at=datetime(2026, 5, 7, 8, tzinfo=UTC), missing_price=True)
 
