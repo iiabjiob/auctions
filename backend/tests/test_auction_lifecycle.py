@@ -122,6 +122,24 @@ class AuctionLifecycleTests(unittest.TestCase):
         self.assertTrue(lot_is_stale(record, input_hash=input_hash))
         self.assertFalse(lot_is_active(record, detail_cache=detail_cache, input_hash=input_hash))
 
+    def test_lot_record_has_actuality_columns_and_default_status(self) -> None:
+        column_names = set(AuctionLotRecord.__table__.columns.keys())
+        self.assertTrue(
+            {
+                "publication_at",
+                "application_start_at",
+                "application_deadline_at",
+                "auction_at",
+                "finished_at",
+                "lifecycle_status",
+                "archived_at",
+                "archive_reason",
+                "actuality_checked_at",
+            }.issubset(column_names)
+        )
+        self.assertEqual(AuctionLotRecord.__table__.c.lifecycle_status.default.arg, "active")
+        self.assertTrue(AuctionLotRecord.__table__.c.lifecycle_status.nullable is False)
+
 
 if __name__ == "__main__":
     unittest.main()

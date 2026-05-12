@@ -4,7 +4,20 @@ from datetime import datetime
 
 from decimal import Decimal
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -30,7 +43,10 @@ class AuctionSourceState(Base):
 
 class AuctionLotRecord(Base):
     __tablename__ = "auction_lot_records"
-    __table_args__ = (UniqueConstraint("source_code", "auction_external_id", "lot_external_id"),)
+    __table_args__ = (
+        UniqueConstraint("source_code", "auction_external_id", "lot_external_id"),
+        Index("ix_auction_lot_records_lifecycle_status_rating_score", "lifecycle_status", "rating_score"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     source_code: Mapped[str] = mapped_column(ForeignKey("auction_source_states.code"), nullable=False, index=True)
@@ -53,6 +69,21 @@ class AuctionLotRecord(Base):
     score_input_hash: Mapped[str | None] = mapped_column(String(64), index=True)
     score_breakdown: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     search_text: Mapped[str | None] = mapped_column(Text)
+    publication_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    application_start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    application_deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    auction_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    lifecycle_status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="active",
+        server_default=text("'active'"),
+        index=True,
+    )
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    archive_reason: Mapped[str | None] = mapped_column(Text)
+    actuality_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     enrichment_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     last_enrichment_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     enrichment_attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
