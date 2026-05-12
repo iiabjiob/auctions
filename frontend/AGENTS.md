@@ -1,40 +1,33 @@
-# AGENTS.md
+# Frontend Agent Instructions
 
-## Project
-
-This project is an scraper of auctions and bankruptcy lots analysis platform.
-
-The goal is to collect public auction/bankruptcy data, normalize it, enrich it, and help users evaluate lots using structured analysis, scoring, filters, risk flags, and investment-style summaries.
+You are working in the `frontend/` app for the auctions platform.
 
 ## Stack
+- Vue 3 + Vite + TypeScript
+- Pinia for local state
+- Vue Router for navigation
+- Affino datagrid packages for the main grid experience
+- API calls go through the backend HTTP client already in the app
 
-- Frontend: Vue 3, TypeScript, Tailwind
-- Backend: FastAPI, Python, SQLAlchemy 2.x, Alembic
-- Database: PostgreSQL
-- Deployment: Docker / Docker Compose
-- Preferred architecture: clean separation between API, services, repositories, schemas, models, and frontend modules.
+## Working style
+- Keep changes aligned with the existing Vue component and store patterns.
+- Prefer Composition API and typed props/state.
+- Avoid `any` unless the integration really cannot be typed cleanly.
+- Keep the grid dense and functional rather than decorative.
+- Do not introduce new UI patterns if the current ones already solve the task.
 
-## Main product areas
+## Scope control
+- Do not change backend behavior from the frontend unless the task explicitly requires a contract update.
+- Keep edits localized to the relevant view, store, router, or API module.
+- Preserve datagrid contracts and column keys unless the feature demands a change.
+- If a backend contract change is needed, call it out clearly before assuming the frontend shape.
 
-- Auction source ingestion
-- Lot parsing and normalization
-- Price reduction schedules
-- Lot risk analysis
-- Region/category filters
-- ROI and resale potential estimation
-- Legal/status flags
-- Smart summaries for each lot
-- Admin/import diagnostics
+## Validation
+- Prefer `pnpm type-check` for logic-only changes.
+- Use `pnpm build` when the change touches routing, data loading, or shared components.
+- Run `pnpm lint` only when it adds signal for the slice you changed.
 
-## Coding rules
-
-- Do not rewrite large parts of the app unless needed.
-- Prefer small, reviewable commits.
-- Keep backend logic out of routes; use services.
-- Keep DB access in repository/data-access layer where possible.
-- Use typed Pydantic schemas for API contracts.
-- Use SQLAlchemy migrations for schema changes.
-- In Vue, use Composition API and TypeScript.
-- Avoid `any` unless absolutely necessary.
-- Keep UI practical, dense, and dashboard-friendly.
-- Do not introduce paid external services without asking.
+## Commit messages
+- Use conventional-style subjects with a concrete frontend scope.
+- Good scopes here are `frontend`, `grid`, `router`, `store`, or `datagrid`.
+- Keep the subject focused on the behavior change.
