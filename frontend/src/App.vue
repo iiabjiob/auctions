@@ -1,7 +1,16 @@
 <script setup lang="ts">
 import { computed, h, nextTick, onMounted, onUnmounted, reactive, ref, shallowRef, watch } from 'vue'
 import type { ComponentPublicInstance } from 'vue'
+import { useRoute } from 'vue-router'
 import { storeToRefs } from 'pinia'
+import {
+  UiMenu,
+  UiMenuContent,
+  UiMenuItem,
+  UiMenuLabel,
+  UiMenuSeparator,
+  UiMenuTrigger,
+} from '@affino/menu-vue'
 import {
   DataGrid,
   type DataGridAppColumnInput,
@@ -24,7 +33,6 @@ import { ApiRequestError as ApiClientRequestError } from './api/http'
 import { fetchLotDecisionReport } from './api/decisionReports'
 import AuthLoginScreen from './components/AuthLoginScreen.vue'
 import AnalysisSignalTooltip from './components/AnalysisSignalTooltip.vue'
-import AffinoCombobox from './components/AffinoCombobox.vue'
 import LotNameCell from './components/LotNameCell.vue'
 import RatingInfoTooltip from './components/RatingInfoTooltip.vue'
 import {
@@ -687,6 +695,7 @@ const catalogTotal = ref(0)
 const catalogSummary = ref<AuctionServerGridSummary>({
   total: 0,
   newCount: 0,
+  activeCount: 0,
   openApplicationsCount: 0,
   highRatingCount: 0,
 })
@@ -908,6 +917,7 @@ const emptyAnalysisConfigDraft = (): AnalysisConfigDraft => ({
 const analysisConfigDraft = reactive<AnalysisConfigDraft>(emptyAnalysisConfigDraft())
 const authStore = useAuthStore()
 const { accessToken, currentUser, isAuthenticated, isRestoring } = storeToRefs(authStore)
+const route = useRoute()
 const presetDialogTriggerRef = ref<HTMLElement | null>(null)
 const presetDialogRef = ref<HTMLDivElement | null>(null)
 const presetDialogInitialRef = ref<HTMLElement | null>(null)
@@ -1539,7 +1549,26 @@ const presetOptions = computed(() => [
     value: preset.id,
   })),
 ])
+const activeModule = computed(() => (route.name === 'tenders' ? 'tenders' : 'auctions'))
+const isAuctionsModule = computed(() => activeModule.value === 'auctions')
+const currentUserInitials = computed(() => {
+  const tokens = currentUser.value?.full_name
+    ?.split(/\s+/)
+    .map((value) => value.trim())
+    .filter(Boolean) ?? []
+
+  if (!tokens.length) return 'AU'
+
+  return tokens
+    .slice(0, 2)
+    .map((token) => token.charAt(0).toUpperCase())
+    .join('')
+})
 const selectedPreset = computed(() => presets.value.find((preset) => preset.id === selectedPresetId.value) ?? null)
+const presetsMenuRef = ref<InstanceType<typeof UiMenu> | null>(null)
+const accountMenuRef = ref<InstanceType<typeof UiMenu> | null>(null)
+const presetsMenuOpen = computed(() => presetsMenuRef.value?.controller.state.value.open === true)
+const accountMenuOpen = computed(() => accountMenuRef.value?.controller.state.value.open === true)
 const presetDialogTitle = computed(() => {
   if (presetDialogMode.value === 'delete') return 'Удалить подборку'
   if (presetDialogMode.value === 'update') return 'Обновить подборку'
@@ -1563,7 +1592,7 @@ const analysisConfigUpdatedAt = computed(() => formatDateTime(analysisConfig.val
 
 const totalRows = computed(() => catalogSummary.value.total || catalogTotal.value)
 const loadedRowsCount = computed(() => allRows.value.length)
-const openApplicationsCount = computed(() => catalogSummary.value.openApplicationsCount)
+const activeRowsCount = computed(() => catalogSummary.value.activeCount)
 const newCount = computed(() => catalogSummary.value.newCount)
 const highRatingCount = computed(() => catalogSummary.value.highRatingCount)
 
@@ -2854,6 +2883,7 @@ function resetCatalogRowModel() {
   catalogSummary.value = {
     total: 0,
     newCount: 0,
+    activeCount: 0,
     openApplicationsCount: 0,
     highRatingCount: 0,
   }
@@ -4049,9 +4079,9 @@ function findGridFocusTarget(anchor: GridFocusAnchor, gridRoot: HTMLElement) {
     selectors.push(`.grid-cell${rowSelector}[data-column-index="${anchor.columnIndex}"]`)
   }
   if (rowSelector) {
-    selectors.push(`.grid-cell.grid-cell--selection-anchor${rowSelector}`, `.grid-cell${rowSelector}`)
+    selectors.push(`.grid-cell${rowSelector}`)
   }
-  selectors.push('.grid-cell.grid-cell--selection-anchor', '.grid-cell[tabindex="0"]')
+  selectors.push('.grid-cell[tabindex="0"]')
 
   for (const selector of selectors) {
     const element = gridRoot.querySelector<HTMLElement>(selector)
@@ -4348,6 +4378,7 @@ function resetCatalogState() {
   catalogSummary.value = {
     total: 0,
     newCount: 0,
+    activeCount: 0,
     openApplicationsCount: 0,
     highRatingCount: 0,
   }
@@ -4688,511 +4719,593 @@ onUnmounted(() => {
 
 <template>
   <AuthLoginScreen v-if="isRestoring || !isAuthenticated" />
-  <main v-else class="auction-shell">
-    <section class="auction-toolbar" aria-label="Фильтры каталога лотов">
-      <div class="toolbar-title">
-        <span class="eyebrow">Каталог банкротных торгов</span>
-        <h1>Лоты для отбора</h1>
-      </div>
-      <div class="toolbar-actions">
-        <div class="preset-toolbar">
-          <button class="secondary-button" type="button" @click="openAnalysisConfigDialog">Настроить анализ</button>
-          <AffinoCombobox
-            id="preset-selector"
-            class="preset-toolbar__select"
-            :model-value="selectedPresetId"
-            :options="presetOptions"
-            placeholder="Подборки"
-            @update:model-value="applyPresetById"
-          />
-          <button class="secondary-button" type="button" :disabled="presetsLoading" @click="openCreatePresetDialog">
-            Сохранить срез
-          </button>
-          <button class="secondary-button" type="button" :disabled="!selectedPreset" @click="openUpdatePresetDialog">
-            Обновить
-          </button>
-          <button class="secondary-button" type="button" :disabled="!selectedPreset" @click="openDeletePresetDialog">
-            Удалить
-          </button>
-        </div>
-        <button
-          class="secondary-button"
-          type="button"
-          :aria-pressed="filters.includeArchived"
-          @click="filters.includeArchived = !filters.includeArchived"
+  <main v-else class="app-shell">
+    <aside class="app-sidebar app-rail app-rail--green" aria-label="Навигация и срезы">
+      <RouterLink class="app-rail__brand" to="/auctions" aria-label="torgi-radar">
+        torgi-radar
+      </RouterLink>
+
+      <div class="app-rail__cluster">
+        <RouterLink
+          class="app-rail__item"
+          :class="{ 'app-rail__item--active': isAuctionsModule }"
+          to="/auctions"
+          :aria-current="isAuctionsModule ? 'page' : undefined"
         >
-          {{ filters.includeArchived ? 'Неактуальные показаны' : 'Неактуальные скрыты' }}
+          <span class="app-rail__item-icon" aria-hidden="true">A</span>
+          <span class="app-rail__item-label">Аукционы</span>
+        </RouterLink>
+        <RouterLink
+          class="app-rail__item"
+          :class="{ 'app-rail__item--active': !isAuctionsModule }"
+          to="/tenders"
+          :aria-current="!isAuctionsModule ? 'page' : undefined"
+        >
+          <span class="app-rail__item-icon" aria-hidden="true">T</span>
+          <span class="app-rail__item-label">Тендеры</span>
+        </RouterLink>
+
+        <div class="app-rail__separator" aria-hidden="true"></div>
+
+        <UiMenu ref="presetsMenuRef" placement="right" align="start" :gutter="10">
+          <UiMenuTrigger as-child>
+            <button
+              class="app-rail__item app-rail__menu-trigger"
+              :class="{ 'app-rail__item--active': presetsMenuOpen }"
+              type="button"
+              aria-haspopup="menu"
+            >
+              <span class="app-rail__item-icon" aria-hidden="true">≡</span>
+              <span class="app-rail__item-label">Срезы</span>
+            </button>
+          </UiMenuTrigger>
+
+          <UiMenuContent class="app-rail__menu-content app-rail__menu-content--presets">
+            <UiMenuLabel>Срезы каталога</UiMenuLabel>
+            <UiMenuItem @select="() => applyPresetById('')">
+              <span class="app-rail__menu-title">Каталог</span>
+              <span class="app-rail__menu-note">Все лоты</span>
+            </UiMenuItem>
+            <UiMenuSeparator />
+            <UiMenuItem
+              v-for="preset in presets"
+              :key="preset.id"
+              @select="() => applyPresetById(preset.id)"
+            >
+              <span class="app-rail__menu-title">{{ preset.is_favorite ? `${preset.name} *` : preset.name }}</span>
+              <span class="app-rail__menu-note">{{ preset.is_favorite ? 'Избранный срез' : 'Сохраненный срез' }}</span>
+            </UiMenuItem>
+            <UiMenuSeparator />
+            <UiMenuItem @select="() => openCreatePresetDialog()">Сохранить</UiMenuItem>
+            <UiMenuItem :disabled="!selectedPreset" @select="() => openUpdatePresetDialog()">Обновить</UiMenuItem>
+            <UiMenuItem :disabled="!selectedPreset" @select="() => openDeletePresetDialog()">Удалить</UiMenuItem>
+          </UiMenuContent>
+        </UiMenu>
+
+        <button class="app-rail__item" type="button" @click="openAnalysisConfigDialog">
+          <span class="app-rail__item-icon" aria-hidden="true">⚙</span>
+          <span class="app-rail__item-label">Анализ</span>
         </button>
-        <span v-if="currentUser" class="user-chip">{{ currentUser.full_name }}</span>
-        <button class="secondary-button" type="button" @click="authStore.logout">Выйти</button>
-      </div>
-    </section>
 
-    <section class="summary-strip" aria-label="Сводка каталога">
-      <div>
-        <span>Найдено</span>
-        <strong>{{ totalRows }}</strong>
+        <div class="app-rail__separator" aria-hidden="true"></div>
       </div>
-      <div>
-        <span>Новые</span>
-        <strong>{{ newCount }}</strong>
-      </div>
-      <div>
-        <span>Приём заявок</span>
-        <strong>{{ openApplicationsCount }}</strong>
-      </div>
-      <div>
-        <span>Рейтинг 75+</span>
-        <strong>{{ highRatingCount }}</strong>
-      </div>
-      <p>
-        {{ backgroundStatus }}
-        <span v-if="lastLoadedAt"> · Загружено {{ loadedRowsCount }} · Таблица {{ lastLoadedAt }}</span>
-      </p>
-    </section>
 
-    <p v-if="errorMessage" class="error-banner">{{ errorMessage }}</p>
+      <div class="app-rail__cluster app-rail__cluster--bottom">
+        <UiMenu ref="accountMenuRef" placement="right" align="end" :gutter="10">
+          <UiMenuTrigger as-child>
+            <button
+              class="app-rail__item app-rail__account-trigger"
+              :class="{ 'app-rail__item--active': accountMenuOpen }"
+              type="button"
+              aria-haspopup="menu"
+            >
+              <span class="app-rail__account-avatar">{{ currentUserInitials }}</span>
+              <span class="app-rail__item-label app-rail__account-label">{{ currentUser?.full_name ?? 'User' }}</span>
+            </button>
+          </UiMenuTrigger>
 
-    <section
-      class="workspace-split"
-      :class="{ 'workspace-split--with-detail': selectedLot }"
-      :style="selectedLot ? { '--detail-pane-width': `${detailPaneWidth}px` } : undefined"
-    >
-      <section
-        ref="gridSurfaceRef"
-        :class="['grid-surface', { 'grid-surface--query-busy': catalogViewportDimmed }]"
-        :aria-busy="loading || catalogViewportDimmed"
-      >
-        <div
-          v-if="loading && allRows.length === 0 && !catalogGridHasLoadedOnce"
-          class="loading-state"
-          role="status"
-          aria-live="polite"
-        >
-          <div class="table-skeleton" :style="{ '--skeleton-columns': loadingSkeletonTemplate }">
-            <div class="table-skeleton__toolbar">
-              <span class="table-skeleton__status">Загружаю лоты</span>
-              <span class="table-skeleton__pill"></span>
-              <span class="table-skeleton__pill table-skeleton__pill--short"></span>
+          <UiMenuContent class="app-rail__menu-content app-rail__menu-content--account">
+            <UiMenuLabel>{{ currentUser?.full_name ?? 'Пользователь' }}</UiMenuLabel>
+            <UiMenuSeparator />
+            <UiMenuItem @select="() => authStore.logout()">Выйти</UiMenuItem>
+          </UiMenuContent>
+        </UiMenu>
+      </div>
+    </aside>
+
+    <section class="workspace-area">
+      <template v-if="isAuctionsModule">
+        <section class="auction-toolbar" aria-label="Фильтры каталога лотов">
+          <div class="toolbar-title">
+            <span class="eyebrow">Каталог банкротных торгов</span>
+            <h1>Лоты для отбора</h1>
+          </div>
+        </section>
+
+        <section class="summary-strip" aria-label="Сводка каталога">
+          <div class="summary-strip__group">
+            <div>
+              <span>Найдено</span>
+              <strong>{{ totalRows }}</strong>
             </div>
-            <div class="table-skeleton__viewport">
-              <div class="table-skeleton__head" :style="{ gridTemplateColumns: loadingSkeletonTemplate }">
-                <span v-for="column in loadingSkeletonColumns" :key="column.key">
-                  {{ column.label }}
-                </span>
-              </div>
-              <div class="table-skeleton__body">
-                <div
-                  v-for="rowIndex in loadingSkeletonRows"
-                  :key="rowIndex"
-                  class="table-skeleton__row"
-                  :style="{ gridTemplateColumns: loadingSkeletonTemplate, '--row-delay': `${rowIndex * 38}ms` }"
-                >
-                  <span v-for="column in loadingSkeletonColumns" :key="column.key" class="table-skeleton__cell">
-                    <i :style="{ width: column.placeholderWidth }"></i>
-                  </span>
+            <div>
+              <span>Новые</span>
+              <strong>{{ newCount }}</strong>
+            </div>
+            <div>
+              <span>Активные</span>
+              <strong>{{ activeRowsCount }}</strong>
+            </div>
+            <div>
+              <span>Рейтинг 75+</span>
+              <strong>{{ highRatingCount }}</strong>
+            </div>
+          </div>
+          <p class="summary-strip__status">
+            {{ backgroundStatus }}
+            <span v-if="lastLoadedAt"> · Загружено {{ loadedRowsCount }} · Таблица {{ lastLoadedAt }}</span>
+          </p>
+        </section>
+
+        <p v-if="errorMessage" class="error-banner">{{ errorMessage }}</p>
+
+        <section
+          class="workspace-split"
+          :class="{ 'workspace-split--with-detail': selectedLot }"
+          :style="selectedLot ? { '--detail-pane-width': `${detailPaneWidth}px` } : undefined"
+        >
+          <section
+            ref="gridSurfaceRef"
+            :class="['grid-surface', { 'grid-surface--query-busy': catalogViewportDimmed }]"
+            :aria-busy="loading || catalogViewportDimmed"
+          >
+            <div
+              v-if="loading && allRows.length === 0 && !catalogGridHasLoadedOnce"
+              class="loading-state"
+              role="status"
+              aria-live="polite"
+            >
+              <div class="table-skeleton" :style="{ '--skeleton-columns': loadingSkeletonTemplate }">
+                <div class="table-skeleton__toolbar">
+                  <span class="table-skeleton__status">Загружаю лоты</span>
+                  <span class="table-skeleton__pill"></span>
+                  <span class="table-skeleton__pill table-skeleton__pill--short"></span>
+                </div>
+                <div class="table-skeleton__viewport">
+                  <div class="table-skeleton__head" :style="{ gridTemplateColumns: loadingSkeletonTemplate }">
+                    <span v-for="column in loadingSkeletonColumns" :key="column.key">
+                      {{ column.label }}
+                    </span>
+                  </div>
+                  <div class="table-skeleton__body">
+                    <div
+                      v-for="rowIndex in loadingSkeletonRows"
+                      :key="rowIndex"
+                      class="table-skeleton__row"
+                      :style="{ gridTemplateColumns: loadingSkeletonTemplate, '--row-delay': `${rowIndex * 38}ms` }"
+                    >
+                      <span v-for="column in loadingSkeletonColumns" :key="column.key" class="table-skeleton__cell">
+                        <i :style="{ width: column.placeholderWidth }"></i>
+                      </span>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
+            <DataGrid
+              v-else-if="catalogRowModel"
+              v-show="catalogGridHasLoadedOnce || !loading || allRows.length > 0"
+              ref="gridRef"
+              :row-model="catalogRowModel"
+              :columns="columns"
+              :column-widths="gridColumnWidths"
+              :base-row-height="26"
+              :theme="workspaceDataGridTheme"
+              :is-cell-editable="isGridCellEditable"
+              :cell-style="editableGridCellStyle"
+              :virtualization="catalogVirtualizationOptions"
+              :advanced-filter="advancedFilterOptions"
+              :quick-filter="quickFilter"
+              :state-persistence="gridStatePersistence"
+              :column-menu="columnMenuOptions"
+              :column-layout="columnLayoutOptions"
+              fill-handle
+              range-move
+              layout-mode="fill"
+              :row-selection="false"
+              :cell-menu="true"
+              :chrome="{ toolbarPlacement: 'integrated', density: 'compact', toolbarGap: 0, workspaceGap: 8 }"
+              :history="{ enabled: true, shortcuts: 'grid', controls: true }"
+              @update:column-widths="persistGridColumnWidths"
+            />
+            <div
+              v-if="catalogQueryPlaceholderVisible && catalogGridHasLoadedOnce"
+              class="grid-query-placeholder"
+              role="status"
+              aria-live="polite"
+            >
+              <span>Обновляем срез</span>
+            </div>
+          </section>
+
+          <aside
+            v-if="selectedLot"
+            class="side-pane side-pane--detail"
+            aria-label="Детальная информация о лоте"
+          >
+            <button
+              class="side-pane-resizer"
+              type="button"
+              aria-label="Изменить ширину панели"
+              @pointerdown="startDetailResize"
+            ></button>
+            <header class="side-pane__header">
+              <div>
+                <span class="eyebrow">Лот {{ selectedLot.lotNumber || selectedLot.id }}</span>
+                <h2>{{ detailTitle }}</h2>
+              </div>
+              <button class="icon-button" type="button" aria-label="Закрыть лот" @click="closeLotDetails">×</button>
+            </header>
+
+            <div class="detail-pane__body">
+              <div class="detail-pane__score">
+                <strong>{{ selectedLot.ratingScore }}</strong>
+                <span>{{ selectedLot.ratingLevel }}</span>
+                <RatingInfoTooltip
+                  :reasons="ratingReasonItems"
+                  :dimensions="ratingBreakdown?.dimensions ?? null"
+                  :caps="ratingBreakdown?.caps ?? null"
+                />
+                <span :class="['analysis-pill', `analysis-pill--${selectedLot.analysisColor || 'yellow'}`]">
+                  {{ selectedLot.analysisLabel }}
+                </span>
+                <mark v-if="selectedLot.isNew">Новый</mark>
+              </div>
+
+              <section class="detail-section detail-section--actuality">
+                <div class="detail-section__header">
+                  <span class="eyebrow">Актуальность</span>
+                  <span :class="['status-chip', `status-chip--${lifecycleStatusTone(selectedLot.lifecycleStatus)}`]">
+                    {{ formatLifecycleStatus(selectedLot.lifecycleStatus) }}
+                  </span>
+                </div>
+                <dl class="detail-list detail-list--dense detail-list--compact">
+                  <template v-for="field in detailActualityFields" :key="field.label">
+                    <dt>{{ field.label }}</dt>
+                    <dd>{{ field.value }}</dd>
+                  </template>
+                </dl>
+              </section>
+
+              <section class="detail-section detail-section--media">
+                <span class="eyebrow">Медиа</span>
+                <div v-if="detailLoading" class="detail-muted">Загрузка</div>
+                <div v-else-if="detailImages.length && activeDetailImage" class="detail-gallery">
+                  <div class="detail-gallery__stage">
+                    <button
+                      v-if="detailImages.length > 1"
+                      class="detail-gallery__nav detail-gallery__nav--prev"
+                      type="button"
+                      aria-label="Предыдущее фото"
+                      @click="showPreviousDetailImage"
+                    >
+                      ‹
+                    </button>
+                    <img
+                      :src="activeDetailImage.thumbnailUrl || activeDetailImage.url"
+                      :alt="activeDetailImage.name || 'Изображение лота'"
+                      loading="lazy"
+                    />
+                    <button
+                      v-if="detailImages.length > 1"
+                      class="detail-gallery__nav detail-gallery__nav--next"
+                      type="button"
+                      aria-label="Следующее фото"
+                      @click="showNextDetailImage"
+                    >
+                      ›
+                    </button>
+                  </div>
+                  <div v-if="detailImages.length > 1" class="detail-gallery__thumbs" aria-label="Фотографии лота">
+                    <button
+                      v-for="(image, index) in detailImages"
+                      :key="image.url || image.name || `image-${index}`"
+                      :class="['detail-gallery__thumb', { 'detail-gallery__thumb--active': index === activeDetailImageIndex }]"
+                      type="button"
+                      :aria-label="`Показать фото ${index + 1}`"
+                      @click="selectDetailImage(index)"
+                    >
+                      <img :src="image.thumbnailUrl || image.url" :alt="image.name || `Фото ${index + 1}`" loading="lazy" />
+                    </button>
+                  </div>
+                </div>
+                <ul v-else-if="mediaDocuments.length" class="detail-files">
+                  <li
+                    v-for="(document, index) in mediaDocuments"
+                    :key="document.external_id || document.name || `media-${index}`"
+                  >
+                    <a v-if="document.url" :href="document.url" target="_blank" rel="noreferrer">
+                      {{ document.name || document.document_type || 'Медиафайл' }}
+                    </a>
+                    <span v-else>{{ document.name || document.document_type || 'Медиафайл' }}</span>
+                    <small>{{ document.received_at || document.document_type || '' }}</small>
+                  </li>
+                </ul>
+                <div v-else-if="lockedTbankrotImageCount" class="detail-muted">
+                  TBankrot скрыл фото за тарифом: в HTML доступен только размытый placeholder.
+                </div>
+                <div v-else class="detail-muted">Медиа не найдены</div>
+              </section>
+
+              <section v-if="analysisReasonItems.length" class="detail-section">
+                <span class="eyebrow">Анализ модели</span>
+                <ul class="detail-bullet-list">
+                  <li v-for="reason in analysisReasonItems" :key="reason">{{ reason }}</li>
+                </ul>
+              </section>
+
+              <div v-if="detailLoading || detailLiveRefreshing || detailReanalyzing || detailStatus" class="detail-live-status" role="status" aria-live="polite">
+                <span v-if="detailLoading || detailLiveRefreshing || detailReanalyzing" class="detail-live-status__spinner" aria-hidden="true"></span>
+                <span>{{ detailStatus || 'Подгружаю live-данные с площадки' }}</span>
+              </div>
+
+              <section class="detail-section decision-report-panel">
+                <div class="detail-section__header">
+                  <span class="eyebrow">Решение</span>
+                  <span v-if="selectedDecisionReport" class="decision-report-panel__level">
+                    {{ formatDecisionLevel(selectedDecisionReport.decision_level) }}
+                  </span>
+                </div>
+                <div v-if="decisionReportLoading" class="detail-muted">Загружаю отчет решения</div>
+                <div v-else-if="decisionReportStatus === 'empty'" class="detail-muted">Снимок решения еще не создан</div>
+                <div v-else-if="decisionReportStatus === 'error'" class="detail-muted">
+                  {{ decisionReportError || 'Не удалось загрузить отчет решения' }}
+                </div>
+                <template v-else-if="selectedDecisionReport">
+                  <dl class="detail-list detail-list--dense decision-report-panel__summary">
+                    <template v-for="field in decisionReportSummaryFields" :key="field.label">
+                      <dt>{{ field.label }}</dt>
+                      <dd>{{ field.value }}</dd>
+                    </template>
+                  </dl>
+                  <div v-if="decisionReportReasons.length" class="decision-report-panel__group">
+                    <h3>Причины</h3>
+                    <ul class="detail-bullet-list">
+                      <li v-for="reason in decisionReportReasons" :key="reason.code">{{ reason.message }}</li>
+                    </ul>
+                  </div>
+                  <div v-if="decisionReportRisks.length" class="decision-report-panel__group">
+                    <h3>Риски</h3>
+                    <ul class="detail-bullet-list">
+                      <li v-for="risk in decisionReportRisks" :key="risk.code">
+                        <strong>{{ risk.level }}</strong>
+                        <span>{{ risk.message }}</span>
+                      </li>
+                    </ul>
+                  </div>
+                  <div v-if="decisionReportNextActions.length" class="decision-report-panel__group">
+                    <h3>Следующие действия</h3>
+                    <ul class="detail-bullet-list">
+                      <li v-for="action in decisionReportNextActions" :key="`${action.action}-${action.label}`">
+                        {{ action.label }}<span v-if="action.deadline"> · {{ action.deadline }}</span>
+                      </li>
+                    </ul>
+                  </div>
+                </template>
+                <div v-else class="detail-muted">Отчет решения появится после локальной генерации снимка</div>
+              </section>
+
+              <section v-if="economyFields.length" class="detail-section">
+                <span class="eyebrow">Экономика</span>
+                <dl class="detail-list detail-list--dense">
+                  <template v-for="field in economyFields" :key="field.label">
+                    <dt>{{ field.label }}</dt>
+                    <dd>{{ field.value }}</dd>
+                  </template>
+                </dl>
+              </section>
+
+              <section v-if="priceScheduleFields.length" class="detail-section">
+                <span class="eyebrow">Снижение цены</span>
+                <dl class="detail-list detail-list--dense detail-list--schedule">
+                  <template v-for="field in priceScheduleFields" :key="field.label">
+                    <dt>{{ field.label }}</dt>
+                    <dd>{{ field.value }}</dd>
+                  </template>
+                </dl>
+              </section>
+
+              <section v-if="selectedWorkspace" class="detail-section">
+                <span class="eyebrow">История изменений</span>
+                <ul v-if="changeFields.length" class="change-list">
+                  <li v-for="(change, index) in changeFields" :key="`${change.label}-${index}`">
+                    <strong>{{ change.label }}</strong>
+                    <span>{{ change.previous || 'Не было' }}</span>
+                    <b aria-hidden="true">→</b>
+                    <span>{{ change.current || 'Не указано' }}</span>
+                  </li>
+                </ul>
+                <div v-else class="detail-muted">Изменений между последними снимками не найдено</div>
+                <dl v-if="changeSummaryFields.length" class="detail-list detail-list--dense detail-list--compact">
+                  <template v-for="field in changeSummaryFields" :key="field.label">
+                    <dt>{{ field.label }}</dt>
+                    <dd>{{ field.value }}</dd>
+                  </template>
+                </dl>
+              </section>
+
+              <section v-if="detailFields.length" class="detail-section detail-section--summary">
+                <span class="eyebrow">Основные сведения</span>
+                <dl class="detail-list detail-list--dense">
+                  <template v-for="field in detailFields" :key="field.label">
+                    <dt>{{ field.label }}</dt>
+                    <dd>{{ field.value || 'Не указано' }}</dd>
+                  </template>
+                </dl>
+              </section>
+
+              <section v-if="lotInfoFields.length" class="detail-section">
+                <span class="eyebrow">Информация о лоте</span>
+                <p v-if="detailCachedAt">Кэш обновлен: {{ detailCachedAt }}</p>
+                <dl class="detail-list detail-list--dense">
+                  <template v-for="field in lotInfoFields" :key="field.label">
+                    <dt>{{ field.label }}</dt>
+                    <dd>{{ field.value }}</dd>
+                  </template>
+                </dl>
+              </section>
+
+              <section v-if="lotTextFields.length" class="detail-section">
+                <span class="eyebrow">Описание и условия</span>
+                <div class="detail-text-fields">
+                  <article v-for="field in lotTextFields" :key="field.label" class="detail-text-field">
+                    <h3>{{ field.label }}</h3>
+                    <p>{{ field.value }}</p>
+                  </article>
+                </div>
+              </section>
+
+              <section v-if="organizerFields.length" class="detail-section">
+                <span class="eyebrow">Организатор торгов</span>
+                <dl class="detail-list detail-list--dense">
+                  <template v-for="field in organizerFields" :key="field.label">
+                    <dt>{{ field.label }}</dt>
+                    <dd>{{ field.value }}</dd>
+                  </template>
+                </dl>
+              </section>
+
+              <section v-if="auctionInfoFields.length" class="detail-section">
+                <span class="eyebrow">Информация об аукционе</span>
+                <dl class="detail-list detail-list--dense">
+                  <template v-for="field in auctionInfoFields" :key="field.label">
+                    <dt>{{ field.label }}</dt>
+                    <dd>{{ field.value }}</dd>
+                  </template>
+                </dl>
+              </section>
+
+              <section v-if="debtorFields.length" class="detail-section">
+                <span class="eyebrow">Информация о должнике</span>
+                <dl class="detail-list detail-list--dense">
+                  <template v-for="field in debtorFields" :key="field.label">
+                    <dt>{{ field.label }}</dt>
+                    <dd>{{ field.value }}</dd>
+                  </template>
+                </dl>
+              </section>
+
+              <section v-if="auctionLots.length" class="detail-section">
+                <span class="eyebrow">Лоты аукциона</span>
+                <div class="detail-table-wrapper">
+                  <table class="detail-table">
+                    <thead>
+                      <tr>
+                        <th>№</th>
+                        <th>Лот</th>
+                        <th>Цена</th>
+                        <th>Статус</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr
+                        v-for="lot in auctionLots"
+                        :key="`${lot.number || ''}-${lot.name || ''}`"
+                        :class="{ 'detail-table__row--active': lot.number && lot.number === selectedLot.lotNumber }"
+                      >
+                        <td>{{ lot.number }}</td>
+                        <td>{{ lot.name }}</td>
+                        <td>{{ lot.initial_price }}</td>
+                        <td>{{ lot.status }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+
+              <section v-if="rawLotFields.length" class="detail-section">
+                <span class="eyebrow">Все сведения лота</span>
+                <dl class="detail-list detail-list--dense">
+                  <template v-for="(field, index) in rawLotFields" :key="`lot-${field.label}-${index}`">
+                    <dt>{{ field.label }}</dt>
+                    <dd>{{ field.value }}</dd>
+                  </template>
+                </dl>
+              </section>
+
+              <section v-if="rawAuctionFields.length" class="detail-section">
+                <span class="eyebrow">Все сведения аукциона</span>
+                <dl class="detail-list detail-list--dense">
+                  <template v-for="(field, index) in rawAuctionFields" :key="`auction-${field.label}-${index}`">
+                    <dt>{{ field.label }}</dt>
+                    <dd>{{ field.value }}</dd>
+                  </template>
+                </dl>
+              </section>
+
+              <section class="detail-section">
+                <span class="eyebrow">Файлы</span>
+                <div v-if="detailLoading" class="detail-muted">Загрузка</div>
+                <ul v-else-if="fileDocuments.length" class="detail-files">
+                  <li
+                    v-for="(document, index) in fileDocuments"
+                    :key="document.external_id || document.name || `document-${index}`"
+                  >
+                    <a v-if="document.url" :href="document.url" target="_blank" rel="noreferrer">
+                      {{ document.name || document.document_type || 'Документ' }}
+                    </a>
+                    <span v-else>{{ document.name || document.document_type || 'Документ' }}</span>
+                    <small>{{ [document.received_at, document.signature_status, document.document_type].filter(Boolean).join(' · ') }}</small>
+                  </li>
+                </ul>
+                <div v-else class="detail-muted">Файлы не найдены</div>
+              </section>
+            </div>
+
+            <footer class="side-pane__footer">
+              <button
+                v-if="selectedLot.lotId"
+                class="secondary-button"
+                type="button"
+                :disabled="detailLiveRefreshing || detailReanalyzing"
+                @click="refreshSelectedLotLiveDetails"
+              >
+                {{ detailLiveRefreshing ? 'В очереди' : 'Live' }}
+              </button>
+              <button
+                v-if="selectedLot.lotId"
+                class="secondary-button"
+                type="button"
+                :disabled="detailLiveRefreshing || detailReanalyzing"
+                @click="reanalyzeSelectedLotDetails"
+              >
+                {{ detailReanalyzing ? 'Пересчет' : 'Локально' }}
+              </button>
+              <a v-if="detailLotUrl" class="secondary-button" :href="detailLotUrl" target="_blank" rel="noreferrer">
+                Лот
+              </a>
+              <a v-if="detailAuctionUrl" class="primary-button" :href="detailAuctionUrl" target="_blank" rel="noreferrer">
+                Аукцион
+              </a>
+            </footer>
+          </aside>
+        </section>
+      </template>
+
+      <section v-else class="workspace-placeholder" aria-label="Тендерный модуль">
+        <article class="workspace-placeholder__card">
+          <span class="eyebrow">Тендеры</span>
+          <h2>Следующий модуль приложения</h2>
+          <p>
+            Сейчас рабочая среда сфокусирована на аукционах. Здесь появится отдельный поток,
+            фильтры и карточки для тендеров.
+          </p>
+          <div class="workspace-placeholder__actions">
+            <RouterLink class="primary-button" to="/auctions">Открыть аукционы</RouterLink>
+            <button class="secondary-button" type="button" @click="openAnalysisConfigDialog">Общий конфиг</button>
           </div>
-        </div>
-        <DataGrid
-          v-else-if="catalogRowModel"
-          v-show="catalogGridHasLoadedOnce || !loading || allRows.length > 0"
-          ref="gridRef"
-          :row-model="catalogRowModel"
-          :columns="columns"
-          :column-widths="gridColumnWidths"
-          :base-row-height="26"
-          :theme="workspaceDataGridTheme"
-          :is-cell-editable="isGridCellEditable"
-          :cell-style="editableGridCellStyle"
-          :virtualization="catalogVirtualizationOptions"
-          :advanced-filter="advancedFilterOptions"
-          :quick-filter="quickFilter"
-          :state-persistence="gridStatePersistence"
-          :column-menu="columnMenuOptions"
-          :column-layout="columnLayoutOptions"
-          fill-handle
-          range-move
-          layout-mode="fill"
-          :row-selection="false"
-          :cell-menu="true"
-          :chrome="{ toolbarPlacement: 'integrated', density: 'compact', toolbarGap: 0, workspaceGap: 8 }"
-          :history="{ enabled: true, shortcuts: 'grid', controls: true }"
-          @update:column-widths="persistGridColumnWidths"
-        />
-        <div
-          v-if="catalogQueryPlaceholderVisible && catalogGridHasLoadedOnce"
-          class="grid-query-placeholder"
-          role="status"
-          aria-live="polite"
-        >
-          <span>Обновляем срез</span>
-        </div>
+        </article>
       </section>
-
-      <aside
-        v-if="selectedLot"
-        class="side-pane side-pane--detail"
-        aria-label="Детальная информация о лоте"
-      >
-      <button
-        class="side-pane-resizer"
-        type="button"
-        aria-label="Изменить ширину панели"
-        @pointerdown="startDetailResize"
-      ></button>
-      <header class="side-pane__header">
-        <div>
-          <span class="eyebrow">Лот {{ selectedLot.lotNumber || selectedLot.id }}</span>
-          <h2>{{ detailTitle }}</h2>
-        </div>
-        <button class="icon-button" type="button" aria-label="Закрыть лот" @click="closeLotDetails">×</button>
-      </header>
-
-      <div class="detail-pane__body">
-        <div class="detail-pane__score">
-          <strong>{{ selectedLot.ratingScore }}</strong>
-          <span>{{ selectedLot.ratingLevel }}</span>
-          <RatingInfoTooltip
-            :reasons="ratingReasonItems"
-            :dimensions="ratingBreakdown?.dimensions ?? null"
-            :caps="ratingBreakdown?.caps ?? null"
-          />
-          <span :class="['analysis-pill', `analysis-pill--${selectedLot.analysisColor || 'yellow'}`]">
-            {{ selectedLot.analysisLabel }}
-          </span>
-          <mark v-if="selectedLot.isNew">Новый</mark>
-        </div>
-
-        <section class="detail-section detail-section--actuality">
-          <div class="detail-section__header">
-            <span class="eyebrow">Актуальность</span>
-            <span :class="['status-chip', `status-chip--${lifecycleStatusTone(selectedLot.lifecycleStatus)}`]">
-              {{ formatLifecycleStatus(selectedLot.lifecycleStatus) }}
-            </span>
-          </div>
-          <dl class="detail-list detail-list--dense detail-list--compact">
-            <template v-for="field in detailActualityFields" :key="field.label">
-              <dt>{{ field.label }}</dt>
-              <dd>{{ field.value }}</dd>
-            </template>
-          </dl>
-        </section>
-
-        <section class="detail-section detail-section--media">
-          <span class="eyebrow">Медиа</span>
-          <div v-if="detailLoading" class="detail-muted">Загрузка</div>
-          <div v-else-if="detailImages.length && activeDetailImage" class="detail-gallery">
-            <div class="detail-gallery__stage">
-              <button
-                v-if="detailImages.length > 1"
-                class="detail-gallery__nav detail-gallery__nav--prev"
-                type="button"
-                aria-label="Предыдущее фото"
-                @click="showPreviousDetailImage"
-              >
-                ‹
-              </button>
-              <img
-                :src="activeDetailImage.thumbnailUrl || activeDetailImage.url"
-                :alt="activeDetailImage.name || 'Изображение лота'"
-                loading="lazy"
-              />
-              <button
-                v-if="detailImages.length > 1"
-                class="detail-gallery__nav detail-gallery__nav--next"
-                type="button"
-                aria-label="Следующее фото"
-                @click="showNextDetailImage"
-              >
-                ›
-              </button>
-            </div>
-            <div v-if="detailImages.length > 1" class="detail-gallery__thumbs" aria-label="Фотографии лота">
-              <button
-                v-for="(image, index) in detailImages"
-                :key="image.url || image.name || `image-${index}`"
-                :class="['detail-gallery__thumb', { 'detail-gallery__thumb--active': index === activeDetailImageIndex }]"
-                type="button"
-                :aria-label="`Показать фото ${index + 1}`"
-                @click="selectDetailImage(index)"
-              >
-                <img :src="image.thumbnailUrl || image.url" :alt="image.name || `Фото ${index + 1}`" loading="lazy" />
-              </button>
-            </div>
-          </div>
-          <ul v-else-if="mediaDocuments.length" class="detail-files">
-            <li
-              v-for="(document, index) in mediaDocuments"
-              :key="document.external_id || document.name || `media-${index}`"
-            >
-              <a v-if="document.url" :href="document.url" target="_blank" rel="noreferrer">
-                {{ document.name || document.document_type || 'Медиафайл' }}
-              </a>
-              <span v-else>{{ document.name || document.document_type || 'Медиафайл' }}</span>
-              <small>{{ document.received_at || document.document_type || '' }}</small>
-            </li>
-          </ul>
-          <div v-else-if="lockedTbankrotImageCount" class="detail-muted">
-            TBankrot скрыл фото за тарифом: в HTML доступен только размытый placeholder.
-          </div>
-          <div v-else class="detail-muted">Медиа не найдены</div>
-        </section>
-
-        <section v-if="analysisReasonItems.length" class="detail-section">
-          <span class="eyebrow">Анализ модели</span>
-          <ul class="detail-bullet-list">
-            <li v-for="reason in analysisReasonItems" :key="reason">{{ reason }}</li>
-          </ul>
-        </section>
-
-        <div v-if="detailLoading || detailLiveRefreshing || detailReanalyzing || detailStatus" class="detail-live-status" role="status" aria-live="polite">
-          <span v-if="detailLoading || detailLiveRefreshing || detailReanalyzing" class="detail-live-status__spinner" aria-hidden="true"></span>
-          <span>{{ detailStatus || 'Подгружаю live-данные с площадки' }}</span>
-        </div>
-
-        <section class="detail-section decision-report-panel">
-          <div class="detail-section__header">
-            <span class="eyebrow">Решение</span>
-            <span v-if="selectedDecisionReport" class="decision-report-panel__level">
-              {{ formatDecisionLevel(selectedDecisionReport.decision_level) }}
-            </span>
-          </div>
-          <div v-if="decisionReportLoading" class="detail-muted">Загружаю отчет решения</div>
-          <div v-else-if="decisionReportStatus === 'empty'" class="detail-muted">Снимок решения еще не создан</div>
-          <div v-else-if="decisionReportStatus === 'error'" class="detail-muted">
-            {{ decisionReportError || 'Не удалось загрузить отчет решения' }}
-          </div>
-          <template v-else-if="selectedDecisionReport">
-            <dl class="detail-list detail-list--dense decision-report-panel__summary">
-              <template v-for="field in decisionReportSummaryFields" :key="field.label">
-                <dt>{{ field.label }}</dt>
-                <dd>{{ field.value }}</dd>
-              </template>
-            </dl>
-            <div v-if="decisionReportReasons.length" class="decision-report-panel__group">
-              <h3>Причины</h3>
-              <ul class="detail-bullet-list">
-                <li v-for="reason in decisionReportReasons" :key="reason.code">{{ reason.message }}</li>
-              </ul>
-            </div>
-            <div v-if="decisionReportRisks.length" class="decision-report-panel__group">
-              <h3>Риски</h3>
-              <ul class="detail-bullet-list">
-                <li v-for="risk in decisionReportRisks" :key="risk.code">
-                  <strong>{{ risk.level }}</strong>
-                  <span>{{ risk.message }}</span>
-                </li>
-              </ul>
-            </div>
-            <div v-if="decisionReportNextActions.length" class="decision-report-panel__group">
-              <h3>Следующие действия</h3>
-              <ul class="detail-bullet-list">
-                <li v-for="action in decisionReportNextActions" :key="`${action.action}-${action.label}`">
-                  {{ action.label }}<span v-if="action.deadline"> · {{ action.deadline }}</span>
-                </li>
-              </ul>
-            </div>
-          </template>
-          <div v-else class="detail-muted">Отчет решения появится после локальной генерации снимка</div>
-        </section>
-
-        <section v-if="economyFields.length" class="detail-section">
-          <span class="eyebrow">Экономика</span>
-          <dl class="detail-list detail-list--dense">
-            <template v-for="field in economyFields" :key="field.label">
-              <dt>{{ field.label }}</dt>
-              <dd>{{ field.value }}</dd>
-            </template>
-          </dl>
-        </section>
-
-        <section v-if="priceScheduleFields.length" class="detail-section">
-          <span class="eyebrow">Снижение цены</span>
-          <dl class="detail-list detail-list--dense detail-list--schedule">
-            <template v-for="field in priceScheduleFields" :key="field.label">
-              <dt>{{ field.label }}</dt>
-              <dd>{{ field.value }}</dd>
-            </template>
-          </dl>
-        </section>
-
-        <section v-if="selectedWorkspace" class="detail-section">
-          <span class="eyebrow">История изменений</span>
-          <ul v-if="changeFields.length" class="change-list">
-            <li v-for="(change, index) in changeFields" :key="`${change.label}-${index}`">
-              <strong>{{ change.label }}</strong>
-              <span>{{ change.previous || 'Не было' }}</span>
-              <b aria-hidden="true">→</b>
-              <span>{{ change.current || 'Не указано' }}</span>
-            </li>
-          </ul>
-          <div v-else class="detail-muted">Изменений между последними снимками не найдено</div>
-          <dl v-if="changeSummaryFields.length" class="detail-list detail-list--dense detail-list--compact">
-            <template v-for="field in changeSummaryFields" :key="field.label">
-              <dt>{{ field.label }}</dt>
-              <dd>{{ field.value }}</dd>
-            </template>
-          </dl>
-        </section>
-
-        <section v-if="detailFields.length" class="detail-section detail-section--summary">
-          <span class="eyebrow">Основные сведения</span>
-          <dl class="detail-list detail-list--dense">
-            <template v-for="field in detailFields" :key="field.label">
-              <dt>{{ field.label }}</dt>
-              <dd>{{ field.value || 'Не указано' }}</dd>
-            </template>
-          </dl>
-        </section>
-
-        <section v-if="lotInfoFields.length" class="detail-section">
-          <span class="eyebrow">Информация о лоте</span>
-          <p v-if="detailCachedAt">Кэш обновлен: {{ detailCachedAt }}</p>
-          <dl class="detail-list detail-list--dense">
-            <template v-for="field in lotInfoFields" :key="field.label">
-              <dt>{{ field.label }}</dt>
-              <dd>{{ field.value }}</dd>
-            </template>
-          </dl>
-        </section>
-
-        <section v-if="lotTextFields.length" class="detail-section">
-          <span class="eyebrow">Описание и условия</span>
-          <div class="detail-text-fields">
-            <article v-for="field in lotTextFields" :key="field.label" class="detail-text-field">
-              <h3>{{ field.label }}</h3>
-              <p>{{ field.value }}</p>
-            </article>
-          </div>
-        </section>
-
-        <section v-if="organizerFields.length" class="detail-section">
-          <span class="eyebrow">Организатор торгов</span>
-          <dl class="detail-list detail-list--dense">
-            <template v-for="field in organizerFields" :key="field.label">
-              <dt>{{ field.label }}</dt>
-              <dd>{{ field.value }}</dd>
-            </template>
-          </dl>
-        </section>
-
-        <section v-if="auctionInfoFields.length" class="detail-section">
-          <span class="eyebrow">Информация об аукционе</span>
-          <dl class="detail-list detail-list--dense">
-            <template v-for="field in auctionInfoFields" :key="field.label">
-              <dt>{{ field.label }}</dt>
-              <dd>{{ field.value }}</dd>
-            </template>
-          </dl>
-        </section>
-
-        <section v-if="debtorFields.length" class="detail-section">
-          <span class="eyebrow">Информация о должнике</span>
-          <dl class="detail-list detail-list--dense">
-            <template v-for="field in debtorFields" :key="field.label">
-              <dt>{{ field.label }}</dt>
-              <dd>{{ field.value }}</dd>
-            </template>
-          </dl>
-        </section>
-
-        <section v-if="auctionLots.length" class="detail-section">
-          <span class="eyebrow">Лоты аукциона</span>
-          <div class="detail-table-wrapper">
-            <table class="detail-table">
-              <thead>
-                <tr>
-                  <th>№</th>
-                  <th>Лот</th>
-                  <th>Цена</th>
-                  <th>Статус</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr
-                  v-for="lot in auctionLots"
-                  :key="`${lot.number || ''}-${lot.name || ''}`"
-                  :class="{ 'detail-table__row--active': lot.number && lot.number === selectedLot.lotNumber }"
-                >
-                  <td>{{ lot.number }}</td>
-                  <td>{{ lot.name }}</td>
-                  <td>{{ lot.initial_price }}</td>
-                  <td>{{ lot.status }}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-        <section v-if="rawLotFields.length" class="detail-section">
-          <span class="eyebrow">Все сведения лота</span>
-          <dl class="detail-list detail-list--dense">
-            <template v-for="(field, index) in rawLotFields" :key="`lot-${field.label}-${index}`">
-              <dt>{{ field.label }}</dt>
-              <dd>{{ field.value }}</dd>
-            </template>
-          </dl>
-        </section>
-
-        <section v-if="rawAuctionFields.length" class="detail-section">
-          <span class="eyebrow">Все сведения аукциона</span>
-          <dl class="detail-list detail-list--dense">
-            <template v-for="(field, index) in rawAuctionFields" :key="`auction-${field.label}-${index}`">
-              <dt>{{ field.label }}</dt>
-              <dd>{{ field.value }}</dd>
-            </template>
-          </dl>
-        </section>
-
-        <section class="detail-section">
-          <span class="eyebrow">Файлы</span>
-          <div v-if="detailLoading" class="detail-muted">Загрузка</div>
-          <ul v-else-if="fileDocuments.length" class="detail-files">
-            <li
-              v-for="(document, index) in fileDocuments"
-              :key="document.external_id || document.name || `document-${index}`"
-            >
-              <a v-if="document.url" :href="document.url" target="_blank" rel="noreferrer">
-                {{ document.name || document.document_type || 'Документ' }}
-              </a>
-              <span v-else>{{ document.name || document.document_type || 'Документ' }}</span>
-              <small>{{ [document.received_at, document.signature_status, document.document_type].filter(Boolean).join(' · ') }}</small>
-            </li>
-          </ul>
-          <div v-else class="detail-muted">Файлы не найдены</div>
-        </section>
-      </div>
-
-      <footer class="side-pane__footer">
-        <button
-          v-if="selectedLot.lotId"
-          class="secondary-button"
-          type="button"
-          :disabled="detailLiveRefreshing || detailReanalyzing"
-          @click="refreshSelectedLotLiveDetails"
-        >
-          {{ detailLiveRefreshing ? 'В очереди' : 'Live' }}
-        </button>
-        <button
-          v-if="selectedLot.lotId"
-          class="secondary-button"
-          type="button"
-          :disabled="detailLiveRefreshing || detailReanalyzing"
-          @click="reanalyzeSelectedLotDetails"
-        >
-          {{ detailReanalyzing ? 'Пересчет' : 'Локально' }}
-        </button>
-        <a v-if="detailLotUrl" class="secondary-button" :href="detailLotUrl" target="_blank" rel="noreferrer">
-          Лот
-        </a>
-        <a v-if="detailAuctionUrl" class="primary-button" :href="detailAuctionUrl" target="_blank" rel="noreferrer">
-          Аукцион
-        </a>
-      </footer>
-      </aside>
     </section>
 
     <Teleport to="#affino-dialog-host">

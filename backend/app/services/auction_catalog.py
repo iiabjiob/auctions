@@ -360,6 +360,7 @@ async def summarize_persisted_lots_for_grid(
         statement.with_only_columns(
             AuctionLotRecord.id.label("id"),
             AuctionLotRecord.is_new.label("is_new"),
+            AuctionLotRecord.lifecycle_status.label("lifecycle_status"),
             AuctionLotRecord.status.label("status"),
             AuctionLotRecord.rating_score.label("rating_score"),
         )
@@ -375,14 +376,16 @@ async def summarize_persisted_lots_for_grid(
         select(
             func.count(base_query.c.id),
             func.coalesce(func.sum(case((base_query.c.is_new.is_(True), 1), else_=0)), 0),
+            func.coalesce(func.sum(case((base_query.c.lifecycle_status == "active", 1), else_=0)), 0),
             func.coalesce(func.sum(case((open_applications, 1), else_=0)), 0),
             func.coalesce(func.sum(case((base_query.c.rating_score >= 75, 1), else_=0)), 0),
         )
     )
-    total, new_count, open_applications_count, high_rating_count = result.one()
+    total, new_count, active_count, open_applications_count, high_rating_count = result.one()
     return AuctionLotsGridSummary(
         total=int(total or 0),
         new_count=int(new_count or 0),
+        active_count=int(active_count or 0),
         open_applications_count=int(open_applications_count or 0),
         high_rating_count=int(high_rating_count or 0),
     )

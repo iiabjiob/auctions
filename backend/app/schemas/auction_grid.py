@@ -69,6 +69,7 @@ class AuctionLotsGridSummary(BaseModel):
 
     total: int = 0
     new_count: int = Field(default=0, alias="newCount")
+    active_count: int = Field(default=0, alias="activeCount")
     open_applications_count: int = Field(default=0, alias="openApplicationsCount")
     high_rating_count: int = Field(default=0, alias="highRatingCount")
 

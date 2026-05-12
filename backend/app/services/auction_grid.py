@@ -48,7 +48,6 @@ async def pull_auction_lots_grid(
 ) -> AuctionLotsGridPullResponse:
     dataset_version = await read_grid_dataset_version(session, workspace_id=workspace_id)
     grid_filter = _merge_query_options_into_filter_model(request.filter_model, request)
-    has_search = _has_search_query(grid_filter)
     rows, total = await pull_persisted_lots_for_grid(
         session,
         start_row=request.resolved_start_row,
@@ -66,23 +65,19 @@ async def pull_auction_lots_grid(
         sort_model=_normalize_sort_model(request.sort_model),
         grid_filter=grid_filter,
     )
-    summary = (
-        AuctionLotsGridSummary(total=total)
-        if has_search
-        else await summarize_persisted_lots_for_grid(
-            session,
-            period=request.period,
-            source=None,
-            status=None,
-            analysis_color=None,
-            min_price=None,
-            max_price=None,
-            only_new=False,
-            shortlist=False,
-            min_rating=None,
-            include_archived=request.include_archived,
-            grid_filter=grid_filter,
-        )
+    summary = await summarize_persisted_lots_for_grid(
+        session,
+        period=request.period,
+        source=None,
+        status=None,
+        analysis_color=None,
+        min_price=None,
+        max_price=None,
+        only_new=False,
+        shortlist=False,
+        min_rating=None,
+        include_archived=request.include_archived,
+        grid_filter=grid_filter,
     )
     return AuctionLotsGridPullResponse(
         rows=[

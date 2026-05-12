@@ -50,7 +50,7 @@ class AuctionGridApiTests(unittest.TestCase):
             rows=[],
             total=0,
             dataset_version=7,
-            summary=AuctionLotsGridSummary(total=0, new_count=1, open_applications_count=2, high_rating_count=3),
+            summary=AuctionLotsGridSummary(total=0, new_count=1, active_count=4, open_applications_count=2, high_rating_count=3),
         ).model_dump(by_alias=True)
 
         self.assertEqual(
@@ -62,6 +62,7 @@ class AuctionGridApiTests(unittest.TestCase):
                 "summary": {
                     "total": 0,
                     "newCount": 1,
+                    "activeCount": 4,
                     "openApplicationsCount": 2,
                     "highRatingCount": 3,
                 },
@@ -179,6 +180,7 @@ class AuctionGridPullServiceTests(unittest.IsolatedAsyncioTestCase):
                     return_value=AuctionLotsGridSummary(
                         total=100,
                         new_count=9,
+                        active_count=8,
                         open_applications_count=8,
                         high_rating_count=7,
                     )
@@ -192,23 +194,27 @@ class AuctionGridPullServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([row.id for row in response.rows], ["record-101", "record-204"])
         self.assertEqual(response.total, 100)
         self.assertEqual(response.summary.new_count, 9)
+        self.assertEqual(response.summary.active_count, 8)
         self.assertEqual(response.summary.open_applications_count, 8)
         self.assertEqual(response.summary.high_rating_count, 7)
         self.assertEqual(response.dataset_version, 7)
 
-    async def test_pull_skips_summary_when_search_is_present(self) -> None:
+    async def test_pull_keeps_summary_when_search_is_present(self) -> None:
         request = AuctionLotsGridPullRequest.model_validate({"startRow": 0, "endRow": 2, "filterModel": {"quickFilter": {"query": "bmw"}}})
 
         with (
             patch("app.services.auction_grid.read_grid_dataset_version", AsyncMock(return_value=7)),
             patch("app.services.auction_grid.pull_persisted_lots_for_grid", AsyncMock(return_value=([], 42))),
-            patch("app.services.auction_grid.summarize_persisted_lots_for_grid", AsyncMock()) as summarize,
+            patch(
+                "app.services.auction_grid.summarize_persisted_lots_for_grid",
+                AsyncMock(return_value=AuctionLotsGridSummary(total=42, active_count=11)),
+            ) as summarize,
         ):
             response = await pull_auction_lots_grid(AsyncMock(), request)
 
-        summarize.assert_not_awaited()
+        summarize.assert_awaited_once()
         self.assertEqual(response.summary.total, 42)
-        self.assertEqual(response.summary.new_count, 0)
+        self.assertEqual(response.summary.active_count, 11)
 
     async def test_pull_keeps_summary_without_search(self) -> None:
         request = AuctionLotsGridPullRequest.model_validate({"startRow": 0, "endRow": 2})

@@ -65,6 +65,7 @@ type AuctionServerPullResponse<TApiRow> = {
 export type AuctionServerGridSummary = {
   total: number
   newCount: number
+  activeCount: number
   openApplicationsCount: number
   highRatingCount: number
 }
@@ -203,6 +204,7 @@ function emptyAuctionServerGridSummary(total: number): AuctionServerGridSummary 
   return {
     total,
     newCount: 0,
+    activeCount: 0,
     openApplicationsCount: 0,
     highRatingCount: 0,
   }
