@@ -29,6 +29,10 @@ def upgrade() -> None:
         sa.Column("last_sync_error", sa.Text(), nullable=True),
         sa.Column("last_sync_error_code", sa.String(length=64), nullable=True),
         sa.Column("last_sync_fetched", sa.Integer(), nullable=True),
+        sa.Column("next_page", sa.Integer(), nullable=True),
+        sa.Column("last_start_page", sa.Integer(), nullable=True),
+        sa.Column("last_window_size", sa.Integer(), nullable=True),
+        sa.Column("last_fetched", sa.Integer(), nullable=True),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
     )
     op.create_index(
@@ -123,7 +127,11 @@ def upgrade() -> None:
             last_sync_result,
             last_sync_error,
             last_sync_error_code,
-            last_sync_fetched
+            last_sync_fetched,
+            next_page,
+            last_start_page,
+            last_window_size,
+            last_fetched
         )
         SELECT
             code,
@@ -139,6 +147,10 @@ def upgrade() -> None:
             END,
             sync_cursor->>'last_sync_error',
             NULL,
+            NULLIF(sync_cursor->>'last_fetched', '')::int,
+            NULLIF(sync_cursor->>'next_page', '')::int,
+            NULLIF(sync_cursor->>'last_start_page', '')::int,
+            NULLIF(sync_cursor->>'last_window_size', '')::int,
             NULLIF(sync_cursor->>'last_fetched', '')::int
         FROM auction_source_states
         WHERE sync_cursor IS NOT NULL
@@ -150,7 +162,11 @@ def upgrade() -> None:
             last_sync_result = EXCLUDED.last_sync_result,
             last_sync_error = EXCLUDED.last_sync_error,
             last_sync_error_code = EXCLUDED.last_sync_error_code,
-            last_sync_fetched = EXCLUDED.last_sync_fetched
+            last_sync_fetched = EXCLUDED.last_sync_fetched,
+            next_page = EXCLUDED.next_page,
+            last_start_page = EXCLUDED.last_start_page,
+            last_window_size = EXCLUDED.last_window_size,
+            last_fetched = EXCLUDED.last_fetched
         """
     )
 

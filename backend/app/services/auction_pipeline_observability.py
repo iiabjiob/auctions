@@ -59,21 +59,15 @@ def build_auction_source_sync_status(
     *,
     sync_state: AuctionSourceSyncState | None = None,
 ) -> AuctionSourceSyncStatus:
-    cursor = source_state.sync_cursor if isinstance(source_state.sync_cursor, dict) else {}
-    last_sync_started_at = sync_state.last_sync_started_at if sync_state is not None else _parse_sync_cursor_datetime(cursor.get("last_sync_started_at"))
-    last_sync_completed_at = sync_state.last_sync_completed_at if sync_state is not None else _parse_sync_cursor_datetime(cursor.get("last_sync_completed_at"))
-    next_sync_not_before = sync_state.next_sync_not_before if sync_state is not None else _parse_sync_cursor_datetime(cursor.get("next_sync_not_before"))
-    next_sync_not_after = sync_state.next_sync_not_after if sync_state is not None else _parse_sync_cursor_datetime(cursor.get("next_sync_not_after"))
-    last_sync_error = sync_state.last_sync_error if sync_state is not None else cursor.get("last_sync_error")
     return AuctionSourceSyncStatus(
         code=source_state.code,
         title=source_state.title,
         enabled=bool(source_state.enabled),
-        last_sync_started_at=last_sync_started_at,
-        last_sync_completed_at=last_sync_completed_at,
-        next_sync_not_before=next_sync_not_before,
-        next_sync_not_after=next_sync_not_after,
-        last_sync_error=last_sync_error if isinstance(last_sync_error, str) else None,
+        last_sync_started_at=sync_state.last_sync_started_at if sync_state is not None else None,
+        last_sync_completed_at=sync_state.last_sync_completed_at if sync_state is not None else None,
+        next_sync_not_before=sync_state.next_sync_not_before if sync_state is not None else None,
+        next_sync_not_after=sync_state.next_sync_not_after if sync_state is not None else None,
+        last_sync_error=sync_state.last_sync_error if sync_state is not None else None,
     )
 
 
@@ -159,15 +153,3 @@ def _terminal_status_clause():
         status_text.contains("заверш"),
         status_text.contains("отмен"),
     )
-
-
-def _parse_sync_cursor_datetime(value: object) -> datetime | None:
-    if not isinstance(value, str):
-        return None
-    normalized = value.strip()
-    if not normalized:
-        return None
-    try:
-        return datetime.fromisoformat(normalized)
-    except ValueError:
-        return None

@@ -56,33 +56,6 @@ class PreparedLotSnapshot:
     content_hash: str
 
 
-def _update_source_sync_cursor(
-    source_state: AuctionSourceState,
-    *,
-    last_sync_started_at: datetime | None = None,
-    last_sync_completed_at: datetime | None = None,
-    next_sync_not_before: datetime | None = None,
-    next_sync_not_after: datetime | None = None,
-    last_sync_error: str | None | object = _MISSING,
-) -> None:
-    cursor = dict(source_state.sync_cursor or {})
-    if last_sync_started_at is not None:
-        cursor["last_sync_started_at"] = last_sync_started_at.isoformat()
-    if last_sync_completed_at is not None:
-        cursor["last_sync_completed_at"] = last_sync_completed_at.isoformat()
-    if next_sync_not_before is not None:
-        cursor["next_sync_not_before"] = next_sync_not_before.isoformat()
-    if next_sync_not_after is not None:
-        cursor["next_sync_not_after"] = next_sync_not_after.isoformat()
-    if last_sync_error is _MISSING:
-        pass
-    elif last_sync_error is None:
-        cursor.pop("last_sync_error", None)
-    else:
-        cursor["last_sync_error"] = str(last_sync_error)
-    source_state.sync_cursor = cursor
-
-
 async def _upsert_source_sync_state(
     session: AsyncSession,
     source_code: str,
@@ -145,6 +118,17 @@ async def _append_source_sync_run(
             error_message=error_message,
         )
     )
+
+
+async def _get_or_create_source_sync_state(
+    session: AsyncSession,
+    source_code: str,
+) -> AuctionSourceSyncState:
+    sync_state = await session.get(AuctionSourceSyncState, source_code)
+    if sync_state is None:
+        sync_state = AuctionSourceSyncState(source_code=source_code)
+        session.add(sync_state)
+    return sync_state
 async def sync_source_lots(
     session: AsyncSession,
     *,
@@ -173,7 +157,7 @@ async def sync_source_lots(
         source_state.website = source_info.website
         source_state.enabled = source_info.enabled
     source_state.last_synced_at = now
-    _update_source_sync_cursor(source_state, last_sync_started_at=now, last_sync_error=None)
+    sync_state = await _get_or_create_source_sync_state(session, source_info.code)
     await _upsert_source_sync_state(
         session,
         source_info.code,
@@ -182,7 +166,7 @@ async def sync_source_lots(
         last_sync_error=None,
         last_sync_error_code=None,
     )
-    sync_start_page = _source_sync_start_page(source_info.code, source_state)
+    sync_start_page = await _source_sync_start_page(source_info.code, sync_state=sync_state)
 
     result = SourceSyncResult(
         source=source_info.code,
@@ -394,7 +378,6 @@ async def sync_source_lots(
 
     completed_at = datetime.now(UTC)
     source_state.last_synced_at = completed_at
-    _update_source_sync_cursor(source_state, last_sync_completed_at=completed_at, last_sync_error=None)
     await _upsert_source_sync_state(
         session,
         source_info.code,
@@ -412,8 +395,8 @@ async def sync_source_lots(
         result="success",
         fetched_count=result.fetched,
     )
+    await _advance_source_sync_state(session, source_code=source_info.code, start_page=sync_start_page, fetched=result.fetched)
     await session.commit()
-    _advance_source_sync_cursor(source_info.code, source_state, start_page=sync_start_page, fetched=result.fetched)
     await _backfill_publication_dates(session, source_code=source_info.code, observed_at=now)
     await session.commit()
     logger.info(
@@ -429,18 +412,21 @@ async def sync_source_lots(
     return result
 
 
-def _source_sync_start_page(source_code: str, source_state: AuctionSourceState) -> int:
+async def _source_sync_start_page(
+    source_code: str,
+    *,
+    sync_state: AuctionSourceSyncState | None = None,
+) -> int:
     if source_code != "tbankrot" or not settings.tbankrot_page_rotation_enabled:
         return 1
-    cursor = source_state.sync_cursor if isinstance(source_state.sync_cursor, dict) else {}
-    next_page = cursor.get("next_page")
+    next_page = sync_state.next_page if sync_state is not None else None
     return max(1, int(next_page)) if isinstance(next_page, int | str) and str(next_page).isdigit() else 1
 
 
-def _advance_source_sync_cursor(
-    source_code: str,
-    source_state: AuctionSourceState,
+async def _advance_source_sync_state(
+    session: AsyncSession,
     *,
+    source_code: str,
     start_page: int,
     fetched: int,
 ) -> None:
@@ -456,12 +442,12 @@ def _advance_source_sync_cursor(
         if max_page > 0 and next_page > max_page:
             next_page = 1
 
-    cursor = dict(source_state.sync_cursor or {})
-    cursor["next_page"] = next_page
-    cursor["last_start_page"] = start_page
-    cursor["last_window_size"] = window_size
-    cursor["last_fetched"] = fetched
-    source_state.sync_cursor = cursor
+    sync_state = await _get_or_create_source_sync_state(session, source_code)
+    sync_state.next_page = next_page
+    sync_state.last_start_page = start_page
+    sync_state.last_window_size = window_size
+    sync_state.last_fetched = fetched
+    sync_state.last_sync_fetched = fetched
 
 
 async def persist_source_sync_error(
@@ -478,11 +464,6 @@ async def persist_source_sync_error(
     completed_at = completed_at or datetime.now(UTC)
     started_at = source_state.last_synced_at or completed_at
     source_state.last_synced_at = completed_at
-    _update_source_sync_cursor(
-        source_state,
-        last_sync_completed_at=completed_at,
-        last_sync_error=error_message,
-    )
     await _upsert_source_sync_state(
         session,
         source_code,
@@ -515,11 +496,6 @@ async def persist_all_source_sync_windows(
     statement = select(AuctionSourceState)
     source_states = (await session.scalars(statement)).all()
     for source_state in source_states:
-        _update_source_sync_cursor(
-            source_state,
-            next_sync_not_before=next_sync_not_before,
-            next_sync_not_after=next_sync_not_after,
-        )
         await _upsert_source_sync_state(
             session,
             source_state.code,

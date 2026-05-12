@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from app.models.auction import AuctionLotDetailCache, AuctionLotRecord, AuctionSourceState
+from app.models.auction import AuctionLotDetailCache, AuctionLotRecord, AuctionSourceState, AuctionSourceSyncState
 from app.schemas.auctions import AuctionListItem, AuctionSummary, LotImage, LotSummary, OrganizerInfo, PriceScheduleStep
 from app.services.auction_scoring import invalidate_lot_score
 from app.services.lot_enrichment import classify_lot_enrichment
@@ -111,15 +111,20 @@ class StaticSourceProvider:
 
 
 class FakeSession:
-    def __init__(self, *, source_state=None):
+    def __init__(self, *, source_state=None, source_sync_state=None):
         self.added = []
         self.commits = 0
         self.source_state = source_state
+        self.source_sync_state = source_sync_state
 
     async def get(self, model, key):
         if self.source_state is not None and model is AuctionSourceState and key == self.source_state.code:
             return self.source_state
+        if self.source_sync_state is not None and model is AuctionSourceSyncState and key == self.source_sync_state.source_code:
+            return self.source_sync_state
         if model is AuctionSourceState and key == "tbankrot":
+            return None
+        if model is AuctionSourceSyncState and key == "tbankrot":
             return None
         return None
 
@@ -194,9 +199,12 @@ class AuctionSyncInvalidationTests(unittest.IsolatedAsyncioTestCase):
             title="TBankrot",
             website="https://tbankrot.ru",
             enabled=True,
-            sync_cursor={"next_page": 6},
         )
-        session = FakeSession(source_state=source_state)
+        source_sync_state = AuctionSourceSyncState(
+            source_code="tbankrot",
+            next_page=6,
+        )
+        session = FakeSession(source_state=source_state, source_sync_state=source_sync_state)
         runtime_config = SimpleNamespace(
             category_keywords={},
             exclusion_keywords=(),
@@ -222,9 +230,10 @@ class AuctionSyncInvalidationTests(unittest.IsolatedAsyncioTestCase):
             await sync_source_lots(session, source="tbankrot", limit=1)
 
         self.assertEqual(provider.pages, [6])
-        self.assertEqual(source_state.sync_cursor["next_page"], 11)
-        self.assertEqual(source_state.sync_cursor["last_start_page"], 6)
-        self.assertEqual(source_state.sync_cursor["last_window_size"], 5)
+        self.assertEqual(source_sync_state.next_page, 11)
+        self.assertEqual(source_sync_state.last_start_page, 6)
+        self.assertEqual(source_sync_state.last_window_size, 5)
+        self.assertEqual(source_sync_state.last_fetched, 1)
 
     async def test_tbankrot_page_rotation_wraps_after_max_page(self) -> None:
         item = make_list_item()
@@ -233,9 +242,12 @@ class AuctionSyncInvalidationTests(unittest.IsolatedAsyncioTestCase):
             title="TBankrot",
             website="https://tbankrot.ru",
             enabled=True,
-            sync_cursor={"next_page": 18},
         )
-        session = FakeSession(source_state=source_state)
+        source_sync_state = AuctionSourceSyncState(
+            source_code="tbankrot",
+            next_page=18,
+        )
+        session = FakeSession(source_state=source_state, source_sync_state=source_sync_state)
         runtime_config = SimpleNamespace(
             category_keywords={},
             exclusion_keywords=(),
@@ -261,7 +273,9 @@ class AuctionSyncInvalidationTests(unittest.IsolatedAsyncioTestCase):
             await sync_source_lots(session, source="tbankrot", limit=1)
 
         self.assertEqual(provider.pages, [18])
-        self.assertEqual(source_state.sync_cursor["next_page"], 1)
+        self.assertEqual(source_sync_state.next_page, 1)
+        self.assertEqual(source_sync_state.last_start_page, 18)
+        self.assertEqual(source_sync_state.last_window_size, 5)
 
     def test_preserve_existing_real_media_when_next_sync_has_only_locked_placeholders(self) -> None:
         existing_item = make_list_item(
