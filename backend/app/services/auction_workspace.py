@@ -708,11 +708,14 @@ async def build_workspace_response(
         work_item=_work_item_response(work_item),
         economy=calculate_lot_economy(record, work_item),
         changes=await _change_summary(session, record, include_fields=include_change_fields),
+        current_enrichment_state=_lot_workspace_enrichment_state(record),
     )
 
 
 def _workspace_row_payload(record: AuctionLotRecord, *, include_embedded_payload: bool) -> dict:
     payload = dict(record.datagrid_row or {})
+    payload["lifecycle_status"] = record.lifecycle_status
+    payload["actuality_checked_at"] = record.actuality_checked_at
     if include_embedded_payload:
         return payload
 

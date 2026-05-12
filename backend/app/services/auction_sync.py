@@ -474,6 +474,10 @@ async def _sync_record_actuality(
     record.lifecycle_status = actuality.lifecycle_status
     record.finished_at = actuality.finished_at
     record.actuality_checked_at = checked_at
+    row = dict(record.datagrid_row or {})
+    row["lifecycle_status"] = actuality.lifecycle_status
+    row["actuality_checked_at"] = checked_at.isoformat()
+    record.datagrid_row = row
     if actuality.lifecycle_status == "active":
         record.archived_at = None
         record.archive_reason = None

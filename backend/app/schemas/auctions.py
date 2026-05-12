@@ -253,6 +253,8 @@ class LotDatagridRow(BaseModel):
     rating: LotRating
     analysis: LotAnalysis = Field(default_factory=LotAnalysis)
     work_decision_status: str | None = None
+    lifecycle_status: str | None = None
+    actuality_checked_at: datetime | None = None
 
 
 class LotDatagridFilters(BaseModel):
@@ -402,6 +404,7 @@ class LotWorkspaceResponse(BaseModel):
     work_item: LotWorkItemResponse
     economy: LotEconomyResponse
     changes: LotChangeSummary
+    current_enrichment_state: LotWorkspaceEnrichmentState | None = None
 
 
 class LotWorkspaceBatchCommitItem(BaseModel):

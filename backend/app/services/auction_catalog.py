@@ -44,6 +44,7 @@ LOT_GRID_COLUMNS = [
     DatagridColumn(key="organizer_name", title="Организатор", width=220),
     DatagridColumn(key="application_deadline", title="Прием заявок до", data_type="datetime", width=180),
     DatagridColumn(key="auction_date", title="Дата торгов", data_type="datetime", width=180),
+    DatagridColumn(key="lifecycle_status", title="Актуальность", width=148),
 ]
 
 SHORTLIST_DECISIONS = {"watch", "calculate", "inspection", "bid"}
@@ -95,6 +96,7 @@ GRID_COLUMN_ALIASES = {
     "initial_price_value": "initialPrice",
     "is_new": "isNew",
     "last_seen_at": "lastSeenAt",
+    "lifecycle_status": "lifecycleStatus",
     "legal_cost": "legalCost",
     "location_address": "locationAddress",
     "location_city": "locationCity",
@@ -116,6 +118,7 @@ GRID_COLUMN_ALIASES = {
     "potential_profit": "potentialProfit",
     "primary_image_url": "primaryImageUrl",
     "publication_date": "publicationDate",
+    "actuality_checked_at": "actualityCheckedAt",
     "rating.level": "ratingLevel",
     "rating.score": "ratingScore",
     "rating_level": "ratingLevel",
@@ -239,6 +242,7 @@ async def list_persisted_lots_for_datagrid(
     for record in records:
         row = validate_datagrid_row_payload(record.datagrid_row)
         row.row_id = auction_lot_grid_row_id(record)
+        _apply_record_actuality_payload(row, record)
         _hydrate_row_from_normalized_item(row, record.normalized_item)
         _hydrate_row_from_detail_cache(row, detail_caches.get(record.id))
         row.model_category = row.model_category or row.analysis.category
@@ -309,6 +313,7 @@ async def pull_persisted_lots_for_grid(
     for record in records:
         row = validate_datagrid_row_payload(record.datagrid_row)
         row.row_id = auction_lot_grid_row_id(record)
+        _apply_record_actuality_payload(row, record)
         _hydrate_row_from_normalized_item(row, record.normalized_item)
         _hydrate_row_from_detail_cache(row, detail_caches.get(record.id))
         row.model_category = row.model_category or row.analysis.category
@@ -1292,7 +1297,14 @@ def build_datagrid_row(item: AuctionListItem, source_title: str) -> LotDatagridR
         exclusion_reason=None,
         freshness=freshness,
         rating=rating,
+        lifecycle_status="active",
+        actuality_checked_at=None,
     )
+
+
+def _apply_record_actuality_payload(row: LotDatagridRow, record: AuctionLotRecord) -> None:
+    row.lifecycle_status = record.lifecycle_status
+    row.actuality_checked_at = record.actuality_checked_at
 
 
 def _matches_filters(row: LotDatagridRow, filters: LotDatagridFilters) -> bool:

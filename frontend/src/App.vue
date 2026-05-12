@@ -61,6 +61,31 @@ type ApiSource = {
   enabled: boolean
 }
 
+type AuctionPipelineSourceSyncStatus = {
+  code: string
+  title: string
+  enabled: boolean
+  last_sync_started_at: string | null
+  last_sync_completed_at: string | null
+  next_sync_not_before: string | null
+  next_sync_not_after: string | null
+  last_sync_error: string | null
+}
+
+type AuctionPipelineHealthResponse = {
+  counters: {
+    enrichment_requested: number
+    enrichment_due_now: number
+    enrichment_claimed_active: number
+    enrichment_retry_waiting: number
+    enrichment_failed_with_error: number
+    enrichment_maxed_out: number
+    scoring_stale_or_incomplete: number
+    scored_current: number
+  }
+  sources: AuctionPipelineSourceSyncStatus[]
+}
+
 type ApiLotImage = {
   url: string
   thumbnail_url: string | null
@@ -160,6 +185,8 @@ type ApiLotRow = {
     reasons: string[]
   }
   work_decision_status: string | null
+  lifecycle_status: string | null
+  actuality_checked_at: string | null
 }
 
 type ApiDocument = {
@@ -331,6 +358,7 @@ type LotWorkspaceResponse = {
   work_item: LotWorkItem
   economy: LotEconomy
   changes: LotChangeSummary
+  current_enrichment_state: LotWorkspaceEnrichmentState | null
 }
 
 type LotWorkspaceEnrichmentState = {
@@ -486,6 +514,8 @@ type GridLotRow = {
   isNew: boolean
   firstSeenAt: Date | null
   lastSeenAt: Date | null
+  lifecycleStatus: string
+  actualityCheckedAt: Date | null
   ratingScore: number
   ratingLevel: string
   ratingReasons: string[]
@@ -662,6 +692,7 @@ const catalogSummary = ref<AuctionServerGridSummary>({
 })
 const presets = ref<FilterPreset[]>([])
 const analysisConfig = ref<AnalysisConfigResponse | null>(null)
+const auctionPipelineHealth = ref<AuctionPipelineHealthResponse | null>(null)
 const selectedPresetId = ref('')
 const presetDialogMode = ref<PresetDialogMode>('create')
 const presetNameDraft = ref('')
@@ -920,6 +951,7 @@ const loadingSkeletonColumns = [
   { key: 'applicationDeadline', label: 'Прием заявок до', width: 180, placeholderWidth: '68%' },
   { key: 'auctionDate', label: 'Дата торгов', width: 170, placeholderWidth: '66%' },
   { key: 'lastSeenAt', label: 'Последнее наблюдение', width: 190, placeholderWidth: '72%' },
+  { key: 'lifecycleStatus', label: 'Актуальность', width: 148, placeholderWidth: '66%' },
 ]
 const loadingSkeletonRows = computed(() => Array.from({ length: loadingSkeletonVisibleRows.value }, (_, index) => index))
 const loadingSkeletonTemplate = loadingSkeletonColumns.map((column) => `${column.width}px`).join(' ')
@@ -1349,10 +1381,27 @@ const typedColumns: DataGridAppColumnInput<GridLotRow>[] = [
     },
     capabilities: { sortable: true, filterable: true },
   },
+  {
+    key: 'lifecycleStatus',
+    label: 'Актуальность',
+    initialState: { width: 148 },
+    capabilities: { sortable: true, filterable: true },
+    cellRenderer: ({ row }) =>
+      row
+        ? h(
+            'span',
+            {
+              class: ['status-chip', `status-chip--${lifecycleStatusTone(row.lifecycleStatus)}`],
+              title: buildLifecycleStatusTooltip(row),
+            },
+            formatLifecycleStatus(row.lifecycleStatus),
+          )
+        : '',
+  },
 ]
 
 const columns = typedColumns as unknown as DataGridAppColumnInput[]
-const VALUE_FILTER_COLUMN_KEYS = new Set(['analysisLabel', 'analysisCategory', 'isNew'])
+const VALUE_FILTER_COLUMN_KEYS = new Set(['analysisLabel', 'analysisCategory', 'isNew', 'lifecycleStatus'])
 const PERCENT_FILTER_COLUMN_KEYS = new Set(['roiValue', 'marketDiscount'])
 const columnMenuOptions = {
   trigger: 'button+contextmenu',
@@ -1677,6 +1726,22 @@ const analysisReasonItems = computed(() =>
   (selectedLot.value?.analysisReasons ?? []).filter((reason) => !(detailImages.value.length && isNoPhotoReason(reason))),
 )
 const detailCachedAt = computed(() => formatDateTime(selectedWorkspace.value?.detail_cached_at ?? null))
+const selectedSourceSyncStatus = computed(() => {
+  const sourceCode = selectedLot.value?.source
+  if (!sourceCode) return null
+  return auctionPipelineHealth.value?.sources.find((source) => source.code === sourceCode) ?? null
+})
+const selectedCurrentEnrichmentState = computed(() => selectedWorkspace.value?.current_enrichment_state ?? null)
+const detailActualityFields = computed(() =>
+  makeFields([
+    ['Статус актуальности', formatLifecycleStatus(selectedLot.value?.lifecycleStatus)],
+    ['Проверка актуальности', formatDateTime(selectedLot.value?.actualityCheckedAt ?? null)],
+    ['Последний кэш детали', detailCachedAt.value],
+    ['Очередь enrichment', formatEnrichmentState(selectedCurrentEnrichmentState.value)],
+    ['Следующий скан источника', formatSourceSyncWindow(selectedSourceSyncStatus.value)],
+    ['Ошибка источника', selectedSourceSyncStatus.value?.last_sync_error],
+  ]),
+)
 const ratingReasonItems = computed(() => selectedLot.value?.ratingReasons ?? [])
 const ratingBreakdown = computed(() => selectedLot.value?.ratingBreakdown ?? null)
 const changeFields = computed(() =>
@@ -2814,6 +2879,7 @@ async function loadLots() {
   savedGridWorkSnapshots.clear()
   await nextTick()
   ensureCatalogServerViewport({ start: 0, end: SERVER_ROW_MODEL_INITIAL_FETCH_SIZE - 1 })
+  void loadAuctionPipelineHealth()
 }
 
 function matchesQuickFilters(row: GridLotRow) {
@@ -2893,6 +2959,8 @@ function mapApiRow(row: ApiLotRow, rowRevision = gridRowRevision.value): GridLot
     isNew: row.freshness.is_new,
     firstSeenAt: parseDateTime(row.freshness.first_seen_at),
     lastSeenAt: parseDateTime(row.freshness.last_seen_at),
+    lifecycleStatus: row.lifecycle_status ?? 'active',
+    actualityCheckedAt: parseDateTime(row.actuality_checked_at),
     ratingScore: row.rating.score,
     ratingLevel: row.rating.level,
     ratingReasons: row.rating.reasons,
@@ -3328,6 +3396,53 @@ function formatDateTime(value: Date | string | null) {
   return date ? date.toLocaleString('ru-RU') : value
 }
 
+function formatLifecycleStatus(value: string | null | undefined) {
+  const status = (value || '').trim().toLowerCase()
+  if (!status) return 'Неизвестно'
+  if (status === 'active') return 'Активен'
+  if (status === 'expired') return 'Истек'
+  if (status === 'stale') return 'Устарел'
+  if (status === 'archived') return 'Архив'
+  return value || 'Неизвестно'
+}
+
+function lifecycleStatusTone(value: string | null | undefined) {
+  const status = (value || '').trim().toLowerCase()
+  if (status === 'active') return 'active'
+  if (status === 'expired') return 'warning'
+  if (status === 'stale') return 'warning'
+  if (status === 'archived') return 'muted'
+  return 'muted'
+}
+
+function buildLifecycleStatusTooltip(row: GridLotRow) {
+  const details = [
+    `Последнее наблюдение: ${formatDateTime(row.lastSeenAt) || 'нет данных'}`,
+    `Проверка актуальности: ${formatDateTime(row.actualityCheckedAt) || 'нет данных'}`,
+  ]
+  return details.join('\n')
+}
+
+function formatEnrichmentState(state: LotWorkspaceEnrichmentState | null | undefined) {
+  if (!state) return 'Не запрошено'
+  if (state.claimed_at) {
+    return `В работе${state.claimed_by ? ` · ${state.claimed_by}` : ''}`
+  }
+  if (state.requested_at) {
+    return state.next_attempt_at ? `В очереди до ${formatDateTime(state.next_attempt_at)}` : 'В очереди'
+  }
+  return 'Не запрошено'
+}
+
+function formatSourceSyncWindow(source: AuctionPipelineSourceSyncStatus | null | undefined) {
+  if (!source) return 'Нет данных'
+  if (!source.next_sync_not_before && !source.next_sync_not_after) return 'Не запланировано'
+  const windowStart = formatDateTime(source.next_sync_not_before)
+  const windowEnd = formatDateTime(source.next_sync_not_after)
+  if (windowStart && windowEnd) return `${windowStart} - ${windowEnd}`
+  return windowStart || windowEnd || 'Не запланировано'
+}
+
 function formatCurrency(value: number | null) {
   if (value === null || Number.isNaN(value)) return 'Не указана'
   return new Intl.NumberFormat('ru-RU', {
@@ -3350,6 +3465,17 @@ function formatApiPercent(value: string | number | null | undefined) {
     style: 'percent',
     maximumFractionDigits: 1,
   }).format(parsed)
+}
+
+async function loadAuctionPipelineHealth() {
+  if (!isAuthenticated.value) return
+
+  try {
+    auctionPipelineHealth.value = await fetchJson<AuctionPipelineHealthResponse>('/api/v1/health/auction-pipeline')
+  } catch (error) {
+    console.warn('[auction-pipeline-health] failed to load', error)
+    auctionPipelineHealth.value = null
+  }
 }
 
 function formatDecisionLevel(value: DecisionLevel) {
@@ -4617,7 +4743,7 @@ onUnmounted(() => {
           :aria-pressed="filters.includeArchived"
           @click="filters.includeArchived = !filters.includeArchived"
         >
-          {{ filters.includeArchived ? 'Архив показан' : 'Архив скрыт' }}
+          {{ filters.includeArchived ? 'Неактуальные показаны' : 'Неактуальные скрыты' }}
         </button>
         <span v-if="currentUser" class="user-chip">{{ currentUser.full_name }}</span>
         <button class="secondary-button" type="button" @click="authStore.logout">Выйти</button>
@@ -4761,6 +4887,21 @@ onUnmounted(() => {
           </span>
           <mark v-if="selectedLot.isNew">Новый</mark>
         </div>
+
+        <section class="detail-section detail-section--actuality">
+          <div class="detail-section__header">
+            <span class="eyebrow">Актуальность</span>
+            <span :class="['status-chip', `status-chip--${lifecycleStatusTone(selectedLot.lifecycleStatus)}`]">
+              {{ formatLifecycleStatus(selectedLot.lifecycleStatus) }}
+            </span>
+          </div>
+          <dl class="detail-list detail-list--dense detail-list--compact">
+            <template v-for="field in detailActualityFields" :key="field.label">
+              <dt>{{ field.label }}</dt>
+              <dd>{{ field.value }}</dd>
+            </template>
+          </dl>
+        </section>
 
         <section class="detail-section detail-section--media">
           <span class="eyebrow">Медиа</span>
