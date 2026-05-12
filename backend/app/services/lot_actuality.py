@@ -5,9 +5,12 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from sqlalchemy import case, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.auction import AuctionLotDetailCache, AuctionLotRecord
+from app.services.auction_grid_state import bump_auction_lot_dataset_version
 
 
 TERMINAL_LOT_STATUS_MARKERS: tuple[str, ...] = (
@@ -68,6 +71,18 @@ class LotActualityClassification(BaseModel):
     finished_at: datetime | None = None
     archive_reason: str | None = None
     dates: LotActualityDates = Field(default_factory=LotActualityDates)
+
+
+class LotActualitySweepResult(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    candidate_count: int
+    processed_count: int
+    updated_count: int
+    active_to_non_active_count: int
+    non_active_to_active_count: int
+    skipped_count: int
+    candidate_record_ids: list[int] = Field(default_factory=list)
 
 
 def parse_lot_datetime(value: str | None) -> datetime | None:
@@ -203,6 +218,170 @@ def classify_lot_actuality(
     )
 
 
+def _apply_actuality_to_record(
+    record: AuctionLotRecord,
+    actuality: LotActualityClassification,
+    *,
+    checked_at: datetime,
+) -> bool:
+    record.publication_at = actuality.dates.publication_at
+    record.application_start_at = actuality.dates.application_start_at
+    record.application_deadline_at = actuality.dates.application_deadline_at
+    record.auction_at = actuality.dates.auction_at
+    record.lifecycle_status = actuality.lifecycle_status
+    record.finished_at = actuality.finished_at
+    record.actuality_checked_at = checked_at
+    if actuality.lifecycle_status == "active":
+        record.archived_at = None
+        record.archive_reason = None
+    else:
+        record.archived_at = checked_at
+        record.archive_reason = actuality.archive_reason
+        _clear_lot_enrichment_state(record)
+    return True
+
+
+async def run_lot_actuality_sweep(
+    session: AsyncSession,
+    *,
+    limit: int,
+    current_time: datetime | None = None,
+    grace: timedelta = DEFAULT_ACTUALITY_GRACE,
+    stale_after: timedelta = DEFAULT_STALE_AFTER,
+) -> LotActualitySweepResult:
+    current_time = _ensure_utc(current_time or datetime.now(UTC))
+    resolved_limit = max(0, int(limit))
+    if resolved_limit <= 0:
+        return LotActualitySweepResult(
+            candidate_count=0,
+            processed_count=0,
+            updated_count=0,
+            active_to_non_active_count=0,
+            non_active_to_active_count=0,
+            skipped_count=0,
+        )
+
+    records = await _list_actuality_sweep_candidates(
+        session,
+        current_time=current_time,
+        limit=resolved_limit,
+        grace=grace,
+        stale_after=stale_after,
+    )
+    if not records:
+        return LotActualitySweepResult(
+            candidate_count=0,
+            processed_count=0,
+            updated_count=0,
+            active_to_non_active_count=0,
+            non_active_to_active_count=0,
+            skipped_count=0,
+        )
+
+    detail_caches = {
+        cache.lot_record_id: cache
+        for cache in (
+            await session.scalars(
+                select(AuctionLotDetailCache).where(AuctionLotDetailCache.lot_record_id.in_([record.id for record in records if record.id is not None]))
+            )
+        ).all()
+    }
+
+    candidate_record_ids: list[int] = []
+    updated_count = 0
+    active_to_non_active_count = 0
+    non_active_to_active_count = 0
+    skipped_count = 0
+
+    for record in records:
+        if record.id is None:
+            skipped_count += 1
+            continue
+        candidate_record_ids.append(record.id)
+        previous_status = _normalized_status(record.lifecycle_status)
+        actuality = classify_lot_actuality(
+            record,
+            detail_caches.get(record.id),
+            current_time=current_time,
+            grace=grace,
+            stale_after=stale_after,
+        )
+        if _apply_actuality_to_record(record, actuality, checked_at=current_time):
+            updated_count += 1
+        if previous_status == "active" and actuality.lifecycle_status != "active":
+            active_to_non_active_count += 1
+            await bump_auction_lot_dataset_version(
+                session,
+                record,
+                event_type="row_deleted",
+                payload={
+                    "source": "actuality_sweep",
+                    "changed_fields": ["lifecycle_status", "finished_at", "archived_at", "archive_reason"],
+                    "lifecycle_status": actuality.lifecycle_status,
+                },
+            )
+            continue
+        if previous_status != "active" and actuality.lifecycle_status == "active":
+            non_active_to_active_count += 1
+            await bump_auction_lot_dataset_version(
+                session,
+                record,
+                event_type="row_updated",
+                payload={
+                    "source": "actuality_sweep",
+                    "changed_fields": ["lifecycle_status", "finished_at", "archived_at", "archive_reason"],
+                    "lifecycle_status": actuality.lifecycle_status,
+                },
+            )
+
+    return LotActualitySweepResult(
+        candidate_count=len(records),
+        processed_count=len(records),
+        updated_count=updated_count,
+        active_to_non_active_count=active_to_non_active_count,
+        non_active_to_active_count=non_active_to_active_count,
+        skipped_count=skipped_count,
+        candidate_record_ids=candidate_record_ids,
+    )
+
+
+async def _list_actuality_sweep_candidates(
+    session: AsyncSession,
+    *,
+    current_time: datetime,
+    limit: int,
+    grace: timedelta,
+    stale_after: timedelta,
+) -> list[AuctionLotRecord]:
+    grace_cutoff = current_time - grace
+    stale_cutoff = current_time - stale_after
+    statement = (
+        select(AuctionLotRecord)
+        .where(
+            or_(
+                AuctionLotRecord.lifecycle_status != "archived",
+                AuctionLotRecord.last_seen_at >= stale_cutoff,
+            )
+        )
+        .where(
+            or_(
+                AuctionLotRecord.actuality_checked_at.is_(None),
+                AuctionLotRecord.application_deadline_at <= grace_cutoff,
+                AuctionLotRecord.auction_at <= grace_cutoff,
+                AuctionLotRecord.last_seen_at <= stale_cutoff,
+            )
+        )
+        .order_by(
+            case((AuctionLotRecord.actuality_checked_at.is_(None), 0), else_=1),
+            AuctionLotRecord.last_seen_at.asc(),
+            AuctionLotRecord.actuality_checked_at.asc().nulls_first(),
+            AuctionLotRecord.id.asc(),
+        )
+        .limit(limit)
+    )
+    return (await session.scalars(statement)).all()
+
+
 def _extract_datetime(
     raw_fields: list[dict[str, Any]],
     *payloads: Mapping[str, Any],
@@ -315,6 +494,17 @@ def _detail_auction_payload(detail_cache: AuctionLotDetailCache | None) -> dict[
         return {}
     payload = _as_mapping(detail_cache.auction_detail)
     return _as_mapping(payload.get("auction"))
+
+
+def _clear_lot_enrichment_state(record: AuctionLotRecord) -> None:
+    record.enrichment_requested_at = None
+    record.last_enrichment_attempt_at = None
+    record.enrichment_attempt_count = 0
+    record.next_enrichment_attempt_at = None
+    record.last_enrichment_error = None
+    record.enrichment_claimed_at = None
+    record.enrichment_claimed_by = None
+    record.enrichment_claim_expires_at = None
 
 
 def _resolve_finished_at(dates: LotActualityDates, *, current_time: datetime) -> datetime | None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -10,6 +11,7 @@ from app.services.lot_actuality import (
     classify_lot_actuality,
     extract_lot_actuality_dates,
     parse_lot_datetime,
+    run_lot_actuality_sweep,
 )
 
 
@@ -109,6 +111,24 @@ def make_detail_cache() -> AuctionLotDetailCache:
     )
 
 
+class FakeScalarResult:
+    def __init__(self, items: list[object]) -> None:
+        self._items = items
+
+    def all(self) -> list[object]:
+        return list(self._items)
+
+
+class FakeSweepSession:
+    def __init__(self, *, scalar_batches: list[list[object]] | None = None) -> None:
+        self.scalar_batches = list(scalar_batches or [])
+        self.scalars_calls: list[object] = []
+
+    async def scalars(self, statement):  # noqa: ANN001
+        self.scalars_calls.append(statement)
+        return FakeScalarResult(self.scalar_batches.pop(0) if self.scalar_batches else [])
+
+
 class LotActualityTests(unittest.TestCase):
     def test_parse_lot_datetime_supports_common_scraped_formats(self) -> None:
         self.assertEqual(parse_lot_datetime("05.05.2026 18:00"), datetime(2026, 5, 5, 18, 0, tzinfo=UTC))
@@ -186,6 +206,60 @@ class LotActualityTests(unittest.TestCase):
         self.assertEqual(classification.lifecycle_status, "stale")
         self.assertEqual(classification.finished_at, datetime(2026, 5, 7, 12, tzinfo=UTC) - timedelta(days=1))
         self.assertEqual(classification.archive_reason, "last_seen_too_old")
+
+    def test_run_lot_actuality_sweep_marks_expired_records_and_bumps_row_deleted(self) -> None:
+        current_time = datetime(2026, 5, 7, 12, tzinfo=UTC)
+        record = make_record(application_deadline="05.05.2026 18:00", auction_date="07.05.2026 10:00")
+        record.enrichment_requested_at = datetime(2026, 5, 6, tzinfo=UTC)
+        record.actuality_checked_at = None
+        session = FakeSweepSession(scalar_batches=[[record], []])
+
+        from unittest.mock import AsyncMock, patch
+
+        with patch("app.services.lot_actuality.bump_auction_lot_dataset_version", AsyncMock()) as bump_dataset_version:
+            result = asyncio.run(
+                run_lot_actuality_sweep(
+                    session,
+                    limit=10,
+                    current_time=current_time,
+                )
+            )
+
+        bump_dataset_version.assert_awaited_once()
+        self.assertEqual(result.candidate_count, 1)
+        self.assertEqual(result.processed_count, 1)
+        self.assertEqual(result.active_to_non_active_count, 1)
+        self.assertEqual(result.non_active_to_active_count, 0)
+        self.assertEqual(result.updated_count, 1)
+        self.assertEqual(record.lifecycle_status, "expired")
+        self.assertEqual(record.archived_at, current_time)
+        self.assertEqual(record.archive_reason, "application_deadline_passed")
+        self.assertIsNone(record.enrichment_requested_at)
+
+    def test_run_lot_actuality_sweep_keeps_fresh_records_active_without_bumping_row_deleted(self) -> None:
+        current_time = datetime(2026, 5, 7, 12, tzinfo=UTC)
+        record = make_record(application_deadline="08.05.2026 18:00", auction_date="10.05.2026 10:00")
+        record.actuality_checked_at = None
+        session = FakeSweepSession(scalar_batches=[[record], []])
+
+        from unittest.mock import AsyncMock, patch
+
+        with patch("app.services.lot_actuality.bump_auction_lot_dataset_version", AsyncMock()) as bump_dataset_version:
+            result = asyncio.run(
+                run_lot_actuality_sweep(
+                    session,
+                    limit=10,
+                    current_time=current_time,
+                )
+            )
+
+        bump_dataset_version.assert_not_awaited()
+        self.assertEqual(result.candidate_count, 1)
+        self.assertEqual(result.processed_count, 1)
+        self.assertEqual(result.active_to_non_active_count, 0)
+        self.assertEqual(record.lifecycle_status, "active")
+        self.assertIsNone(record.archived_at)
+        self.assertIsNone(record.archive_reason)
 
 
 if __name__ == "__main__":

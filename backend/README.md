@@ -38,7 +38,12 @@ For one-click startup in VS Code, run task `backend: start all` (Terminal → Ru
 	uv run python -m app.worker.auction_enrichment_worker
 	```
 
-6. Telegram sender worker:
+6. Auction actuality worker:
+	```bash
+	uv run python -m app.worker.auction_actuality_worker
+	```
+
+7. Telegram sender worker:
 	```bash
 	uv run python -m app.worker.telegram_sender_worker
 	```

@@ -72,6 +72,9 @@ class Settings(BaseSettings):
     auction_enrichment_batch_size: int = 50
     auction_enrichment_item_pause_seconds: float = 0.0
     auction_enrichment_empty_pause_seconds: int = 60 * 30
+    auction_actuality_sweep_enabled: bool = True
+    auction_actuality_sweep_interval_seconds: int = 60 * 15
+    auction_actuality_sweep_batch_size: int = 500
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
     telegram_sender_dry_run: bool = True
