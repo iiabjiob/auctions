@@ -299,6 +299,7 @@ async def run_lot_actuality_sweep(
             continue
         candidate_record_ids.append(record.id)
         previous_status = _normalized_status(record.lifecycle_status)
+        previous_checked_at = record.actuality_checked_at
         actuality = classify_lot_actuality(
             record,
             detail_caches.get(record.id),
@@ -308,6 +309,10 @@ async def run_lot_actuality_sweep(
         )
         if _apply_actuality_to_record(record, actuality, checked_at=current_time):
             updated_count += 1
+        actuality_changed_fields = ["actuality_checked_at"]
+        status_changed_fields = ["lifecycle_status", "finished_at", "archived_at", "archive_reason", "actuality_checked_at"]
+        if previous_status == actuality.lifecycle_status and previous_checked_at == record.actuality_checked_at:
+            continue
         if previous_status == "active" and actuality.lifecycle_status != "active":
             active_to_non_active_count += 1
             await bump_auction_lot_dataset_version(
@@ -316,7 +321,7 @@ async def run_lot_actuality_sweep(
                 event_type="row_deleted",
                 payload={
                     "source": "actuality_sweep",
-                    "changed_fields": ["lifecycle_status", "finished_at", "archived_at", "archive_reason"],
+                    "changed_fields": status_changed_fields,
                     "lifecycle_status": actuality.lifecycle_status,
                 },
             )
@@ -329,10 +334,21 @@ async def run_lot_actuality_sweep(
                 event_type="row_updated",
                 payload={
                     "source": "actuality_sweep",
-                    "changed_fields": ["lifecycle_status", "finished_at", "archived_at", "archive_reason"],
+                    "changed_fields": status_changed_fields,
                     "lifecycle_status": actuality.lifecycle_status,
                 },
             )
+            continue
+        await bump_auction_lot_dataset_version(
+            session,
+            record,
+            event_type="row_updated",
+            payload={
+                "source": "actuality_sweep",
+                "changed_fields": actuality_changed_fields,
+                "lifecycle_status": actuality.lifecycle_status,
+            },
+        )
 
     return LotActualitySweepResult(
         candidate_count=len(records),

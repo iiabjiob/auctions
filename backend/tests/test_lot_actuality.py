@@ -87,6 +87,7 @@ def make_record(
             },
         },
     )
+    record.lifecycle_status = "active"
     if last_seen_at is not None:
         record.last_seen_at = last_seen_at
     return record
@@ -236,7 +237,7 @@ class LotActualityTests(unittest.TestCase):
         self.assertEqual(record.archive_reason, "application_deadline_passed")
         self.assertIsNone(record.enrichment_requested_at)
 
-    def test_run_lot_actuality_sweep_keeps_fresh_records_active_without_bumping_row_deleted(self) -> None:
+    def test_run_lot_actuality_sweep_keeps_fresh_records_active_and_bumps_row_updated(self) -> None:
         current_time = datetime(2026, 5, 7, 12, tzinfo=UTC)
         record = make_record(application_deadline="08.05.2026 18:00", auction_date="10.05.2026 10:00")
         record.actuality_checked_at = None
@@ -253,7 +254,9 @@ class LotActualityTests(unittest.TestCase):
                 )
             )
 
-        bump_dataset_version.assert_not_awaited()
+        bump_dataset_version.assert_awaited_once()
+        self.assertEqual(bump_dataset_version.await_args.kwargs["event_type"], "row_updated")
+        self.assertEqual(bump_dataset_version.await_args.kwargs["payload"]["changed_fields"], ["actuality_checked_at"])
         self.assertEqual(result.candidate_count, 1)
         self.assertEqual(result.processed_count, 1)
         self.assertEqual(result.active_to_non_active_count, 0)
