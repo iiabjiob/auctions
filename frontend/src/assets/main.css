@@ -1974,6 +1974,11 @@ input[type='range'] {
     width: 100%;
   }
 
+  .workspace-area {
+    grid-row: 2;
+    min-height: 0;
+  }
+
   .auction-toolbar {
     align-items: center;
     flex-wrap: wrap;
