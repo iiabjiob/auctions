@@ -8,6 +8,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    event,
     ForeignKey,
     Index,
     Integer,
@@ -127,6 +128,8 @@ class AuctionLotRecord(Base):
     is_new: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
     rating_score: Mapped[int] = mapped_column(Integer, nullable=False, default=0, index=True)
     rating_level: Mapped[str] = mapped_column(String(32), nullable=False, default="low")
+    roi_sort_value: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), index=True)
+    market_discount_sort_value: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), index=True)
     scoring_version: Mapped[str] = mapped_column(String(64), nullable=False, default="unscored", index=True)
     scored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     score_input_hash: Mapped[str | None] = mapped_column(String(64), index=True)
@@ -168,6 +171,73 @@ class AuctionLotRecord(Base):
     ai_analyses: Mapped[list["AuctionLotAiAnalysis"]] = relationship(back_populates="lot")
     decision_reports: Mapped[list["AuctionLotDecisionReport"]] = relationship(back_populates="lot")
     telegram_notifications: Mapped[list["TelegramNotificationOutbox"]] = relationship(back_populates="lot")
+
+
+@event.listens_for(AuctionLotRecord, "before_insert")
+@event.listens_for(AuctionLotRecord, "before_update")
+def _sync_auction_lot_record_sort_values(_mapper, _connection, target: AuctionLotRecord) -> None:
+    row = target.datagrid_row if isinstance(target.datagrid_row, dict) else {}
+    target.roi_sort_value = _calculate_roi_sort_value(row)
+    target.market_discount_sort_value = _calculate_market_discount_sort_value(row)
+
+
+def _calculate_roi_sort_value(row: dict) -> Decimal | None:
+    price = _first_decimal(row.get("current_price_value"), row.get("initial_price_value"))
+    if price is None:
+        return None
+    expenses = _expenses_sum(row)
+    full_entry_cost = price + expenses
+    if full_entry_cost == 0:
+        return None
+    market_value = _decimal_or_none(row.get("market_value"))
+    if market_value is None:
+        return None
+    return (market_value - full_entry_cost) / full_entry_cost
+
+
+def _calculate_market_discount_sort_value(row: dict) -> Decimal | None:
+    price = _first_decimal(row.get("current_price_value"), row.get("initial_price_value"))
+    market_value = _decimal_or_none(row.get("market_value"))
+    if price is None or market_value is None or market_value == 0:
+        return None
+    return Decimal("1") - (price / market_value)
+
+
+def _expenses_sum(row: dict) -> Decimal:
+    return sum(
+        (
+            _decimal_or_none(row.get(field)) or Decimal("0")
+            for field in (
+                "platform_fee",
+                "delivery_cost",
+                "dismantling_cost",
+                "repair_cost",
+                "storage_cost",
+                "legal_cost",
+                "other_costs",
+            )
+        ),
+        Decimal("0"),
+    )
+
+
+def _first_decimal(*values: object) -> Decimal | None:
+    for value in values:
+        parsed = _decimal_or_none(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _decimal_or_none(value: object) -> Decimal | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, Decimal):
+        return value
+    try:
+        return Decimal(str(value).strip().replace(" ", "").replace(",", "."))
+    except Exception:
+        return None
 
 
 class AuctionLotObservation(Base):

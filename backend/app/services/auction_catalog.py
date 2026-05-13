@@ -625,7 +625,7 @@ def _grid_column_expression(key: str | None):
         "lotName": (AuctionLotRecord.lot_name, "text"),
         "lotNumber": (AuctionLotRecord.lot_number, "text"),
         "lotUrl": (_json_text_value("lot_url"), "text"),
-        "marketDiscount": (_market_discount_expression(), "percent"),
+        "marketDiscount": (AuctionLotRecord.market_discount_sort_value, "percent"),
         "marketValue": (_json_decimal_value("market_value"), "number"),
         "minimumPrice": (_json_decimal_value("minimum_price_value"), "number"),
         "modelCategory": (_json_text_value("model_category"), "text"),
@@ -639,7 +639,7 @@ def _grid_column_expression(key: str | None):
         "ratingLevel": (_json_nested_text_value("rating", "level"), "text"),
         "ratingScore": (AuctionLotRecord.rating_score, "number"),
         "repairCost": (_json_decimal_value("repair_cost"), "number"),
-        "roiValue": (_roi_expression(), "percent"),
+        "roiValue": (AuctionLotRecord.roi_sort_value, "percent"),
         "source": (AuctionLotRecord.source_code, "text"),
         "sourcePosition": (_json_integer_value("source_position"), "number"),
         "sourceTitle": (func.coalesce(_json_text_value("source_title"), AuctionLotRecord.source_code), "text"),
@@ -1057,39 +1057,6 @@ def _json_decimal_value(key: str, *, precision: int = 14, scale: int = 2):
     cleaned = func.regexp_replace(_json_text_value(key), "[^0-9,.-]+", "", "g")
     normalized = func.replace(cleaned, ",", ".")
     return cast(func.nullif(normalized, ""), Numeric(precision, scale))
-
-
-def _total_expenses_expression():
-    return (
-        func.coalesce(_json_decimal_value("platform_fee"), 0)
-        + func.coalesce(_json_decimal_value("delivery_cost"), 0)
-        + func.coalesce(_json_decimal_value("dismantling_cost"), 0)
-        + func.coalesce(_json_decimal_value("repair_cost"), 0)
-        + func.coalesce(_json_decimal_value("storage_cost"), 0)
-        + func.coalesce(_json_decimal_value("legal_cost"), 0)
-        + func.coalesce(_json_decimal_value("other_costs"), 0)
-    )
-
-
-def _full_entry_cost_expression():
-    price = func.coalesce(_json_decimal_value("current_price_value"), _json_decimal_value("initial_price_value"))
-    return price + _total_expenses_expression()
-
-
-def _potential_profit_expression():
-    full_entry_cost = _full_entry_cost_expression()
-    return _json_decimal_value("market_value") - full_entry_cost
-
-
-def _roi_expression():
-    full_entry_cost = _full_entry_cost_expression()
-    return _potential_profit_expression() / func.nullif(full_entry_cost, 0)
-
-
-def _market_discount_expression():
-    price = func.coalesce(_json_decimal_value("current_price_value"), _json_decimal_value("initial_price_value"))
-    market_value = _json_decimal_value("market_value")
-    return Decimal("1") - (price / func.nullif(market_value, 0))
 
 
 def _json_integer_value(key: str):
