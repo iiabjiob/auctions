@@ -20,7 +20,7 @@
     "@affino/datagrid-server-adapters": "^0.1.2",
     "@affino/datagrid-server-client": "^0.1.1",
     "@affino/datagrid-vue": "^0.3.41",
-    "@affino/datagrid-vue-app": "^0.1.58",
+    "@affino/datagrid-vue-app": "^0.1.59",
     "@affino/dialog-vue": "^1.1.0",
     "@affino/menu-vue": "^2.1.1",
     "@affino/overlay-host": "^1.1.0",
