@@ -705,6 +705,7 @@ const auctionPipelineHealth = ref<AuctionPipelineHealthResponse | null>(null)
 const selectedPresetId = ref('')
 const presetDialogMode = ref<PresetDialogMode>('create')
 const presetNameDraft = ref('')
+const mobileRailOpen = ref(false)
 const loading = ref(false)
 const presetsLoading = ref(false)
 const analysisConfigLoading = ref(false)
@@ -1460,6 +1461,7 @@ const editableGridCellStyle: DataGridCellStyleResolver = (_row, _rowIndex, colum
     backgroundColor: 'rgba(255, 244, 199, 0.28)',
   }
 }
+const isMobileViewport = ref(false)
 const columnLayoutOptions = {
   buttonLabel: 'Колонки',
   labels: {
@@ -1840,6 +1842,13 @@ watch(detailImages, (images) => {
 watch(() => selectedLot.value?.id, () => {
   activeDetailImageIndex.value = 0
 })
+
+watch(
+  () => route.fullPath,
+  () => {
+    closeMobileRail()
+  },
+)
 
 function makeFields(entries: Array<[string, unknown]>): DetailField[] {
   return entries
@@ -3810,6 +3819,14 @@ function openAnalysisConfigDialog(event?: Event) {
   void loadAnalysisConfig()
 }
 
+function toggleMobileRail() {
+  mobileRailOpen.value = !mobileRailOpen.value
+}
+
+function closeMobileRail() {
+  mobileRailOpen.value = false
+}
+
 async function submitAnalysisConfigDialog() {
   analysisConfigSaving.value = true
   analysisConfigError.value = ''
@@ -4041,6 +4058,10 @@ function parseOptionalInteger(value: string | undefined) {
   return Number.isFinite(parsed) ? parsed : null
 }
 
+function updateMobileViewportState() {
+  isMobileViewport.value = window.matchMedia('(max-width: 760px)').matches
+}
+
 function remapGridSelectionSnapshot(anchor: GridFocusAnchor) {
   const snapshot = anchor.selectionSnapshot
   const nextRowId = resolveCurrentRuntimeGridRowId(anchor.logicalRowId)
@@ -4129,6 +4150,73 @@ async function restoreDetailGridFocus() {
   const anchor = detailGridFocusAnchor
   detailGridFocusAnchor = null
   await restoreGridFocus(anchor)
+}
+
+type MobileInlineEditTarget = {
+  rowId: string | number
+  rowIndex: number
+  columnIndex: number
+  columnKey: string
+}
+
+const mobileInlineEditTarget = computed<MobileInlineEditTarget | null>(() => {
+  if (!isMobileViewport.value) return null
+  const api = gridRef.value?.getApi()
+  const runtime = gridRef.value?.getRuntime()
+  if (!api?.selection.hasSupport() || !runtime) return null
+
+  const selectionSnapshot = api.selection.getSnapshot()
+  const activeCell = getActiveGridCellFromSnapshot(selectionSnapshot)
+  if (!activeCell) return null
+
+  const visibleColumn = runtime.columnSnapshot.value.visibleColumns[activeCell.colIndex]
+  if (!visibleColumn) return null
+
+  const bodyRow = runtime.getBodyRowAtIndex(activeCell.rowIndex)
+  if (!bodyRow || !isGridCellEditable({ column: { key: visibleColumn.key } })) return null
+
+  return {
+    rowId: bodyRow.rowId,
+    rowIndex: activeCell.rowIndex,
+    columnIndex: activeCell.colIndex,
+    columnKey: visibleColumn.key,
+  }
+})
+
+function openMobileInlineEdit() {
+  const target = mobileInlineEditTarget.value
+  if (!target) return
+
+  const gridRoot = getGridRootElement()
+  if (!gridRoot) return
+
+  const rowSelector = `[data-row-id="${escapeGridSelectorValue(String(target.rowId))}"]`
+  const selectors = [
+    `.grid-cell${rowSelector}[data-column-key="${escapeGridSelectorValue(target.columnKey)}"]`,
+    `.grid-cell${rowSelector}[data-column-index="${target.columnIndex}"]`,
+    `.grid-cell${rowSelector}`,
+    '.grid-cell[tabindex="0"]',
+  ]
+
+  let cellElement: HTMLElement | null = null
+  for (const selector of selectors) {
+    const found = gridRoot.querySelector<HTMLElement>(selector)
+    if (found) {
+      cellElement = found
+      break
+    }
+  }
+
+  if (!cellElement) return
+
+  cellElement.dispatchEvent(
+    new MouseEvent('dblclick', {
+      bubbles: true,
+      cancelable: true,
+      view: window,
+      detail: 2,
+    }),
+  )
 }
 
 function buildLotWorkspacePath(row: GridLotRow, suffix = '', options: { includeDetail?: boolean } = {}) {
@@ -4684,7 +4772,9 @@ onMounted(() => {
     startAuctionGridChangePolling(0)
     void nextTick(() => startGridSurfaceResizeObserver())
   }
+  updateMobileViewportState()
   window.addEventListener('resize', updateLoadingSkeletonRows)
+  window.addEventListener('resize', updateMobileViewportState)
   document.addEventListener('keydown', handleGlobalKeydown, true)
   document.addEventListener('visibilitychange', handleAuctionGridVisibilityChange)
 })
@@ -4701,6 +4791,7 @@ onUnmounted(() => {
   stopGridSurfaceResizeObserver()
   stopDetailResize()
   window.removeEventListener('resize', updateLoadingSkeletonRows)
+  window.removeEventListener('resize', updateMobileViewportState)
   document.removeEventListener('keydown', handleGlobalKeydown, true)
   document.removeEventListener('visibilitychange', handleAuctionGridVisibilityChange)
   stopAuctionEvents()
@@ -4720,7 +4811,19 @@ onUnmounted(() => {
 <template>
   <AuthLoginScreen v-if="isRestoring || !isAuthenticated" />
   <main v-else class="app-shell">
-    <aside class="app-sidebar app-rail app-rail--green" aria-label="Навигация и срезы">
+    <button
+      class="app-rail-backdrop"
+      :class="{ 'app-rail-backdrop--visible': mobileRailOpen }"
+      type="button"
+      aria-label="Закрыть меню"
+      @click="closeMobileRail"
+    ></button>
+
+    <aside
+      class="app-sidebar app-rail app-rail--green"
+      :class="{ 'app-rail--mobile-open': mobileRailOpen }"
+      aria-label="Навигация и срезы"
+    >
       <RouterLink class="app-rail__brand" to="/auctions" aria-label="torgi-radar">
         torgi-radar
       </RouterLink>
@@ -4817,9 +4920,28 @@ onUnmounted(() => {
       <template v-if="isAuctionsModule">
         <section class="auction-toolbar" aria-label="Фильтры каталога лотов">
           <div class="toolbar-title">
+            <button
+              class="app-mobile-menu-button"
+              type="button"
+              aria-label="Открыть меню"
+              :aria-expanded="mobileRailOpen"
+              @click="toggleMobileRail"
+            >
+              <span></span>
+              <span></span>
+              <span></span>
+            </button>
             <span class="eyebrow">Каталог банкротных торгов</span>
             <h1>Лоты для отбора</h1>
           </div>
+          <button
+            v-if="mobileInlineEditTarget"
+            class="auction-toolbar__edit-button"
+            type="button"
+            @click="openMobileInlineEdit"
+          >
+            Редактировать ячейку
+          </button>
         </section>
 
         <section class="summary-strip" aria-label="Сводка каталога">
