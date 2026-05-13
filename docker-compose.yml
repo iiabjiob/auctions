@@ -130,6 +130,26 @@ services:
     networks:
       - net
 
+  zakupki-fetcher:
+    build:
+      context: .
+      dockerfile: .devcontainer/Dockerfile
+      tags:
+        - auctions-dev:latest
+    container_name: auctions-zakupki-fetcher-dev
+    working_dir: /workspace/backend
+    command: uv run uvicorn app.zakupki_fetcher:app --host 0.0.0.0 --port 8080 --proxy-headers --forwarded-allow-ips=*
+    volumes:
+      - .:/workspace
+    env_file:
+      - ./backend/.env.dev
+    environment:
+      ZAKUPKI_FETCH_TOKEN: ${ZAKUPKI_FETCH_TOKEN:-dev-zakupki-fetch-token}
+    ports:
+      - "18080:8080"
+    networks:
+      - net
+
 volumes:
   db_data_dev:
   redis_data_dev:

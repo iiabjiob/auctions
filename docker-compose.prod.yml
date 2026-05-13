@@ -173,6 +173,41 @@ services:
     networks:
       - net
 
+  zakupki-fetcher:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.prod
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env.prod
+    command:
+      [
+        "uvicorn",
+        "app.zakupki_fetcher:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8080",
+        "--proxy-headers",
+        "--forwarded-allow-ips=*",
+      ]
+    ports:
+      - "18080:8080"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - net
+
   nginx:
     build:
       context: .
