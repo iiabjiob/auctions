@@ -4129,6 +4129,7 @@ async function submitPresetDialog() {
       })
       presets.value = sortPresets(presets.value.map((item) => (item.id === preset.id ? preset : item)))
       selectedPresetId.value = preset.id
+      await syncInterestProfilesForPreset(preset.id)
       await presetDialog.close('programmatic')
     } catch (error) {
       errorMessage.value = error instanceof Error ? error.message : 'Не удалось обновить подборку'
@@ -4147,6 +4148,29 @@ async function submitPresetDialog() {
     await presetDialog.close('programmatic')
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : 'Не удалось сохранить подборку'
+  }
+}
+
+async function syncInterestProfilesForPreset(presetId: string) {
+  const linkedProfiles = userInterestProfiles.value.filter((profile) => profile.source_filter_preset_id === presetId)
+  if (!linkedProfiles.length) return
+
+  interestProfilesSaving.value = true
+  interestProfilesError.value = ''
+  try {
+    const updatedProfiles = await Promise.all(
+      linkedProfiles.map((profile) => refreshUserInterestProfileFromPreset(profile.id)),
+    )
+    const updatedById = new Map(updatedProfiles.map((profile) => [profile.id, profile]))
+    userInterestProfiles.value = sortUserInterestProfiles(
+      userInterestProfiles.value.map((profile) => updatedById.get(profile.id) ?? profile),
+    )
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Не удалось синхронизировать Telegram-профили со срезом'
+    interestProfilesError.value = message
+    errorMessage.value = message
+  } finally {
+    interestProfilesSaving.value = false
   }
 }
 
