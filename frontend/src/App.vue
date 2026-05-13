@@ -4188,6 +4188,11 @@ function updateMobileViewportState() {
   isMobileViewport.value = window.matchMedia('(max-width: 760px)').matches
 }
 
+function updateAppViewportHeight() {
+  const viewportHeight = window.visualViewport?.height ?? window.innerHeight
+  document.documentElement.style.setProperty('--app-viewport-height', `${Math.round(viewportHeight)}px`)
+}
+
 async function restoreDetailGridFocus() {
   const anchor = detailGridFocusAnchor
   detailGridFocusAnchor = null
@@ -4844,8 +4849,11 @@ onMounted(() => {
     startAuctionGridChangePolling(0)
     void nextTick(() => startGridSurfaceResizeObserver())
   }
+  updateAppViewportHeight()
   updateMobileViewportState()
   window.addEventListener('resize', updateLoadingSkeletonRows)
+  window.addEventListener('resize', updateAppViewportHeight)
+  window.visualViewport?.addEventListener('resize', updateAppViewportHeight)
   window.addEventListener('resize', updateMobileViewportState)
   document.addEventListener('keydown', handleGlobalKeydown, true)
   document.addEventListener('visibilitychange', handleAuctionGridVisibilityChange)
@@ -4863,6 +4871,8 @@ onUnmounted(() => {
   stopGridSurfaceResizeObserver()
   stopDetailResize()
   window.removeEventListener('resize', updateLoadingSkeletonRows)
+  window.removeEventListener('resize', updateAppViewportHeight)
+  window.visualViewport?.removeEventListener('resize', updateAppViewportHeight)
   window.removeEventListener('resize', updateMobileViewportState)
   document.removeEventListener('keydown', handleGlobalKeydown, true)
   document.removeEventListener('visibilitychange', handleAuctionGridVisibilityChange)
