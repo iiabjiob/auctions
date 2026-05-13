@@ -81,6 +81,7 @@ class Settings(BaseSettings):
     telegram_webhook_url: str | None = None
     telegram_webhook_auto_register: bool = True
     telegram_chat_id: str | None = None
+    telegram_channel_url: str | None = None
     telegram_connect_token_ttl_seconds: int = 10 * 60
     telegram_sender_dry_run: bool = True
     telegram_sender_batch_limit: int = 20

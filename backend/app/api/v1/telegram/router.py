@@ -72,4 +72,9 @@ async def handle_telegram_webhook(
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="telegram_webhook_secret is not configured")
     if x_telegram_bot_api_secret_token != settings.telegram_webhook_secret:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Telegram webhook secret")
-    return await telegram_webhook_service.handle_update(session, update, bot_token=settings.telegram_bot_token)
+    return await telegram_webhook_service.handle_update(
+        session,
+        update,
+        bot_token=settings.telegram_bot_token,
+        channel_url=settings.telegram_channel_url,
+    )
