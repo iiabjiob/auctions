@@ -5521,8 +5521,8 @@ onUnmounted(() => {
                   <div>
                     <h3>Подключить Telegram-бота</h3>
                     <p>
-                      Создайте одноразовую ссылку, откройте бота и подтвердите подключение. Chat ID сохранится
-                      автоматически после команды /start.
+                      Нажмите «Открыть бота» и запустите его по одноразовой ссылке. Бот сам отправит команду
+                      подключения, а приложение сохранит Chat ID автоматически.
                     </p>
                     <p v-if="telegramConnectUrl" class="interest-profile-connect-note">
                       Ссылка создана до {{ formatDateTime(telegramConnectExpiresAt) }}.
