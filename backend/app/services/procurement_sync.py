@@ -15,8 +15,12 @@ from app.schemas.procurements import ProcurementLotItem, ProcurementSyncResult
 from app.services.procurement_classification import ProcurementClassification, classify_procurement_lot
 from app.services.procurement_notifications import enqueue_procurement_telegram_notifications
 from app.services.procurement_scoring import apply_procurement_score
+from app.services.procurement_sources import (
+    get_procurement_source_provider,
+    list_enabled_procurement_source_providers,
+    ProcurementSourceProvider,
+)
 from app.services.procurement_values import parse_scraped_datetime
-from app.services.zakupki_scraper import fetch_procurement_list, source_info
 
 
 logger = logging.getLogger(__name__)
@@ -32,7 +36,37 @@ class PreparedProcurementLot:
 
 
 async def sync_zakupki_procurements(session: AsyncSession, *, limit: int | None = 100) -> ProcurementSyncResult:
-    info = source_info()
+    return await sync_procurement_source(session, source="zakupki", limit=limit)
+
+
+async def sync_enabled_procurement_sources(session: AsyncSession, *, limit: int | None = 100) -> list[ProcurementSyncResult]:
+    results: list[ProcurementSyncResult] = []
+    for provider in list_enabled_procurement_source_providers():
+        results.append(await sync_procurement_source_provider(session, provider=provider, limit=limit))
+    return results
+
+
+async def sync_procurement_source(
+    session: AsyncSession,
+    *,
+    source: str,
+    limit: int | None = 100,
+) -> ProcurementSyncResult:
+    provider = get_procurement_source_provider(source)
+    if not provider.info().enabled:
+        raise ValueError(f"Procurement source '{source}' is disabled")
+    return await sync_procurement_source_provider(session, provider=provider, limit=limit)
+
+
+async def sync_procurement_source_provider(
+    session: AsyncSession,
+    *,
+    provider: ProcurementSourceProvider,
+    limit: int | None = 100,
+) -> ProcurementSyncResult:
+    info = provider.info()
+    if not info.enabled:
+        raise ValueError(f"Procurement source '{info.code}' is disabled")
     now = datetime.now(UTC)
     source_state = await session.get(ProcurementSourceState, info.code)
     if source_state is None:
@@ -50,7 +84,7 @@ async def sync_zakupki_procurements(session: AsyncSession, *, limit: int | None 
     source_state.last_synced_at = now
 
     result = ProcurementSyncResult(source=info.code, fetched=0, created=0, updated=0, unchanged=0, status_changed=0)
-    items = await asyncio.to_thread(fetch_procurement_list, limit=limit)
+    items = await asyncio.to_thread(lambda: list(provider.iter_lots(limit=limit)))
     for item in items:
         result.fetched += 1
         prepared = prepare_procurement_lot(item)
@@ -150,7 +184,7 @@ async def sync_zakupki_procurements(session: AsyncSession, *, limit: int | None 
             result.unchanged += 1
 
     await session.commit()
-    logger.info("Zakupki procurement sync finished: %s", result.model_dump(mode="json"))
+    logger.info("%s procurement sync finished: %s", info.code, result.model_dump(mode="json"))
     return result
 
 

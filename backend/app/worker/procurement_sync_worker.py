@@ -6,7 +6,7 @@ import random
 
 from app.core.config import get_settings
 from app.infrastructure.db.database import AsyncSessionLocal
-from app.services.procurement_sync import sync_zakupki_procurements
+from app.services.procurement_sync import sync_enabled_procurement_sources
 from app.worker.safety import safe_worker_jitter_delay
 
 
@@ -33,7 +33,7 @@ async def run_worker(*, run_once: bool = False) -> None:
             if settings.procurement_sync_enabled:
                 limit = settings.procurement_sync_limit if settings.procurement_sync_limit > 0 else None
                 async with AsyncSessionLocal() as session:
-                    await sync_zakupki_procurements(session, limit=limit)
+                    await sync_enabled_procurement_sources(session, limit=limit)
             else:
                 logger.info("Procurement sync worker disabled")
             if run_once:

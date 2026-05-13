@@ -14,8 +14,8 @@ from app.schemas.procurements import (
     ProcurementSyncResult,
 )
 from app.services.procurement_catalog import list_procurement_lots
-from app.services.procurement_sync import sync_zakupki_procurements
-from app.services.zakupki_scraper import source_info
+from app.services.procurement_sources import list_procurement_source_infos
+from app.services.procurement_sync import sync_procurement_source
 
 
 router = APIRouter(prefix="/api/v1/procurements", tags=["Procurements"])
@@ -25,7 +25,8 @@ router = APIRouter(prefix="/api/v1/procurements", tags=["Procurements"])
 async def get_procurement_sources(
     current_user: UserModel = Depends(get_current_user),
 ) -> list[ProcurementSourceInfo]:
-    return [source_info()]
+    del current_user
+    return list_procurement_source_infos()
 
 
 @router.get("/lots", response_model=ProcurementLotListResponse)
@@ -60,11 +61,13 @@ async def get_procurement_lots(
 
 @router.post("/sync", response_model=ProcurementSyncResult)
 async def sync_procurements(
+    source: str = Query(default="zakupki"),
     limit: int | None = Query(default=100, ge=1, le=1000),
     session: AsyncSession = Depends(get_db),
     current_user: UserModel = Depends(get_current_user),
 ) -> ProcurementSyncResult:
+    del current_user
     try:
-        return await sync_zakupki_procurements(session, limit=limit)
+        return await sync_procurement_source(session, source=source, limit=limit)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
