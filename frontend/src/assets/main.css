@@ -667,6 +667,22 @@ h2 {
   text-transform: uppercase;
 }
 
+.app-dialog__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.app-dialog__check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  color: var(--color-text-body);
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .app-dialog__danger {
   padding: 14px 16px;
   border: 1px solid var(--color-risk-border);
@@ -732,6 +748,72 @@ h2 {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
+}
+
+.interest-profile-panel,
+.interest-profile-list {
+  display: grid;
+  gap: 12px;
+}
+
+.interest-profile-panel {
+  padding: 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 14px;
+  background: linear-gradient(135deg, var(--color-surface-subtle), var(--color-surface));
+}
+
+.interest-profile-panel__header,
+.interest-profile-card {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.interest-profile-panel h3,
+.interest-profile-card h3 {
+  margin: 0;
+  color: var(--color-text-strong);
+  font-size: 15px;
+}
+
+.interest-profile-panel p,
+.interest-profile-card p {
+  margin: 4px 0 0;
+  color: var(--color-text-muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.interest-profile-card {
+  padding: 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-surface);
+}
+
+.interest-profile-card--empty {
+  display: block;
+  background: var(--color-surface-subtle);
+}
+
+.interest-profile-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.secondary-button--danger {
+  border-color: var(--color-risk-border);
+  color: var(--color-risk);
+}
+
+.secondary-button--danger:hover:not(:disabled) {
+  border-color: var(--color-risk);
+  color: var(--color-risk);
+  background: var(--color-risk-soft);
 }
 
 .primary-button--danger {
@@ -2059,11 +2141,14 @@ input[type='range'] {
 
   .analysis-config-section__header,
   .analysis-config-section--grid,
-  .analysis-config-rule__row {
+  .analysis-config-rule__row,
+  .app-dialog__grid {
     grid-template-columns: 1fr;
   }
 
-  .analysis-config-section__header {
+  .analysis-config-section__header,
+  .interest-profile-panel__header,
+  .interest-profile-card {
     display: grid;
   }
 

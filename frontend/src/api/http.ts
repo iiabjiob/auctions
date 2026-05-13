@@ -50,5 +50,9 @@ export async function apiRequest<T>(path: string, init?: ApiRequestInit): Promis
     throw new ApiRequestError(detail, response.status, body)
   }
 
+  if (response.status === 204) {
+    return undefined as T
+  }
+
   return (await response.json()) as T
 }

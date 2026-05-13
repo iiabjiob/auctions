@@ -31,6 +31,12 @@ import {
 import { createDialogFocusOrchestrator, useDialogController } from '@affino/dialog-vue'
 import { ApiRequestError as ApiClientRequestError } from './api/http'
 import { fetchLotDecisionReport } from './api/decisionReports'
+import {
+  createUserInterestProfile,
+  deleteUserInterestProfile,
+  fetchUserInterestProfiles,
+  updateUserInterestProfile,
+} from './api/userInterestProfiles'
 import AuthLoginScreen from './components/AuthLoginScreen.vue'
 import AnalysisSignalTooltip from './components/AnalysisSignalTooltip.vue'
 import LotNameCell from './components/LotNameCell.vue'
@@ -54,6 +60,7 @@ import {
 import { useAuthStore } from './stores/auth'
 import { workspaceDataGridTheme } from './theme/dataGridTheme'
 import type { ActionRecommendation, DecisionLevel, LotDecisionReport } from './types/decisionReport'
+import type { LotScoringProfilePayload, UserInterestProfile } from './types/userInterestProfiles'
 
 type ApiColumn = {
   key: string
@@ -674,6 +681,12 @@ type AnalysisConfigDraft = {
 }
 
 type PresetDialogMode = 'create' | 'update' | 'delete'
+type InterestProfileDraft = {
+  name: string
+  minRating: number
+  telegramEnabled: boolean
+  isActive: boolean
+}
 
 type ServerQuickFiltersState = {
   period: DatasetPeriod
@@ -700,14 +713,24 @@ const catalogSummary = ref<AuctionServerGridSummary>({
   highRatingCount: 0,
 })
 const presets = ref<FilterPreset[]>([])
+const userInterestProfiles = ref<UserInterestProfile[]>([])
 const analysisConfig = ref<AnalysisConfigResponse | null>(null)
 const auctionPipelineHealth = ref<AuctionPipelineHealthResponse | null>(null)
 const selectedPresetId = ref('')
 const presetDialogMode = ref<PresetDialogMode>('create')
 const presetNameDraft = ref('')
+const interestProfileDraft = reactive<InterestProfileDraft>({
+  name: '',
+  minRating: 0,
+  telegramEnabled: true,
+  isActive: true,
+})
 const mobileRailOpen = ref(false)
 const loading = ref(false)
 const presetsLoading = ref(false)
+const interestProfilesLoading = ref(false)
+const interestProfilesSaving = ref(false)
+const interestProfilesError = ref('')
 const analysisConfigLoading = ref(false)
 const analysisConfigSaving = ref(false)
 const analysisConfigError = ref('')
@@ -929,6 +952,17 @@ const presetDialogFocus = createDialogFocusOrchestrator({
 })
 const presetDialog = useDialogController({
   focusOrchestrator: presetDialogFocus,
+})
+const interestProfilesDialogTriggerRef = ref<HTMLElement | null>(null)
+const interestProfilesDialogRef = ref<HTMLDivElement | null>(null)
+const interestProfilesDialogInitialRef = ref<HTMLElement | null>(null)
+const interestProfilesDialogFocus = createDialogFocusOrchestrator({
+  dialog: () => interestProfilesDialogRef.value,
+  initialFocus: () => interestProfilesDialogInitialRef.value,
+  returnFocus: () => interestProfilesDialogTriggerRef.value,
+})
+const interestProfilesDialog = useDialogController({
+  focusOrchestrator: interestProfilesDialogFocus,
 })
 const analysisConfigDialogTriggerRef = ref<HTMLElement | null>(null)
 const analysisConfigDialogRef = ref<HTMLDivElement | null>(null)
@@ -1571,6 +1605,13 @@ const presetsMenuRef = ref<InstanceType<typeof UiMenu> | null>(null)
 const accountMenuRef = ref<InstanceType<typeof UiMenu> | null>(null)
 const presetsMenuOpen = computed(() => presetsMenuRef.value?.controller.state.value.open === true)
 const accountMenuOpen = computed(() => accountMenuRef.value?.controller.state.value.open === true)
+const activeInterestProfiles = computed(() => userInterestProfiles.value.filter((profile) => profile.is_active))
+const interestProfileSummary = computed(() => {
+  if (interestProfilesLoading.value) return 'Загрузка'
+  const activeCount = activeInterestProfiles.value.length
+  if (!userInterestProfiles.value.length) return 'Профили не заданы'
+  return `${activeCount} активн. из ${userInterestProfiles.value.length}`
+})
 const presetDialogTitle = computed(() => {
   if (presetDialogMode.value === 'delete') return 'Удалить подборку'
   if (presetDialogMode.value === 'update') return 'Обновить подборку'
@@ -3682,12 +3723,49 @@ async function loadPresets() {
   }
 }
 
+async function loadUserInterestProfiles() {
+  if (!isAuthenticated.value) return
+
+  interestProfilesLoading.value = true
+  interestProfilesError.value = ''
+  try {
+    userInterestProfiles.value = sortUserInterestProfiles(await fetchUserInterestProfiles())
+  } catch (error) {
+    interestProfilesError.value = error instanceof Error ? error.message : 'Не удалось загрузить профили интересов'
+  } finally {
+    interestProfilesLoading.value = false
+  }
+}
+
 function buildPresetPayload(name?: string) {
   return {
     name: (name ?? selectedPreset.value?.name ?? '').trim(),
     filters: sanitizeServerFilters(filters),
     grid_view: gridRef.value?.getSavedView() ?? null,
     is_favorite: selectedPreset.value?.is_favorite ?? false,
+  }
+}
+
+function buildInterestProfilePayloadFromFilters(name: string) {
+  const profilePayload: LotScoringProfilePayload = {
+    profile_identifier: null,
+    target_regions: [],
+    target_categories: selectedLot.value?.analysisCategory ? [selectedLot.value.analysisCategory] : [],
+    budget_min: parseFilterNumber(filters.minPrice),
+    budget_max: parseFilterNumber(filters.maxPrice),
+    allowed_legal_risks: ['low', 'medium'],
+    desired_keywords: splitInterestProfileTerms(filters.status),
+    stop_words: [],
+    strategy: 'balanced',
+  }
+
+  return {
+    name: name.trim(),
+    profile_payload: profilePayload,
+    min_rating: Math.max(0, Math.min(100, Number(interestProfileDraft.minRating) || 0)),
+    notification_priority_threshold: 'medium' as const,
+    telegram_enabled: interestProfileDraft.telegramEnabled,
+    is_active: interestProfileDraft.isActive,
   }
 }
 
@@ -3715,8 +3793,21 @@ function sortPresets(items: FilterPreset[]) {
   })
 }
 
+function sortUserInterestProfiles(items: UserInterestProfile[]) {
+  return [...items].sort((left, right) => {
+    if (left.is_active !== right.is_active) {
+      return left.is_active ? -1 : 1
+    }
+    return left.name.localeCompare(right.name, 'ru')
+  })
+}
+
 function setPresetDialogInitialRef(element: Element | ComponentPublicInstance | null) {
   presetDialogInitialRef.value = element as HTMLElement | null
+}
+
+function setInterestProfilesDialogInitialRef(element: Element | ComponentPublicInstance | null) {
+  interestProfilesDialogInitialRef.value = element as HTMLElement | null
 }
 
 function setAnalysisConfigDialogInitialRef(element: Element | ComponentPublicInstance | null) {
@@ -3771,6 +3862,11 @@ function splitAnalysisConfigLines(value: string) {
     })
 }
 
+function splitInterestProfileTerms(value: string) {
+  if (!value.trim()) return []
+  return splitAnalysisConfigLines(value)
+}
+
 function buildAnalysisConfigPayload() {
   return {
     category_rules: analysisConfigDraft.categoryRules
@@ -3819,8 +3915,102 @@ function openAnalysisConfigDialog(event?: Event) {
   void loadAnalysisConfig()
 }
 
+function openInterestProfilesDialog(event?: Event) {
+  interestProfilesDialogTriggerRef.value = event?.currentTarget as HTMLElement | null
+  interestProfilesError.value = ''
+  resetInterestProfileDraft()
+  interestProfilesDialog.open('trigger')
+  void loadUserInterestProfiles()
+}
+
 function toggleMobileRail() {
   mobileRailOpen.value = !mobileRailOpen.value
+}
+
+function resetInterestProfileDraft() {
+  interestProfileDraft.name = defaultInterestProfileName()
+  interestProfileDraft.minRating = filters.minRating > 0 ? filters.minRating : 80
+  interestProfileDraft.telegramEnabled = true
+  interestProfileDraft.isActive = true
+}
+
+function defaultInterestProfileName() {
+  const parts = []
+  if (selectedLot.value?.analysisCategory) parts.push(selectedLot.value.analysisCategory)
+  if (filters.minPrice.trim()) parts.push(`от ${filters.minPrice.trim()}`)
+  if (filters.maxPrice.trim()) parts.push(`до ${filters.maxPrice.trim()}`)
+  if (filters.minRating > 0) parts.push(`рейтинг ${filters.minRating}+`)
+  return parts.length ? parts.join(', ') : 'Новый профиль интересов'
+}
+
+function interestProfileNote(profile: UserInterestProfile) {
+  const payload = profile.profile_payload ?? {}
+  const parts = []
+  const categories = payload.target_categories ?? []
+  const keywords = payload.desired_keywords ?? []
+  if (categories.length) parts.push(categories.join(', '))
+  if (keywords.length) parts.push(`слова: ${keywords.join(', ')}`)
+  if (payload.budget_min || payload.budget_max) {
+    parts.push(`бюджет ${payload.budget_min ?? '0'}-${payload.budget_max ?? '∞'}`)
+  }
+  parts.push(`рейтинг ${profile.min_rating}+`)
+  return parts.join(' · ')
+}
+
+async function createInterestProfileFromCurrentFilters() {
+  const name = interestProfileDraft.name.trim()
+  if (!name) {
+    interestProfilesError.value = 'Название профиля не должно быть пустым'
+    return
+  }
+
+  interestProfilesSaving.value = true
+  interestProfilesError.value = ''
+  try {
+    const profile = await createUserInterestProfile(buildInterestProfilePayloadFromFilters(name))
+    userInterestProfiles.value = sortUserInterestProfiles([...userInterestProfiles.value, profile])
+    resetInterestProfileDraft()
+  } catch (error) {
+    interestProfilesError.value = error instanceof Error ? error.message : 'Не удалось создать профиль интересов'
+  } finally {
+    interestProfilesSaving.value = false
+  }
+}
+
+async function toggleInterestProfileActive(profile: UserInterestProfile) {
+  await patchInterestProfile(profile, { is_active: !profile.is_active })
+}
+
+async function toggleInterestProfileTelegram(profile: UserInterestProfile) {
+  await patchInterestProfile(profile, { telegram_enabled: !profile.telegram_enabled })
+}
+
+async function patchInterestProfile(profile: UserInterestProfile, payload: Parameters<typeof updateUserInterestProfile>[1]) {
+  interestProfilesSaving.value = true
+  interestProfilesError.value = ''
+  try {
+    const updated = await updateUserInterestProfile(profile.id, payload)
+    userInterestProfiles.value = sortUserInterestProfiles(
+      userInterestProfiles.value.map((item) => (item.id === updated.id ? updated : item)),
+    )
+  } catch (error) {
+    interestProfilesError.value = error instanceof Error ? error.message : 'Не удалось обновить профиль интересов'
+  } finally {
+    interestProfilesSaving.value = false
+  }
+}
+
+async function removeInterestProfile(profile: UserInterestProfile) {
+  interestProfilesSaving.value = true
+  interestProfilesError.value = ''
+  try {
+    await deleteUserInterestProfile(profile.id)
+    userInterestProfiles.value = userInterestProfiles.value.filter((item) => item.id !== profile.id)
+  } catch (error) {
+    interestProfilesError.value = error instanceof Error ? error.message : 'Не удалось удалить профиль интересов'
+  } finally {
+    interestProfilesSaving.value = false
+  }
 }
 
 function closeMobileRail() {
@@ -4471,6 +4661,8 @@ function resetCatalogState() {
     highRatingCount: 0,
   }
   presets.value = []
+  userInterestProfiles.value = []
+  interestProfilesError.value = ''
   selectedPresetId.value = ''
   selectedLot.value = null
   selectedLotDetails.value = null
@@ -4629,6 +4821,14 @@ function handleGlobalKeydown(event: KeyboardEvent) {
     }
     return
   }
+  if (interestProfilesDialog.snapshot.value.isOpen) {
+    if (['Escape', 'Esc'].includes(event.key)) {
+      event.preventDefault()
+      event.stopPropagation()
+      void interestProfilesDialog.close('escape-key')
+    }
+    return
+  }
   if (presetDialog.snapshot.value.isOpen) {
     if (['Escape', 'Esc'].includes(event.key)) {
       event.preventDefault()
@@ -4753,6 +4953,7 @@ watch(isAuthenticated, (authenticated) => {
   if (authenticated) {
     void loadLots()
     void loadPresets()
+    void loadUserInterestProfiles()
     startAuctionEvents()
     startAuctionGridChangePolling(0)
     void nextTick(() => startGridSurfaceResizeObserver())
@@ -4768,6 +4969,7 @@ onMounted(() => {
   if (isAuthenticated.value) {
     void loadLots()
     void loadPresets()
+    void loadUserInterestProfiles()
     startAuctionEvents()
     startAuctionGridChangePolling(0)
     void nextTick(() => startGridSurfaceResizeObserver())
@@ -4888,6 +5090,11 @@ onUnmounted(() => {
         <button class="app-rail__item" type="button" @click="openAnalysisConfigDialog">
           <span class="app-rail__item-icon" aria-hidden="true">⚙</span>
           <span class="app-rail__item-label">Анализ</span>
+        </button>
+
+        <button class="app-rail__item" type="button" @click="openInterestProfilesDialog">
+          <span class="app-rail__item-icon" aria-hidden="true">I</span>
+          <span class="app-rail__item-label">Интересы</span>
         </button>
 
         <div class="app-rail__separator" aria-hidden="true"></div>
@@ -5485,6 +5692,137 @@ onUnmounted(() => {
                 @click="void submitPresetDialog()"
               >
                 {{ presetDialogSubmitLabel }}
+              </button>
+            </footer>
+          </div>
+        </div>
+      </transition>
+    </Teleport>
+
+    <Teleport to="#affino-dialog-host">
+      <transition name="dialog-layer">
+        <div
+          v-if="interestProfilesDialog.snapshot.value.isOpen"
+          class="app-dialog-layer"
+          @click.self="void interestProfilesDialog.close('backdrop')"
+        >
+          <div
+            ref="interestProfilesDialogRef"
+            class="app-dialog app-dialog--wide"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="interest-profiles-dialog-title"
+            tabindex="-1"
+          >
+            <header class="app-dialog__header">
+              <div>
+                <span class="eyebrow">Персональные сигналы</span>
+                <h2 id="interest-profiles-dialog-title">Профили интересов</h2>
+              </div>
+              <button
+                class="icon-button"
+                type="button"
+                aria-label="Закрыть окно"
+                @click="void interestProfilesDialog.close('programmatic')"
+              >
+                ×
+              </button>
+            </header>
+
+            <div class="app-dialog__body">
+              <p class="app-dialog__text">
+                Профиль интересов управляет тем, какие рейтинговые лоты попадут в персональные Telegram-уведомления.
+                Срез таблицы остается только UI-фильтром.
+              </p>
+
+              <div v-if="interestProfilesError" class="error-banner">{{ interestProfilesError }}</div>
+
+              <section class="interest-profile-panel" aria-label="Создать профиль из текущих фильтров">
+                <div class="interest-profile-panel__header">
+                  <div>
+                    <h3>Создать из текущих фильтров</h3>
+                    <p>{{ interestProfileSummary }}</p>
+                  </div>
+                  <button
+                    class="secondary-button"
+                    type="button"
+                    :disabled="interestProfilesSaving"
+                    @click="resetInterestProfileDraft"
+                  >
+                    Обновить черновик
+                  </button>
+                </div>
+
+                <div class="app-dialog__grid">
+                  <label class="app-dialog__field">
+                    <span>Название</span>
+                    <input
+                      :ref="setInterestProfilesDialogInitialRef"
+                      v-model="interestProfileDraft.name"
+                      type="text"
+                      maxlength="160"
+                      placeholder="Например, BMW от 2 млн"
+                    />
+                  </label>
+                  <label class="app-dialog__field">
+                    <span>Минимальный рейтинг</span>
+                    <input v-model.number="interestProfileDraft.minRating" type="number" min="0" max="100" />
+                  </label>
+                  <label class="app-dialog__check">
+                    <input v-model="interestProfileDraft.telegramEnabled" type="checkbox" />
+                    <span>Telegram включен</span>
+                  </label>
+                  <label class="app-dialog__check">
+                    <input v-model="interestProfileDraft.isActive" type="checkbox" />
+                    <span>Профиль активен</span>
+                  </label>
+                </div>
+
+                <button
+                  class="primary-button"
+                  type="button"
+                  :disabled="interestProfilesSaving"
+                  @click="void createInterestProfileFromCurrentFilters()"
+                >
+                  Создать профиль
+                </button>
+              </section>
+
+              <section class="interest-profile-list" aria-label="Список профилей интересов">
+                <div v-if="interestProfilesLoading" class="app-dialog__text">Загружаем профили...</div>
+                <article v-else-if="!userInterestProfiles.length" class="interest-profile-card interest-profile-card--empty">
+                  <h3>Профилей пока нет</h3>
+                  <p>Создайте первый профиль из текущих фильтров каталога.</p>
+                </article>
+                <template v-else>
+                  <article
+                    v-for="profile in userInterestProfiles"
+                    :key="profile.id"
+                    class="interest-profile-card"
+                  >
+                    <div>
+                      <h3>{{ profile.name }}</h3>
+                      <p>{{ interestProfileNote(profile) }}</p>
+                    </div>
+                    <div class="interest-profile-card__actions">
+                      <button class="secondary-button" type="button" @click="void toggleInterestProfileActive(profile)">
+                        {{ profile.is_active ? 'Отключить' : 'Включить' }}
+                      </button>
+                      <button class="secondary-button" type="button" @click="void toggleInterestProfileTelegram(profile)">
+                        {{ profile.telegram_enabled ? 'Telegram выкл.' : 'Telegram вкл.' }}
+                      </button>
+                      <button class="secondary-button secondary-button--danger" type="button" @click="void removeInterestProfile(profile)">
+                        Удалить
+                      </button>
+                    </div>
+                  </article>
+                </template>
+              </section>
+            </div>
+
+            <footer class="app-dialog__footer">
+              <button class="secondary-button" type="button" @click="void interestProfilesDialog.close('programmatic')">
+                Закрыть
               </button>
             </footer>
           </div>
