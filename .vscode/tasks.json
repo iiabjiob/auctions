@@ -99,6 +99,20 @@
       }
     },
     {
+      "label": "backend: procurement sync worker",
+      "type": "shell",
+      "command": "uv run python -m app.worker.procurement_sync_worker",
+      "options": {
+        "cwd": "${workspaceFolder}/backend"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "group": "backend",
+        "panel": "dedicated",
+        "reveal": "always"
+      }
+    },
+    {
       "label": "backend: start all",
       "dependsOrder": "parallel",
       "dependsOn": [
@@ -107,6 +121,7 @@
         "backend: auction analysis worker",
         "backend: auction enrichment worker",
         "backend: auction actuality worker",
+        "backend: procurement sync worker",
         "backend: telegram sender worker"
       ],
       "problemMatcher": [],

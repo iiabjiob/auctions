@@ -214,6 +214,8 @@ function normalizeProcurementServerQuery(
     range: request.range ?? { start: 0, end: 0 },
     sortModel: request.sortModel ?? [],
     filterModel: hasFilterModel(request.filterModel) ? request.filterModel ?? null : null,
+    groupBy: request.groupBy ?? null,
+    pagination: request.pagination ?? { snapshot: null },
   } as DataGridDataSourcePullRequest)
 }
 

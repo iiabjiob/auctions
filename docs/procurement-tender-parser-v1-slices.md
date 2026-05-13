@@ -41,7 +41,7 @@ Use these boundaries:
 - `frontend/src/datagrid/*`: procurement server datasource mirroring auction grid patterns.
 - `frontend/src/App.vue` or extracted components: tender workspace.
 
-## Slice 1 - Procurement Schema V1
+## [x] Slice 1 - Procurement Schema V1
 
 Goal: expand the existing procurement persistence from raw parsed lots into a table-ready decision funnel.
 
@@ -59,15 +59,15 @@ Scope:
 Prompt:
 
 ```text
-Implement Slice 1 from docs/procurement-tender-parser-v1-slices.md.
+Implement [x] Slice 1 from docs/procurement-tender-parser-v1-[x] slices.md.
 
 Read the current procurement model, migration history, and auction grid/work item patterns first. Expand the procurement domain schema for V1 decision workflow and calculation fields. Keep procurements separate from AuctionLotRecord. Add an Alembic migration after the current head, update SQLAlchemy models, and add focused tests that the model/migration metadata compiles.
 
-Do not touch unrelated auction behavior. Do not build frontend in this slice.
+Do not touch unrelated auction behavior. Do not build frontend in this [x] slice.
 Run the smallest relevant backend validation and report remaining migration/runtime risks.
 ```
 
-## Slice 2 - EIS Parser Coverage
+## [x] Slice 2 - EIS Parser Coverage
 
 Goal: make `zakupki.gov.ru` ingestion reliable enough for the V1 tender table.
 
@@ -96,7 +96,7 @@ Scope:
 Prompt:
 
 ```text
-Implement Slice 2 from docs/procurement-tender-parser-v1-slices.md.
+Implement [x] Slice 2 from docs/procurement-tender-parser-v1-[x] slices.md.
 
 Read backend/app/services/zakupki_scraper.py and the existing tests. Improve the EIS parser for apparel tender V1 fields and keyword/exclusion search. Add parser functions with fixture-style unit tests for 44-FZ and 223-FZ cards. Use the existing restricted zakupki fetch gateway only for manual smoke checks, not as a test dependency.
 
@@ -104,7 +104,7 @@ Keep parsing source-specific and return normalized ProcurementLotItem objects. A
 Run focused parser tests.
 ```
 
-## Slice 3 - Filter Dictionary And Classification
+## [x] Slice 3 - Filter Dictionary And Classification
 
 Goal: turn the spec's keywords/exclusions into editable backend rules used by sync and grid filters.
 
@@ -134,14 +134,14 @@ Scope:
 Prompt:
 
 ```text
-Implement Slice 3 from docs/procurement-tender-parser-v1-slices.md.
+Implement [x] Slice 3 from docs/procurement-tender-parser-v1-[x] slices.md.
 
-Add a procurement classification service using the keyword and exclusion groups from the spec. Integrate it into procurement sync so each record stores category, matched keywords, excluded keywords, and filter reason. Keep the implementation simple and deterministic; avoid AI or fuzzy matching in this slice beyond lowercase/morphology-friendly substring matching.
+Add a procurement classification service using the keyword and exclusion groups from the spec. Integrate it into procurement sync so each record stores category, matched keywords, excluded keywords, and filter reason. Keep the implementation simple and deterministic; avoid AI or fuzzy matching in this [x] slice beyond lowercase/morphology-friendly substring matching.
 
 Add unit tests for category assignment, exclusion precedence, and neutral unmatched tenders.
 ```
 
-## Slice 4 - Affino Procurement Datagrid Backend
+## [x] Slice 4 - Affino Procurement Datagrid Backend
 
 Goal: replace the Google Sheets table from the spec with a proper server-backed Affino datagrid endpoint.
 
@@ -162,14 +162,14 @@ Scope:
 Prompt:
 
 ```text
-Implement Slice 4 from docs/procurement-tender-parser-v1-slices.md.
+Implement [x] Slice 4 from docs/procurement-tender-parser-v1-[x] slices.md.
 
 Study backend/app/api/auction_lots_grid_router.py, backend/app/services/auction_grid.py, backend/app/services/auction_catalog.py, and frontend datagrid server adapter expectations. Build a procurement-specific server-backed grid API using the same Affino datagrid protocol shape, but backed by ProcurementLotRecord.
 
 Do not reuse auction row ids or auction table ids. Add focused backend tests for pull, filtering, sorting, and row payload shape.
 ```
 
-## Slice 5 - Manual Workflow Editing
+## [x] Slice 5 - Manual Workflow Editing
 
 Goal: allow the team to work the tender funnel inside the datagrid.
 
@@ -203,14 +203,14 @@ Scope:
 Prompt:
 
 ```text
-Implement Slice 5 from docs/procurement-tender-parser-v1-slices.md.
+Implement [x] Slice 5 from docs/procurement-tender-parser-v1-[x] slices.md.
 
 Read the auction grid edit implementation and build the equivalent minimal edit path for procurement workflow fields. Keep write scope to procurement services/routes and shared grid operation models only if the existing operation system supports another table id cleanly.
 
-Add tests for valid edits, invalid column rejection, conflict behavior, and status persistence. Do not implement calculator formulas in this slice beyond storing manual inputs.
+Add tests for valid edits, invalid column rejection, conflict behavior, and status persistence. Do not implement calculator formulas in this [x] slice beyond storing manual inputs.
 ```
 
-## Slice 6 - Cost Calculator V1
+## [x] Slice 6 - Cost Calculator V1
 
 Goal: implement the spec's tender economics model so a manager can decide quickly.
 
@@ -252,14 +252,14 @@ Scope:
 Prompt:
 
 ```text
-Implement Slice 6 from docs/procurement-tender-parser-v1-slices.md.
+Implement [x] Slice 6 from docs/procurement-tender-parser-v1-[x] slices.md.
 
 Add a deterministic procurement calculator service and persist/store its inputs and outputs on procurement records. Follow the formulas in the spec, using VAT 22% and profit tax 25% defaults. Support optimistic, realistic, and cautious scenarios, with cautious used for decision scoring.
 
 Expose calculation fields through the procurement API/grid row payload. Add unit tests for formulas, null input handling, and scenario selection.
 ```
 
-## Slice 7 - Tender Scoring V1
+## [x] Slice 7 - Tender Scoring V1
 
 Goal: upgrade the initial attractiveness score into the spec's decision score.
 
@@ -289,14 +289,14 @@ Scope:
 Prompt:
 
 ```text
-Implement Slice 7 from docs/procurement-tender-parser-v1-slices.md.
+Implement [x] Slice 7 from docs/procurement-tender-parser-v1-[x] slices.md.
 
 Replace or extend the current procurement attractiveness scoring with the V1 weighted tender score. Use calculated economics when available and fallback to parser-only heuristics when not. Persist score, level, reasons, input hash/version, and scored_at.
 
 Add unit tests for high-profit valid tender, excluded tender, missing-doc tender, urgent-deadline tender, and no-calculation fallback.
 ```
 
-## Slice 8 - Frontend Affino Datagrid
+## [x] Slice 8 - Frontend Affino Datagrid
 
 Goal: replace the temporary `/tenders` table with the same quality of datagrid experience as auctions.
 
@@ -335,14 +335,14 @@ Scope:
 Prompt:
 
 ```text
-Implement Slice 8 from docs/procurement-tender-parser-v1-slices.md.
+Implement [x] Slice 8 from docs/procurement-tender-parser-v1-[x] slices.md.
 
-Replace the temporary /tenders HTML table in frontend/src/App.vue with an Affino server-backed datagrid. Follow the auction datagrid patterns, but create procurement-specific datasource/types/edit handling. Use the procurement grid backend from Slice 4 and edit backend from Slice 5.
+Replace the temporary /tenders HTML table in frontend/src/App.vue with an Affino server-backed datagrid. Follow the auction datagrid patterns, but create procurement-specific datasource/types/edit handling. Use the procurement grid backend from [x] Slice 4 and edit backend from [x] Slice 5.
 
 Keep UI dense and operational. Run frontend type-check and build-only.
 ```
 
-## Slice 9 - Telegram Notifications
+## [x] Slice 9 - Telegram Notifications
 
 Goal: notify only when action is needed.
 
@@ -362,14 +362,14 @@ Scope:
 Prompt:
 
 ```text
-Implement Slice 9 from docs/procurement-tender-parser-v1-slices.md.
+Implement [x] Slice 9 from docs/procurement-tender-parser-v1-[x] slices.md.
 
 Read the existing Telegram outbox/sender code for auction lots and add procurement tender notifications for priority events. Prevent duplicate notifications per tender/event type. Use existing bot configuration and sender worker if the model supports it cleanly; otherwise add a small procurement-specific outbox.
 
 Add tests for notification eligibility and duplicate suppression.
 ```
 
-## Slice 10 - Source Platform Interface
+## [x] Slice 10 - Source Platform Interface
 
 Goal: prepare V1 for EIS + 5 key platforms without blocking on all parsers.
 
@@ -393,14 +393,14 @@ Scope:
 Prompt:
 
 ```text
-Implement Slice 10 from docs/procurement-tender-parser-v1-slices.md.
+Implement [x] Slice 10 from docs/procurement-tender-parser-v1-[x] slices.md.
 
 Create a procurement source provider registry similar in spirit to auction_sources, but dedicated to procurement tenders. Register the EIS provider and add disabled stubs for the next key platforms from the spec. Update sync worker/service to loop enabled procurement providers.
 
 Do not implement the external platform parsers yet. Add tests for provider registry, disabled providers, and unsupported provider errors.
 ```
 
-## Slice 11 - Operational Diagnostics
+## [x] Slice 11 - Operational Diagnostics
 
 Goal: make parser failures and structure drift visible.
 
@@ -415,7 +415,7 @@ Scope:
 Prompt:
 
 ```text
-Implement Slice 11 from docs/procurement-tender-parser-v1-slices.md.
+Implement [x] Slice 11 from docs/procurement-tender-parser-v1-[x] slices.md.
 
 Add procurement pipeline observability similar to auction pipeline health. Track source sync runs, parser failures, missing critical fields, and last successful sync. Expose a read endpoint for the frontend/ops view.
 
@@ -424,17 +424,17 @@ Keep it focused on diagnostics. Do not add frontend charts unless trivial.
 
 ## Suggested Build Order
 
-1. Slice 1 - Schema V1
-2. Slice 2 - EIS parser coverage
-3. Slice 3 - Filter dictionary and classification
-4. Slice 10 - Source platform interface
-5. Slice 4 - Affino procurement datagrid backend
-6. Slice 5 - Manual workflow editing
-7. Slice 6 - Cost calculator V1
-8. Slice 7 - Tender scoring V1
-9. Slice 8 - Frontend Affino datagrid
-10. Slice 9 - Telegram notifications
-11. Slice 11 - Operational diagnostics
+1. [x] Slice 1 - Schema V1
+2. [x] Slice 2 - EIS parser coverage
+3. [x] Slice 3 - Filter dictionary and classification
+4. [x] Slice 10 - Source platform interface
+5. [x] Slice 4 - Affino procurement datagrid backend
+6. [x] Slice 5 - Manual workflow editing
+7. [x] Slice 6 - Cost calculator V1
+8. [x] Slice 7 - Tender scoring V1
+9. [x] Slice 8 - Frontend Affino datagrid
+10. [x] Slice 9 - Telegram notifications
+11. [x] Slice 11 - Operational diagnostics
 
 ## Deployment Notes
 
@@ -447,3 +447,41 @@ Keep it focused on diagnostics. Do not add frontend charts unless trivial.
   - verify `/tenders`
   - check parser logs for missing critical fields
 - Turn on worker with a daily interval first; move to 1-3 hours after parser stability is proven.
+
+ Главные риски
+
+  1. Качество парсинга ЕИС
+     Самое слабое место V1. Если карточки ЕИС меняют верстку или часть полей не достается, весь downstream работает на плохих данных. Нужны реальные метрики по missing
+     critical fields, skipped cards и samples проблемных HTML.
+  2. Документы и ТЗ
+     Сейчас V1 в основном видит факт/ссылку, но не понимает содержимое ТЗ. А привлекательность лота часто определяется именно там: состав, сроки поставки, ГОСТы,
+     штрафы, сертификаты, адреса, этапность.
+  3. Калькулятор
+     Формулы уже есть, но они “разумная V1 модель”, не финальная экономическая модель цеха. Надо сверить с реальными кейсами: ткань, раскрой, брак, НДС, ФОТ, упаковка,
+     логистика, отсрочка платежа, обеспечение, кассовый разрыв.
+  4. Scoring
+     Весовая модель хороша как baseline, но пока не обучена на вашей фактической экспертизе. Я бы быстро завел feedback loop: “взяли / отказ / почему / итоговая
+     маржа”, чтобы потом калибровать веса.
+  5. Source coverage
+     ЕИС важен, но часть практической информации и документов может быть на площадках. Stub providers есть, но без Сбер/РТС/Росэлторг/ГПБ будут слепые зоны.
+
+  Где бы улучшил лично
+
+  1. Document intelligence как следующий крупный блок
+     Скачать документы, распаковать архивы, извлечь PDF/DOCX/XLSX, вытащить:
+      - адреса
+      - сертификаты
+      - требования к образцам
+     Не просто reasons-строки, а структурированные evidence facts: has_clear_quantity, requires_certificate, delivery_days, payment_delay_days, sample_required,
+     penalty_risk.
+  3. Review workflow
+     Добавить поля: question_to_customer, production_check_status, owner_decision_at, submitted_at, actual_result. Это даст контур управления, а не только таблицу.
+  4. Parser QA dashboard
+     В diagnostics показывать не только counts, а примеры проблемных карточек: URL, missing fields, parser version, raw snippet hash.
+  5. Notification tuning
+     Сейчас уведомления событийные. Я бы добавил “digest mode” и антиспам по severity: срочный дедлайн отдельно, прибыльные новые лоты пачкой раз в день.
+  6. Экономика по сценариям в UI
+     Сейчас backend считает 3 сценария, но UI скорее всего надо сделать удобнее: рядом realistic/cautious, подсветка отрицательной маржи, кассового разрыва и
+     незаполненных inputs.
+
+  Если коротко: пайплайн закрыт как V1, но реальная ценность будет резко расти после блока документы → structured facts → evidence scoring → feedback loop.

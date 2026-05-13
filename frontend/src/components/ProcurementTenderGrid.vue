@@ -12,7 +12,6 @@ import {
   createDataSourceBackedRowModel,
   type DataGridDataSource,
   type DataGridFilterSnapshot,
-  type DataGridSetStateOptions,
   type DataSourceBackedRowModel,
 } from '@affino/datagrid-vue'
 import {
@@ -136,7 +135,6 @@ type ProcurementRowModel = DataSourceBackedRowModel<ProcurementGridRow> & {
 }
 type ProcurementServerGridDataSource = ProcurementServerDatasource<ProcurementApiRow, ProcurementGridRow>
 
-const GRID_STATE_PERSISTENCE_KEY = 'procurement-grid-state-v1'
 const GRID_COLUMN_WIDTHS_STORAGE_KEY = 'procurement-grid-column-widths-v1'
 const SERVER_ROW_MODEL_INITIAL_FETCH_SIZE = 160
 const ROW_CACHE_LIMIT = 8_000
@@ -223,19 +221,6 @@ const columnMenuOptions = defineDataGridColumnMenu({
     selectedValuesSummary: 'Выбрано {selected} из {total}',
   },
 })
-const gridStatePersistence = {
-  key: GRID_STATE_PERSISTENCE_KEY,
-  storage: 'local' as const,
-  includeViewportPosition: true,
-  restoreOnReady: true,
-  debounceMs: 300,
-  setOptions: {
-    dataSource: {
-      atomic: true,
-      resetViewportRange: { start: 0, end: SERVER_ROW_MODEL_INITIAL_FETCH_SIZE - 1 },
-    },
-  } satisfies DataGridSetStateOptions,
-}
 const virtualizationOptions = {
   rows: true,
   columns: true,
@@ -691,7 +676,6 @@ onUnmounted(() => {
         :virtualization="virtualizationOptions"
         :advanced-filter="advancedFilterOptions"
         :quick-filter="quickFilter"
-        :state-persistence="gridStatePersistence"
         :column-menu="columnMenuOptions"
         :column-layout="columnLayoutOptions"
         fill-handle
@@ -700,7 +684,6 @@ onUnmounted(() => {
         :row-selection="false"
         :cell-menu="true"
         :chrome="{ toolbarPlacement: 'integrated', density: 'compact', toolbarGap: 0, workspaceGap: 8 }"
-        :history="{ enabled: true, shortcuts: 'grid', controls: true }"
         @update:column-widths="persistColumnWidths"
       />
     </section>
