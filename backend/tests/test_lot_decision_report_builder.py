@@ -27,10 +27,12 @@ def make_record(
         lot_id="lot-1",
         lot_number="1",
         lot_name=lot_name,
+        lot_url="https://tbankrot.ru/item?id=lot-1",
         status=status,
         current_price="1000000 RUB",
         current_price_value=Decimal("1000000"),
         location_region="Moscow Oblast",
+        primary_image_url="https://tbankrot.ru/upload/lot/photo.jpg",
         application_deadline="31.12.2026 18:00",
         freshness=LotFreshness(is_new=True),
         rating=LotRating(score=score, level=level, reasons=[]),
@@ -99,6 +101,8 @@ class LotDecisionReportBuilderTests(unittest.TestCase):
             detail_cache=make_detail_cache(),
         )
 
+        self.assertEqual(report.source_lot_url, "https://tbankrot.ru/item?id=lot-1")
+        self.assertEqual(report.image_url, "https://tbankrot.ru/upload/lot/photo.jpg")
         self.assertIn(report.decision_level, {DecisionLevel.INSPECT, DecisionLevel.CALCULATE})
         self.assertIn(
             report.recommendation,

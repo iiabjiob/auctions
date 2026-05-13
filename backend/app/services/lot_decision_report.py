@@ -56,6 +56,7 @@ ECONOMICS_COST_FIELDS = (
     "other_costs",
 )
 TELEGRAM_MAX_MESSAGE_LENGTH = 4096
+TELEGRAM_PHOTO_CAPTION_LIMIT = 1024
 TELEGRAM_REASON_LIMIT = 3
 TELEGRAM_RISK_LIMIT = 2
 TELEGRAM_NOTIFICATION_COOLDOWN_SECONDS = 6 * 60 * 60
@@ -120,6 +121,8 @@ def build_lot_decision_report(
         region=row.location_region or evidence.location.region or row.location,
         current_price=row.current_price or record.initial_price,
         deadline=evidence.deadlines.application_deadline or row.application_deadline,
+        source_lot_url=_source_lot_url(row, detail_cache),
+        image_url=_lot_image_url(row, detail_cache),
         rating_score=record.rating_score,
         rating_level=record.rating_level,
         profile_hash=profile_hash,
@@ -222,7 +225,9 @@ def render_telegram_lot_message(
     link: str | None = None,
     max_length: int = TELEGRAM_MAX_MESSAGE_LENGTH,
 ) -> TelegramLotMessage:
-    message_link = link or _default_lot_link(report)
+    photo_url = _telegram_photo_url(report.image_url)
+    message_link = link or report.source_lot_url
+    effective_max_length = min(max_length, TELEGRAM_PHOTO_CAPTION_LIMIT) if photo_url else max_length
     lines = [
         f"*{_markdown_v2(report.title or 'Отчет по лоту')}*",
         _field_line("Регион", report.region),
@@ -241,9 +246,10 @@ def render_telegram_lot_message(
     if message_link:
         lines.append(f"Ссылка: {_markdown_v2(message_link)}")
 
-    text = _trim_message("\n".join(line for line in lines if line), max_length=max_length)
+    text = _trim_message("\n".join(line for line in lines if line), max_length=effective_max_length)
     return TelegramLotMessage(
         text=text,
+        photo_url=photo_url,
         lot_record_id=report.record_id,
         source=report.source,
         auction_id=report.auction_id,
@@ -1176,8 +1182,64 @@ def _format_decimal(value: Decimal | None) -> str | None:
     return format(rounded, "f")
 
 
-def _default_lot_link(report: LotDecisionReport) -> str:
-    return f"/auctions/lots/{report.record_id}/decision-report"
+def _source_lot_url(row, detail_cache: AuctionLotDetailCache | None) -> str | None:  # noqa: ANN001
+    return _first_http_url(
+        row.lot_url,
+        _nested_value(detail_cache.lot_detail if detail_cache else None, "lot", "url"),
+    )
+
+
+def _lot_image_url(row, detail_cache: AuctionLotDetailCache | None) -> str | None:  # noqa: ANN001
+    row_images = [image.model_dump(mode="json") for image in row.images]
+    return _first_real_image_url(
+        row.primary_image_url,
+        *(image.get("url") for image in row_images),
+        _nested_value(detail_cache.lot_detail if detail_cache else None, "lot", "primary_image_url"),
+        *(
+            image.get("url")
+            for image in _nested_list(detail_cache.lot_detail if detail_cache else None, "lot", "images")
+            if isinstance(image, dict)
+        ),
+    )
+
+
+def _telegram_photo_url(value: str | None) -> str | None:
+    return _first_real_image_url(value)
+
+
+def _first_http_url(*values: object) -> str | None:
+    for value in values:
+        text = str(value or "").strip()
+        if text.startswith(("http://", "https://")):
+            return text
+    return None
+
+
+def _first_real_image_url(*values: object) -> str | None:
+    for value in values:
+        url = _first_http_url(value)
+        if url is not None and not _is_locked_image_url(url):
+            return url
+    return None
+
+
+def _is_locked_image_url(url: str) -> bool:
+    lowered = url.lower()
+    return "/img/blur/" in lowered or "/blur_" in lowered
+
+
+def _nested_value(payload: dict | None, *path: str) -> object | None:
+    value: object = payload or {}
+    for key in path:
+        if not isinstance(value, dict):
+            return None
+        value = value.get(key)
+    return value
+
+
+def _nested_list(payload: dict | None, *path: str) -> list:
+    value = _nested_value(payload, *path)
+    return value if isinstance(value, list) else []
 
 
 def _trim_message(text: str, *, max_length: int) -> str:

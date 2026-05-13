@@ -66,9 +66,24 @@ class FakeSender:
     async def send_message(self, *, bot_token: str, chat_id: str, text: str, parse_mode: str) -> None:
         self.calls.append(
             {
+                "method": "send_message",
                 "bot_token": bot_token,
                 "chat_id": chat_id,
                 "text": text,
+                "parse_mode": parse_mode,
+            }
+        )
+        if self.error is not None:
+            raise self.error
+
+    async def send_photo(self, *, bot_token: str, chat_id: str, photo_url: str, caption: str, parse_mode: str) -> None:
+        self.calls.append(
+            {
+                "method": "send_photo",
+                "bot_token": bot_token,
+                "chat_id": chat_id,
+                "photo_url": photo_url,
+                "caption": caption,
                 "parse_mode": parse_mode,
             }
         )
@@ -138,9 +153,31 @@ class TelegramSenderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(entry.sent_at, NOW)
         self.assertIsNone(entry.next_attempt_at)
         self.assertEqual(sender.calls[0]["bot_token"], "token")
+        self.assertEqual(sender.calls[0]["method"], "send_message")
         self.assertEqual(sender.calls[0]["chat_id"], "chat")
         self.assertEqual(sender.calls[0]["text"], "Lot message")
         self.assertEqual(session.flushes, 1)
+
+    async def test_photo_payload_sends_photo_with_caption(self) -> None:
+        entry = make_entry(message_payload={"text": "Lot message", "parse_mode": "MarkdownV2", "photo_url": "https://example.test/lot.jpg"})
+        sender = FakeSender()
+        session = FakeSession([entry])
+
+        result = await send_pending_telegram_notifications(
+            session,
+            bot_token="token",
+            chat_id="chat",
+            limit=10,
+            dry_run=False,
+            sender=sender,
+            now=NOW,
+        )
+
+        self.assertEqual(result, TelegramSenderBatchResult(selected=1, sent=1))
+        self.assertEqual(sender.calls[0]["method"], "send_photo")
+        self.assertEqual(sender.calls[0]["photo_url"], "https://example.test/lot.jpg")
+        self.assertEqual(sender.calls[0]["caption"], "Lot message")
+        self.assertEqual(entry.status, "sent")
 
     async def test_per_entry_chat_id_overrides_global_chat_id(self) -> None:
         entry = make_entry(telegram_chat_id="personal-chat")

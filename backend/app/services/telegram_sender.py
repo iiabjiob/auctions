@@ -15,7 +15,8 @@ from app.models.auction import TelegramNotificationOutbox
 from app.schemas.lot_decision_report import TelegramNotificationStatus
 
 
-TELEGRAM_SEND_URL_TEMPLATE = "https://api.telegram.org/bot{bot_token}/sendMessage"
+TELEGRAM_SEND_MESSAGE_URL_TEMPLATE = "https://api.telegram.org/bot{bot_token}/sendMessage"
+TELEGRAM_SEND_PHOTO_URL_TEMPLATE = "https://api.telegram.org/bot{bot_token}/sendPhoto"
 
 
 class TelegramSenderError(Exception):
@@ -31,6 +32,17 @@ class TelegramMessageSender(Protocol):
         bot_token: str,
         chat_id: str,
         text: str,
+        parse_mode: str,
+    ) -> None:
+        ...
+
+    async def send_photo(
+        self,
+        *,
+        bot_token: str,
+        chat_id: str,
+        photo_url: str,
+        caption: str,
         parse_mode: str,
     ) -> None:
         ...
@@ -84,11 +96,49 @@ class TelegramBotApiSender:
             }
         ).encode("utf-8")
         request = Request(
-            TELEGRAM_SEND_URL_TEMPLATE.format(bot_token=bot_token),
+            TELEGRAM_SEND_MESSAGE_URL_TEMPLATE.format(bot_token=bot_token),
             data=payload,
             headers={"Content-Type": "application/json"},
             method="POST",
         )
+        self._post_request(request)
+
+    async def send_photo(
+        self,
+        *,
+        bot_token: str,
+        chat_id: str,
+        photo_url: str,
+        caption: str,
+        parse_mode: str,
+    ) -> None:
+        await asyncio.to_thread(
+            self._send_photo_sync,
+            bot_token=bot_token,
+            chat_id=chat_id,
+            photo_url=photo_url,
+            caption=caption,
+            parse_mode=parse_mode,
+        )
+
+    def _send_photo_sync(self, *, bot_token: str, chat_id: str, photo_url: str, caption: str, parse_mode: str) -> None:
+        payload = json.dumps(
+            {
+                "chat_id": chat_id,
+                "photo": photo_url,
+                "caption": caption,
+                "parse_mode": parse_mode,
+            }
+        ).encode("utf-8")
+        request = Request(
+            TELEGRAM_SEND_PHOTO_URL_TEMPLATE.format(bot_token=bot_token),
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        self._post_request(request)
+
+    def _post_request(self, request: Request) -> None:
         try:
             with urlopen(request, timeout=self.timeout_seconds) as response:
                 response_payload = json.loads(response.read().decode("utf-8"))
@@ -163,12 +213,22 @@ async def send_pending_telegram_notifications(
             failed += 1
             continue
         try:
-            await resolved_sender.send_message(
-                bot_token=bot_token,
-                chat_id=target_chat_id,
-                text=str(message_payload.get("text") or ""),
-                parse_mode=str(message_payload.get("parse_mode") or "MarkdownV2"),
-            )
+            photo_url = str(message_payload.get("photo_url") or "").strip()
+            if photo_url.startswith(("http://", "https://")):
+                await resolved_sender.send_photo(
+                    bot_token=bot_token,
+                    chat_id=target_chat_id,
+                    photo_url=photo_url,
+                    caption=str(message_payload.get("text") or ""),
+                    parse_mode=str(message_payload.get("parse_mode") or "MarkdownV2"),
+                )
+            else:
+                await resolved_sender.send_message(
+                    bot_token=bot_token,
+                    chat_id=target_chat_id,
+                    text=str(message_payload.get("text") or ""),
+                    parse_mode=str(message_payload.get("parse_mode") or "MarkdownV2"),
+                )
         except TelegramSenderError as error:
             retryable = error.retryable
             if _mark_retry_or_failed(

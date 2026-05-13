@@ -29,6 +29,8 @@ def make_report(**overrides: object) -> LotDecisionReport:
         "region": "Moscow Oblast",
         "current_price": "1000000 RUB",
         "deadline": "10.05.2026 18:00",
+        "source_lot_url": "https://tbankrot.ru/item?id=lot-1",
+        "image_url": "https://tbankrot.ru/upload/lot/photo.jpg",
         "rating_score": 92,
         "rating_level": "high",
         "economics": LotEconomicsDecision(
@@ -61,6 +63,7 @@ class TelegramLotMessageTests(unittest.TestCase):
         message = render_telegram_lot_message(make_report(), link="https://app.test/lots/1")
 
         self.assertEqual(message.parse_mode, "MarkdownV2")
+        self.assertEqual(message.photo_url, "https://tbankrot.ru/upload/lot/photo.jpg")
         self.assertIn("*Tracked excavator*", message.text)
         self.assertIn("Регион: Moscow Oblast", message.text)
         self.assertIn("Цена: 1000000 RUB", message.text)
@@ -74,6 +77,12 @@ class TelegramLotMessageTests(unittest.TestCase):
         self.assertIn("\\- Review documents", message.text)
         self.assertIn("Ссылка: https://app\\.test/lots/1", message.text)
         self.assertEqual(message.message_length, len(message.text))
+
+    def test_message_uses_source_lot_link_by_default(self) -> None:
+        message = render_telegram_lot_message(make_report())
+
+        self.assertIn("Ссылка: https://tbankrot\\.ru/item?id\\=lot\\-1", message.text)
+        self.assertNotIn("/auctions/lots", message.text)
 
     def test_message_escapes_markdown_v2(self) -> None:
         message = render_telegram_lot_message(

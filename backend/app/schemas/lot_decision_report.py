@@ -87,6 +87,7 @@ class TelegramLotMessage(BaseModel):
 
     text: str
     parse_mode: Literal["MarkdownV2"] = "MarkdownV2"
+    photo_url: str | None = None
     lot_record_id: int
     source: str
     auction_id: str
@@ -109,6 +110,8 @@ class LotDecisionReport(BaseModel):
     region: str | None = None
     current_price: str | None = None
     deadline: str | None = None
+    source_lot_url: str | None = None
+    image_url: str | None = None
 
     rating_score: int = Field(ge=0, le=100)
     rating_level: str
