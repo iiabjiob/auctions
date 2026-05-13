@@ -8,6 +8,7 @@ from app.infrastructure.db.database import get_db
 from app.models import UserModel
 from app.schemas.user_interest_profiles import (
     UserInterestProfileCreate,
+    UserInterestProfileFromPreset,
     UserInterestProfileResponse,
     UserInterestProfileUpdate,
 )
@@ -31,6 +32,15 @@ async def create_user_interest_profile(
     current_user: UserModel = Depends(get_current_user),
 ) -> UserInterestProfileResponse:
     return await user_interest_profile_service.create(session, current_user, payload)
+
+
+@router.post("/from-preset", response_model=UserInterestProfileResponse, status_code=status.HTTP_201_CREATED)
+async def create_user_interest_profile_from_preset(
+    payload: UserInterestProfileFromPreset,
+    session: AsyncSession = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
+) -> UserInterestProfileResponse:
+    return await user_interest_profile_service.create_from_preset(session, current_user, payload)
 
 
 @router.patch("/{profile_id}", response_model=UserInterestProfileResponse)

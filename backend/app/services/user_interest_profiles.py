@@ -7,9 +7,10 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import UserInterestProfileModel, UserModel
+from app.models import FilterPresetModel, UserInterestProfileModel, UserModel
 from app.schemas.user_interest_profiles import (
     UserInterestProfileCreate,
+    UserInterestProfileFromPreset,
     UserInterestProfileResponse,
     UserInterestProfileUpdate,
 )
@@ -38,9 +39,43 @@ class UserInterestProfileService:
         profile = UserInterestProfileModel(
             id=f"uip_{uuid4().hex[:24]}",
             owner_user_id=user.id,
+            source_filter_preset_id=payload.source_filter_preset_id,
             name=name,
             profile_payload=payload.profile_payload,
             min_rating=payload.min_rating,
+            notification_priority_threshold=payload.notification_priority_threshold,
+            telegram_enabled=payload.telegram_enabled,
+            is_active=payload.is_active,
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        )
+        session.add(profile)
+        await session.commit()
+        await session.refresh(profile)
+        return UserInterestProfileResponse.model_validate(profile, from_attributes=True)
+
+    async def create_from_preset(
+        self,
+        session: AsyncSession,
+        user: UserModel,
+        payload: UserInterestProfileFromPreset,
+    ) -> UserInterestProfileResponse:
+        preset = await self._get_owned_preset(session, user.id, payload.preset_id)
+        name = (payload.name or preset.name).strip()
+        if not name:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Profile name is required.")
+        await self._ensure_name_available(session, user.id, name)
+        profile_payload = build_profile_payload_from_filter_preset(preset.filters)
+        min_rating = payload.min_rating
+        if min_rating is None:
+            min_rating = _filter_int(preset.filters, "minRating", "min_rating") or 0
+        profile = UserInterestProfileModel(
+            id=f"uip_{uuid4().hex[:24]}",
+            owner_user_id=user.id,
+            source_filter_preset_id=preset.id,
+            name=name,
+            profile_payload=profile_payload,
+            min_rating=min_rating,
             notification_priority_threshold=payload.notification_priority_threshold,
             telegram_enabled=payload.telegram_enabled,
             is_active=payload.is_active,
@@ -75,6 +110,8 @@ class UserInterestProfileService:
 
         if "profile_payload" in updates:
             profile.profile_payload = updates["profile_payload"]
+        if "source_filter_preset_id" in updates:
+            profile.source_filter_preset_id = updates["source_filter_preset_id"]
         if "min_rating" in updates:
             profile.min_rating = updates["min_rating"]
         if "notification_priority_threshold" in updates:
@@ -127,6 +164,84 @@ class UserInterestProfileService:
         if exclude_id and existing.id == exclude_id:
             return
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Profile with this name already exists.")
+
+    async def _get_owned_preset(self, session: AsyncSession, user_id: str, preset_id: str) -> FilterPresetModel:
+        statement = select(FilterPresetModel).where(
+            FilterPresetModel.id == preset_id,
+            FilterPresetModel.owner_user_id == user_id,
+        )
+        preset = await session.scalar(statement)
+        if preset is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Preset not found.")
+        return preset
+
+
+def build_profile_payload_from_filter_preset(filters: dict) -> dict:
+    payload = {
+        "profile_identifier": None,
+        "target_regions": _filter_text_list(filters, "targetRegions", "target_regions", "regions"),
+        "target_categories": _filter_text_list(
+            filters,
+            "targetCategories",
+            "target_categories",
+            "categories",
+            "analysisCategory",
+            "category",
+        ),
+        "budget_min": _filter_number(filters, "minPrice", "min_price", "budget_min"),
+        "budget_max": _filter_number(filters, "maxPrice", "max_price", "budget_max"),
+        "minimum_roi": None,
+        "minimum_discount": None,
+        "allowed_legal_risks": _filter_text_list(filters, "allowedLegalRisks", "allowed_legal_risks")
+        or ["low", "medium"],
+        "max_distance_km": None,
+        "stop_words": _filter_text_list(filters, "stopWords", "stop_words"),
+        "desired_keywords": _filter_text_list(filters, "desiredKeywords", "desired_keywords", "q", "status"),
+        "strategy": "balanced",
+        "weights": {},
+    }
+    return {key: value for key, value in payload.items() if value not in (None, [], {})}
+
+
+def _filter_text_list(filters: dict, *keys: str) -> list[str]:
+    values: list[str] = []
+    seen: set[str] = set()
+    for key in keys:
+        value = filters.get(key)
+        candidates = value if isinstance(value, list) else str(value or "").split(",")
+        for candidate in candidates:
+            text = str(candidate or "").strip()
+            normalized = text.casefold()
+            if not text or normalized in seen or normalized == "all":
+                continue
+            seen.add(normalized)
+            values.append(text)
+    return values
+
+
+def _filter_number(filters: dict, *keys: str) -> str | None:
+    for key in keys:
+        value = filters.get(key)
+        if value is None:
+            continue
+        normalized = str(value).strip().replace(" ", "").replace(",", ".")
+        if not normalized:
+            continue
+        try:
+            number = float(normalized)
+        except ValueError:
+            continue
+        if number.is_integer():
+            return str(int(number))
+        return str(number)
+    return None
+
+
+def _filter_int(filters: dict, *keys: str) -> int | None:
+    value = _filter_number(filters, *keys)
+    if value is None:
+        return None
+    return max(0, min(100, int(float(value))))
 
 
 user_interest_profile_service = UserInterestProfileService()

@@ -13,6 +13,7 @@ NotificationPriorityThreshold = Literal["urgent", "high", "medium", "low"]
 
 class UserInterestProfileBase(BaseModel):
     name: str = Field(min_length=1, max_length=160)
+    source_filter_preset_id: str | None = None
     profile_payload: dict = Field(default_factory=dict)
     min_rating: int = Field(default=0, ge=0, le=100)
     notification_priority_threshold: NotificationPriorityThreshold | None = "medium"
@@ -31,6 +32,7 @@ class UserInterestProfileCreate(UserInterestProfileBase):
 
 class UserInterestProfileUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=160)
+    source_filter_preset_id: str | None = None
     profile_payload: dict | None = None
     min_rating: int | None = Field(default=None, ge=0, le=100)
     notification_priority_threshold: NotificationPriorityThreshold | None = None
@@ -50,3 +52,12 @@ class UserInterestProfileResponse(UserInterestProfileBase):
     owner_user_id: str
     created_at: datetime | None = None
     updated_at: datetime | None = None
+
+
+class UserInterestProfileFromPreset(BaseModel):
+    preset_id: str = Field(min_length=1, max_length=32)
+    name: str | None = Field(default=None, min_length=1, max_length=160)
+    min_rating: int | None = Field(default=None, ge=0, le=100)
+    notification_priority_threshold: NotificationPriorityThreshold | None = "medium"
+    telegram_enabled: bool = True
+    is_active: bool = True

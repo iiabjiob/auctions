@@ -17,6 +17,7 @@ export type LotScoringProfilePayload = {
 export type UserInterestProfile = {
   id: string
   owner_user_id: string
+  source_filter_preset_id: string | null
   name: string
   profile_payload: LotScoringProfilePayload
   min_rating: number
@@ -29,6 +30,7 @@ export type UserInterestProfile = {
 
 export type UserInterestProfileCreate = {
   name: string
+  source_filter_preset_id?: string | null
   profile_payload: LotScoringProfilePayload
   min_rating?: number
   notification_priority_threshold?: 'urgent' | 'high' | 'medium' | 'low' | null
@@ -37,3 +39,12 @@ export type UserInterestProfileCreate = {
 }
 
 export type UserInterestProfileUpdate = Partial<UserInterestProfileCreate>
+
+export type UserInterestProfileFromPreset = {
+  preset_id: string
+  name?: string | null
+  min_rating?: number | null
+  notification_priority_threshold?: 'urgent' | 'high' | 'medium' | 'low' | null
+  telegram_enabled?: boolean
+  is_active?: boolean
+}

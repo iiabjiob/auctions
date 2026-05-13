@@ -33,6 +33,7 @@ import { ApiRequestError as ApiClientRequestError } from './api/http'
 import { fetchLotDecisionReport } from './api/decisionReports'
 import {
   createUserInterestProfile,
+  createUserInterestProfileFromPreset,
   deleteUserInterestProfile,
   fetchUserInterestProfiles,
   updateUserInterestProfile,
@@ -719,6 +720,7 @@ const auctionPipelineHealth = ref<AuctionPipelineHealthResponse | null>(null)
 const selectedPresetId = ref('')
 const presetDialogMode = ref<PresetDialogMode>('create')
 const presetNameDraft = ref('')
+const telegramPresetIdDraft = ref('')
 const interestProfileDraft = reactive<InterestProfileDraft>({
   name: '',
   minRating: 0,
@@ -3932,6 +3934,7 @@ function resetInterestProfileDraft() {
   interestProfileDraft.minRating = filters.minRating > 0 ? filters.minRating : 80
   interestProfileDraft.telegramEnabled = true
   interestProfileDraft.isActive = true
+  telegramPresetIdDraft.value = selectedPresetId.value || presets.value[0]?.id || ''
 }
 
 function defaultInterestProfileName() {
@@ -3953,6 +3956,7 @@ function interestProfileNote(profile: UserInterestProfile) {
   if (payload.budget_min || payload.budget_max) {
     parts.push(`бюджет ${payload.budget_min ?? '0'}-${payload.budget_max ?? '∞'}`)
   }
+  if (profile.source_filter_preset_id) parts.push('из среза')
   parts.push(`рейтинг ${profile.min_rating}+`)
   return parts.join(' · ')
 }
@@ -3972,6 +3976,32 @@ async function createInterestProfileFromCurrentFilters() {
     resetInterestProfileDraft()
   } catch (error) {
     interestProfilesError.value = error instanceof Error ? error.message : 'Не удалось создать профиль интересов'
+  } finally {
+    interestProfilesSaving.value = false
+  }
+}
+
+async function createInterestProfileFromSelectedPreset() {
+  const preset = presets.value.find((item) => item.id === telegramPresetIdDraft.value)
+  if (!preset) {
+    interestProfilesError.value = 'Выберите сохраненный срез для Telegram'
+    return
+  }
+
+  interestProfilesSaving.value = true
+  interestProfilesError.value = ''
+  try {
+    const profile = await createUserInterestProfileFromPreset({
+      preset_id: preset.id,
+      name: preset.name,
+      min_rating: filters.minRating > 0 ? filters.minRating : null,
+      telegram_enabled: true,
+      is_active: true,
+    })
+    userInterestProfiles.value = sortUserInterestProfiles([...userInterestProfiles.value, profile])
+    telegramPresetIdDraft.value = preset.id
+  } catch (error) {
+    interestProfilesError.value = error instanceof Error ? error.message : 'Не удалось подключить срез к Telegram'
   } finally {
     interestProfilesSaving.value = false
   }
@@ -5786,6 +5816,43 @@ onUnmounted(() => {
                 >
                   Создать профиль
                 </button>
+              </section>
+
+              <section class="interest-profile-panel" aria-label="Подключить сохраненный срез к Telegram">
+                <div class="interest-profile-panel__header">
+                  <div>
+                    <h3>Подключить срез к Telegram</h3>
+                    <p>Выберите сохраненный срез. Backend превратит его фильтры в профиль интересов.</p>
+                  </div>
+                  <button
+                    class="secondary-button"
+                    type="button"
+                    :disabled="presetsLoading"
+                    @click="void loadPresets()"
+                  >
+                    Обновить срезы
+                  </button>
+                </div>
+
+                <div class="interest-profile-preset-row">
+                  <label class="app-dialog__field">
+                    <span>Срез для Telegram</span>
+                    <select v-model="telegramPresetIdDraft" :disabled="!presets.length || interestProfilesSaving">
+                      <option value="">Выберите срез</option>
+                      <option v-for="preset in presets" :key="preset.id" :value="preset.id">
+                        {{ preset.name }}
+                      </option>
+                    </select>
+                  </label>
+                  <button
+                    class="primary-button"
+                    type="button"
+                    :disabled="!telegramPresetIdDraft || interestProfilesSaving"
+                    @click="void createInterestProfileFromSelectedPreset()"
+                  >
+                    Подключить
+                  </button>
+                </div>
               </section>
 
               <section class="interest-profile-list" aria-label="Список профилей интересов">

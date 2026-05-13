@@ -2,6 +2,7 @@ import { apiRequest } from '@/api/http'
 import type {
   UserInterestProfile,
   UserInterestProfileCreate,
+  UserInterestProfileFromPreset,
   UserInterestProfileUpdate,
 } from '@/types/userInterestProfiles'
 
@@ -13,6 +14,16 @@ export async function fetchUserInterestProfiles(): Promise<UserInterestProfile[]
 
 export async function createUserInterestProfile(payload: UserInterestProfileCreate): Promise<UserInterestProfile> {
   return apiRequest<UserInterestProfile>('/user-interest-profiles', {
+    method: 'POST',
+    auth: true,
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function createUserInterestProfileFromPreset(
+  payload: UserInterestProfileFromPreset,
+): Promise<UserInterestProfile> {
+  return apiRequest<UserInterestProfile>('/user-interest-profiles/from-preset', {
     method: 'POST',
     auth: true,
     body: JSON.stringify(payload),

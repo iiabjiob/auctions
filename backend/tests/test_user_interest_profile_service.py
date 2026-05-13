@@ -5,9 +5,13 @@ from types import SimpleNamespace
 
 from fastapi import HTTPException
 
-from app.models import UserInterestProfileModel
-from app.schemas.user_interest_profiles import UserInterestProfileCreate, UserInterestProfileUpdate
-from app.services.user_interest_profiles import UserInterestProfileService
+from app.models import FilterPresetModel, UserInterestProfileModel
+from app.schemas.user_interest_profiles import (
+    UserInterestProfileCreate,
+    UserInterestProfileFromPreset,
+    UserInterestProfileUpdate,
+)
+from app.services.user_interest_profiles import UserInterestProfileService, build_profile_payload_from_filter_preset
 
 
 class FakeScalars:
@@ -76,7 +80,45 @@ def make_profile(**overrides: object) -> UserInterestProfileModel:
     return UserInterestProfileModel(**values)
 
 
+def make_preset(**overrides: object) -> FilterPresetModel:
+    values = {
+        "id": "preset_1",
+        "owner_user_id": "user-1",
+        "name": "BMW cars",
+        "filters": {
+            "minPrice": "2000000",
+            "maxPrice": "5000000",
+            "minRating": 85,
+            "status": "BMW",
+        },
+        "grid_view": None,
+        "is_favorite": False,
+    }
+    values.update(overrides)
+    return FilterPresetModel(**values)
+
+
 class UserInterestProfileServiceTests(unittest.IsolatedAsyncioTestCase):
+    def test_build_profile_payload_from_filter_preset_maps_supported_filters(self) -> None:
+        payload = build_profile_payload_from_filter_preset(
+            {
+                "minPrice": "2 000 000",
+                "maxPrice": "5 000 000",
+                "status": "BMW",
+                "analysisCategory": "Автомобили",
+                "targetRegions": ["Москва", "Московская область"],
+                "stopWords": "битый, залог",
+            }
+        )
+
+        self.assertEqual(payload["budget_min"], "2000000")
+        self.assertEqual(payload["budget_max"], "5000000")
+        self.assertEqual(payload["desired_keywords"], ["BMW"])
+        self.assertEqual(payload["target_categories"], ["Автомобили"])
+        self.assertEqual(payload["target_regions"], ["Москва", "Московская область"])
+        self.assertEqual(payload["stop_words"], ["битый", "залог"])
+        self.assertEqual(payload["allowed_legal_risks"], ["low", "medium"])
+
     async def test_create_stores_normalized_profile_for_user(self) -> None:
         session = FakeSession()
         service = UserInterestProfileService()
@@ -101,6 +143,42 @@ class UserInterestProfileServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(created.profile_payload["budget_min"], "2000000")
         self.assertEqual(session.commits, 1)
         self.assertEqual(session.refreshed, [created])
+
+    async def test_create_from_preset_stores_link_and_converted_payload(self) -> None:
+        preset = make_preset()
+        session = FakeSession(scalar_results=[preset, None])
+        service = UserInterestProfileService()
+
+        response = await service.create_from_preset(
+            session,
+            make_user(),
+            UserInterestProfileFromPreset(preset_id=preset.id, telegram_enabled=True),
+        )
+
+        self.assertEqual(response.name, "BMW cars")
+        self.assertEqual(response.source_filter_preset_id, preset.id)
+        self.assertEqual(response.min_rating, 85)
+        self.assertEqual(response.profile_payload["budget_min"], "2000000")
+        self.assertEqual(response.profile_payload["budget_max"], "5000000")
+        self.assertEqual(response.profile_payload["desired_keywords"], ["BMW"])
+        created = session.added[0]
+        self.assertEqual(created.source_filter_preset_id, preset.id)
+        self.assertEqual(session.commits, 1)
+
+    async def test_create_from_preset_requires_owned_preset(self) -> None:
+        session = FakeSession(scalar_results=[None])
+        service = UserInterestProfileService()
+
+        with self.assertRaises(HTTPException) as error:
+            await service.create_from_preset(
+                session,
+                make_user("user-2"),
+                UserInterestProfileFromPreset(preset_id="preset_1"),
+            )
+
+        self.assertEqual(error.exception.status_code, 404)
+        self.assertEqual(error.exception.detail, "Preset not found.")
+        self.assertEqual(session.added, [])
 
     async def test_create_duplicate_name_returns_conflict(self) -> None:
         session = FakeSession(scalar_results=[make_profile()])

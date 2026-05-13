@@ -15,6 +15,10 @@ class UserInterestProfileModel(Base):
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     owner_user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    source_filter_preset_id: Mapped[str | None] = mapped_column(
+        ForeignKey("filter_presets.id", ondelete="SET NULL"),
+        index=True,
+    )
     name: Mapped[str] = mapped_column(String(160), nullable=False)
     profile_payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     min_rating: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")

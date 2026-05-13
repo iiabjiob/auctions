@@ -793,6 +793,13 @@ h2 {
   background: var(--color-surface);
 }
 
+.interest-profile-preset-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+}
+
 .interest-profile-card--empty {
   display: block;
   background: var(--color-surface-subtle);
@@ -2148,7 +2155,8 @@ input[type='range'] {
 
   .analysis-config-section__header,
   .interest-profile-panel__header,
-  .interest-profile-card {
+  .interest-profile-card,
+  .interest-profile-preset-row {
     display: grid;
   }
 
