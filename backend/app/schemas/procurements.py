@@ -80,6 +80,9 @@ class ProcurementLotResponse(BaseModel):
     excluded_keywords: list[str]
     filter_reason: str | None
     attractiveness: ProcurementAttractiveness
+    scoring_version: str | None
+    scoring_input_hash: str | None
+    scored_at: datetime | None
     workflow_status: str
     assignee: str | None
     comment: str | None

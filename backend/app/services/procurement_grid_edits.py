@@ -30,6 +30,7 @@ from app.services.procurement_grid_state import (
     bump_procurement_lot_dataset_version,
     procurement_lot_grid_row_id,
 )
+from app.services.procurement_scoring import apply_procurement_score
 
 
 class ProcurementGridEditConflictError(Exception):
@@ -187,6 +188,7 @@ async def commit_procurement_lot_grid_edits(
 
         if should_recalculate:
             recalculate_procurement_lot(record)
+        apply_procurement_score(record)
         _sync_procurement_lot_search_text(None, None, record)
         updated_records[stable_row_id] = record
 

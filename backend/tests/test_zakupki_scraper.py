@@ -163,7 +163,7 @@ class ZakupkiScraperTests(unittest.TestCase):
         self.assertGreaterEqual(result.diagnostics.missing_required_fields["title"], 1)
         self.assertGreaterEqual(result.diagnostics.missing_required_fields["initial_price"], 1)
 
-    def test_score_procurement_lot_prioritizes_active_near_deadline_items(self) -> None:
+    def test_score_procurement_lot_uses_parser_only_fallback_for_active_items(self) -> None:
         item = parse_search_results(
             """
             <div class="registry-entry__header-mid__number">
@@ -188,5 +188,5 @@ class ZakupkiScraperTests(unittest.TestCase):
 
         score = score_procurement_lot(item, current_time=datetime(2026, 5, 13, tzinfo=UTC))
 
-        self.assertEqual(score.level, "high")
-        self.assertGreaterEqual(score.score, 80)
+        self.assertEqual(score.level, "low")
+        self.assertGreaterEqual(score.score, 40)

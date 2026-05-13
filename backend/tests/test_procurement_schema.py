@@ -45,6 +45,9 @@ class ProcurementSchemaTests(unittest.TestCase):
             "cash_gap_peak",
             "calculator_inputs",
             "calculator_scenarios",
+            "scoring_version",
+            "scoring_input_hash",
+            "scored_at",
         ):
             self.assertIn(column_name, columns)
 
@@ -58,6 +61,7 @@ class ProcurementSchemaTests(unittest.TestCase):
         self.assertIn("workflow_status", ddl)
         self.assertIn("matched_keywords JSONB", ddl)
         self.assertIn("calculator_inputs JSONB", ddl)
+        self.assertIn("scoring_version", ddl)
         self.assertIn("profitability NUMERIC(10, 6)", ddl)
 
     def test_procurement_search_text_includes_v1_fields(self) -> None:
@@ -84,13 +88,13 @@ class ProcurementSchemaTests(unittest.TestCase):
         self.assertIn("7700000000", record.search_text or "")
         self.assertIn("review", record.search_text or "")
 
-    def test_procurement_calculator_migration_follows_current_head(self) -> None:
-        migration_path = Path("alembic/versions/202605130012_add_procurement_calculator_payloads.py")
-        spec = importlib.util.spec_from_file_location("procurement_calculator_migration", migration_path)
+    def test_procurement_scoring_migration_follows_current_head(self) -> None:
+        migration_path = Path("alembic/versions/202605130013_add_procurement_scoring_metadata.py")
+        spec = importlib.util.spec_from_file_location("procurement_scoring_migration", migration_path)
         self.assertIsNotNone(spec)
         self.assertIsNotNone(spec.loader)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
 
-        self.assertEqual(module.revision, "202605130012")
-        self.assertEqual(module.down_revision, "202605130011")
+        self.assertEqual(module.revision, "202605130013")
+        self.assertEqual(module.down_revision, "202605130012")

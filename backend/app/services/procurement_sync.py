@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.procurement import ProcurementLotRecord, ProcurementSourceState
 from app.schemas.procurements import ProcurementLotItem, ProcurementSyncResult
 from app.services.procurement_classification import ProcurementClassification, classify_procurement_lot
-from app.services.procurement_scoring import score_procurement_lot
+from app.services.procurement_scoring import apply_procurement_score
 from app.services.procurement_values import parse_scraped_datetime
 from app.services.zakupki_scraper import fetch_procurement_list, source_info
 
@@ -56,7 +56,6 @@ async def sync_zakupki_procurements(session: AsyncSession, *, limit: int | None 
         record = await _find_record(session, source_code=info.code, external_id=item.external_id)
         publication_at = parse_scraped_datetime(item.publication_date)
         deadline_at = parse_scraped_datetime(item.application_deadline)
-        attractiveness = score_procurement_lot(item, current_time=now)
         is_new = _is_new(publication_at=publication_at, observed_at=now)
 
         if record is None:
@@ -93,12 +92,13 @@ async def sync_zakupki_procurements(session: AsyncSession, *, limit: int | None 
                 matched_keywords=prepared.classification.matched_keywords,
                 excluded_keywords=prepared.classification.excluded_keywords,
                 filter_reason=prepared.classification.filter_reason,
-                attractiveness_score=attractiveness.score,
-                attractiveness_level=attractiveness.level,
-                attractiveness_reasons=attractiveness.reasons,
+                attractiveness_score=0,
+                attractiveness_level="reject",
+                attractiveness_reasons=[],
                 normalized_item=prepared.normalized_item,
                 raw_item=item.model_dump(mode="json"),
             )
+            apply_procurement_score(record, current_time=now)
             session.add(record)
             result.created += 1
             continue
@@ -133,11 +133,9 @@ async def sync_zakupki_procurements(session: AsyncSession, *, limit: int | None 
         record.matched_keywords = prepared.classification.matched_keywords
         record.excluded_keywords = prepared.classification.excluded_keywords
         record.filter_reason = prepared.classification.filter_reason
-        record.attractiveness_score = attractiveness.score
-        record.attractiveness_level = attractiveness.level
-        record.attractiveness_reasons = attractiveness.reasons
         record.normalized_item = prepared.normalized_item
         record.raw_item = item.model_dump(mode="json")
+        apply_procurement_score(record, current_time=now)
         if status_changed:
             record.status_changed_at = now
             result.status_changed += 1
