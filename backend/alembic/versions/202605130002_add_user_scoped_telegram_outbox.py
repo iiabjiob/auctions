@@ -28,7 +28,7 @@ def upgrade() -> None:
         sa.Column("interest_profile_id", sa.String(length=32), nullable=True),
     )
     op.create_foreign_key(
-        "fk_telegram_notification_outbox_user_id_users",
+        "fk_tg_outbox_user_id",
         "telegram_notification_outbox",
         "users",
         ["user_id"],
@@ -36,7 +36,7 @@ def upgrade() -> None:
         ondelete="CASCADE",
     )
     op.create_foreign_key(
-        "fk_telegram_notification_outbox_interest_profile_id_user_interest_profiles",
+        "fk_tg_outbox_interest_profile_id",
         "telegram_notification_outbox",
         "user_interest_profiles",
         ["interest_profile_id"],
@@ -61,12 +61,12 @@ def downgrade() -> None:
     op.drop_index("ix_telegram_notification_outbox_interest_profile_id", table_name="telegram_notification_outbox")
     op.drop_index("ix_telegram_notification_outbox_user_id", table_name="telegram_notification_outbox")
     op.drop_constraint(
-        "fk_telegram_notification_outbox_interest_profile_id_user_interest_profiles",
+        "fk_tg_outbox_interest_profile_id",
         "telegram_notification_outbox",
         type_="foreignkey",
     )
     op.drop_constraint(
-        "fk_telegram_notification_outbox_user_id_users",
+        "fk_tg_outbox_user_id",
         "telegram_notification_outbox",
         type_="foreignkey",
     )
