@@ -1,4 +1,4 @@
- ## [] Slice 1: Atomic Saved View Apply
+ ## [x] Slice 1: Atomic Saved View Apply
 
   Контекст:
   В package уже есть API для atomic saved-view/state apply без ручного pauseBackpressure/RAF/flush choreography.

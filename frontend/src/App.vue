@@ -23,6 +23,7 @@ import {
   createDataSourceBackedRowModel,
   type DataGridColumnHistogram,
   type DataGridDataSource,
+  type DataGridExternalRowUpdate,
   type DataGridFilterSnapshot,
   type DataGridSetStateOptions,
   type DataGridSortState,
@@ -817,8 +818,6 @@ const catalogQueryPlaceholderVisible = ref(false)
 const gridRowRevision = ref(0)
 const latestAuctionGridDatasetVersion = ref<number | null>(null)
 const loadingSkeletonVisibleRows = ref(LOADING_SKELETON_MIN_ROWS)
-let suppressGridCellChangeDepth = 0
-let suppressGridCommitEditsDepth = 0
 let resizeStartX = 0
 let resizeStartWidth = 0
 let detailRequestId = 0
@@ -3023,8 +3022,13 @@ function applyWorkspaceRows(
     if (!existing && !matchesQuickFilters(mapped)) continue
 
     if (existing) {
-      Object.assign(existing, mapped, { rowRevision: existing.rowRevision })
-      mappedUpdates.push(existing)
+      mapped.rowRevision = existing.rowRevision
+      byId.set(mapped.id, mapped)
+      const rowIndex = allRows.value.findIndex((row) => row.id === mapped.id)
+      if (rowIndex >= 0) {
+        allRows.value[rowIndex] = mapped
+      }
+      mappedUpdates.push(mapped)
     } else {
       byId.set(mapped.id, mapped)
       loadedGridRowIds.add(mapped.id)
@@ -3040,7 +3044,7 @@ function applyWorkspaceRows(
     }
   }
   if (options.patchGrid !== false) {
-    patchGridRowsInDataGrid(mappedUpdates)
+    applyExternalGridRowUpdates(mappedUpdates)
   }
   if (options.refreshSummary !== false) {
     scheduleGridSummaryRefresh()
@@ -3069,24 +3073,15 @@ function getLatestGridRow(rowId: string) {
   return gridRowsById.value.get(rowId) ?? optimisticGridRows.get(rowId) ?? null
 }
 
-function patchGridRowsInDataGrid(rows: readonly GridLotRow[]) {
+function applyExternalGridRowUpdates(rows: readonly GridLotRow[]) {
   const api = gridRef.value?.getApi()
-  if (!api?.rows.hasPatchSupport() || !rows.length) return
+  if (!api?.rows.hasExternalUpdateSupport() || !rows.length) return
 
-  suppressGridCellChangeDepth += 1
-  suppressGridCommitEditsDepth += 1
-  try {
-    api.rows.applyEdits(
-      rows.map((row) => ({
-        rowId: resolveClientGridRowId(row),
-        data: row,
-      })),
-      { emit: false, reapply: false },
-    )
-  } finally {
-    suppressGridCellChangeDepth = Math.max(0, suppressGridCellChangeDepth - 1)
-    suppressGridCommitEditsDepth = Math.max(0, suppressGridCommitEditsDepth - 1)
-  }
+  const updates: DataGridExternalRowUpdate<GridLotRow>[] = rows.map((row) => ({
+    rowId: resolveClientGridRowId(row),
+    row,
+  }))
+  api.rows.applyExternalUpdates(updates)
 }
 
 function scheduleGridSummaryRefresh() {
@@ -3213,13 +3208,6 @@ function normalizeGridRowPatch(row: Partial<GridLotRow>) {
 }
 
 async function commitCatalogEdits(request: CatalogCommitEditsRequest): Promise<CatalogCommitEditsResult> {
-  if (suppressGridCommitEditsDepth > 0) {
-    return {
-      committed: request.edits.map((edit) => ({
-        rowId: edit.rowId,
-      })),
-    }
-  }
   return commitCatalogServerGridEdits(request)
 }
 
@@ -3383,7 +3371,7 @@ function restoreServerGridEditRows(rowContexts: Map<string, CatalogServerGridEdi
     const backendRow = gridRowsById.value.get(context.currentRow.id) ?? null
     if (!backendRow) continue
     optimisticGridRows.delete(context.currentRow.id)
-    patchGridRowsInDataGrid([backendRow])
+    applyExternalGridRowUpdates([backendRow])
     rememberGridWorkSnapshot(backendRow)
     if (selectedLot.value?.id === context.currentRow.id) {
       selectedLot.value = backendRow
