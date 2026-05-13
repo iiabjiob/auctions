@@ -13,7 +13,9 @@ import {
 } from '@affino/menu-vue'
 import {
   DataGrid,
+  type DataGridAppColumnFilterOptions,
   type DataGridAppColumnInput,
+  type DataGridAppFilterValueNormalizationContext,
   type DataGridCellStyleResolver,
   type DataGridColumnMenuProp,
   type DataGridExposed,
@@ -997,6 +999,21 @@ const loadingSkeletonColumns = [
 const loadingSkeletonRows = computed(() => Array.from({ length: loadingSkeletonVisibleRows.value }, (_, index) => index))
 const loadingSkeletonTemplate = loadingSkeletonColumns.map((column) => `${column.width}px`).join(' ')
 
+function normalizePercentFilterValue(context: DataGridAppFilterValueNormalizationContext) {
+  const value = context.value
+  if (value === null || value === undefined || value === '') return value
+
+  const parsed = Number(String(value).trim().replace(/\s+/g, '').replace('%', '').replace(',', '.'))
+  if (!Number.isFinite(parsed)) return value
+  return String(parsed / 100)
+}
+
+const predicateFilterOnly = { valueSet: false } satisfies DataGridAppColumnFilterOptions
+const percentPredicateFilter = {
+  valueSet: false,
+  normalizeValue: normalizePercentFilterValue,
+} satisfies DataGridAppColumnFilterOptions
+
 const typedColumns: DataGridAppColumnInput<GridLotRow>[] = [
   {
     key: 'ratingScore',
@@ -1005,6 +1022,7 @@ const typedColumns: DataGridAppColumnInput<GridLotRow>[] = [
     initialState: { width: 96 },
     presentation: { align: 'right', headerAlign: 'right' },
     capabilities: { sortable: true, filterable: true, aggregatable: true },
+    filter: predicateFilterOnly,
   },
   {
     key: 'analysisLabel',
@@ -1047,8 +1065,8 @@ const typedColumns: DataGridAppColumnInput<GridLotRow>[] = [
     initialState: { width: 88 },
     capabilities: { sortable: true, filterable: true },
   },
-  { key: 'sourceTitle', label: 'Площадка', initialState: { width: 120 } },
-  { key: 'auctionNumber', label: 'Аукцион', initialState: { width: 120 } },
+  { key: 'sourceTitle', label: 'Площадка', initialState: { width: 120 }, filter: predicateFilterOnly },
+  { key: 'auctionNumber', label: 'Аукцион', initialState: { width: 120 }, filter: predicateFilterOnly },
   {
     key: 'publicationDate',
     label: 'Дата публикации',
@@ -1067,12 +1085,14 @@ const typedColumns: DataGridAppColumnInput<GridLotRow>[] = [
       },
     },
     capabilities: { sortable: true, filterable: true },
+    filter: predicateFilterOnly,
   },
-  { key: 'lotNumber', label: 'Лот', initialState: { width: 76 } },
+  { key: 'lotNumber', label: 'Лот', initialState: { width: 76 }, filter: predicateFilterOnly },
   {
     key: 'lotName',
     label: 'Наименование',
     initialState: { width: 430 },
+    filter: predicateFilterOnly,
     cellInteraction: {
       click: true,
       keyboard: ['enter'],
@@ -1096,6 +1116,7 @@ const typedColumns: DataGridAppColumnInput<GridLotRow>[] = [
     label: 'Локация',
     initialState: { width: 220 },
     capabilities: { sortable: true, filterable: true },
+    filter: predicateFilterOnly,
   },
   {
     key: 'initialPrice',
@@ -1115,6 +1136,7 @@ const typedColumns: DataGridAppColumnInput<GridLotRow>[] = [
       },
     },
     capabilities: { sortable: true, filterable: true, aggregatable: true },
+    filter: predicateFilterOnly,
     cellRenderer: ({ row }) => formatCurrency(row?.initialPrice ?? null),
   },
   {
@@ -1135,6 +1157,7 @@ const typedColumns: DataGridAppColumnInput<GridLotRow>[] = [
       },
     },
     capabilities: { sortable: true, filterable: true, aggregatable: true },
+    filter: predicateFilterOnly,
     cellRenderer: ({ row }) => formatCurrency(row?.price ?? null),
   },
   {
@@ -1155,6 +1178,7 @@ const typedColumns: DataGridAppColumnInput<GridLotRow>[] = [
       },
     },
     capabilities: { sortable: true, filterable: true, aggregatable: true },
+    filter: predicateFilterOnly,
     cellRenderer: ({ row }) => formatCurrency(row?.minimumPrice ?? null),
   },
   {
@@ -1168,6 +1192,7 @@ const typedColumns: DataGridAppColumnInput<GridLotRow>[] = [
       format: { number: { locale: 'ru-RU', style: 'currency', currency: 'RUB', maximumFractionDigits: 2 } },
     },
     capabilities: { sortable: true, filterable: true, editable: true },
+    filter: predicateFilterOnly,
     cellRenderer: ({ row }) => formatCurrency(row?.marketValue ?? null),
   },
   {
@@ -1181,6 +1206,7 @@ const typedColumns: DataGridAppColumnInput<GridLotRow>[] = [
       format: { number: { locale: 'ru-RU', style: 'currency', currency: 'RUB', maximumFractionDigits: 2 } },
     },
     capabilities: { sortable: true, filterable: true, editable: true },
+    filter: predicateFilterOnly,
     cellRenderer: ({ row }) => formatCurrency(row?.platformFee ?? null),
   },
   {
@@ -1194,6 +1220,7 @@ const typedColumns: DataGridAppColumnInput<GridLotRow>[] = [
       format: { number: { locale: 'ru-RU', style: 'currency', currency: 'RUB', maximumFractionDigits: 2 } },
     },
     capabilities: { sortable: true, filterable: true, editable: true },
+    filter: predicateFilterOnly,
     cellRenderer: ({ row }) => formatCurrency(row?.deliveryCost ?? null),
   },
   {
@@ -1207,6 +1234,7 @@ const typedColumns: DataGridAppColumnInput<GridLotRow>[] = [
       format: { number: { locale: 'ru-RU', style: 'currency', currency: 'RUB', maximumFractionDigits: 2 } },
     },
     capabilities: { sortable: true, filterable: true, editable: true },
+    filter: predicateFilterOnly,
     cellRenderer: ({ row }) => formatCurrency(row?.dismantlingCost ?? null),
   },
   {
@@ -1220,6 +1248,7 @@ const typedColumns: DataGridAppColumnInput<GridLotRow>[] = [
       format: { number: { locale: 'ru-RU', style: 'currency', currency: 'RUB', maximumFractionDigits: 2 } },
     },
     capabilities: { sortable: true, filterable: true, editable: true },
+    filter: predicateFilterOnly,
     cellRenderer: ({ row }) => formatCurrency(row?.repairCost ?? null),
   },
   {
@@ -1233,6 +1262,7 @@ const typedColumns: DataGridAppColumnInput<GridLotRow>[] = [
       format: { number: { locale: 'ru-RU', style: 'currency', currency: 'RUB', maximumFractionDigits: 2 } },
     },
     capabilities: { sortable: true, filterable: true, editable: true },
+    filter: predicateFilterOnly,
     cellRenderer: ({ row }) => formatCurrency(row?.storageCost ?? null),
   },
   {
@@ -1246,6 +1276,7 @@ const typedColumns: DataGridAppColumnInput<GridLotRow>[] = [
       format: { number: { locale: 'ru-RU', style: 'currency', currency: 'RUB', maximumFractionDigits: 2 } },
     },
     capabilities: { sortable: true, filterable: true, editable: true },
+    filter: predicateFilterOnly,
     cellRenderer: ({ row }) => formatCurrency(row?.legalCost ?? null),
   },
   {
@@ -1259,6 +1290,7 @@ const typedColumns: DataGridAppColumnInput<GridLotRow>[] = [
       format: { number: { locale: 'ru-RU', style: 'currency', currency: 'RUB', maximumFractionDigits: 2 } },
     },
     capabilities: { sortable: true, filterable: true, editable: true },
+    filter: predicateFilterOnly,
     cellRenderer: ({ row }) => formatCurrency(row?.otherCosts ?? null),
   },
   {
@@ -1272,6 +1304,7 @@ const typedColumns: DataGridAppColumnInput<GridLotRow>[] = [
       format: { number: { locale: 'ru-RU', style: 'currency', currency: 'RUB', maximumFractionDigits: 2 } },
     },
     capabilities: { sortable: true, filterable: true, editable: true },
+    filter: predicateFilterOnly,
     cellRenderer: ({ row }) => formatCurrency(row?.targetProfit ?? null),
   },
   {
@@ -1286,6 +1319,7 @@ const typedColumns: DataGridAppColumnInput<GridLotRow>[] = [
       format: { number: { locale: 'ru-RU', style: 'currency', currency: 'RUB', maximumFractionDigits: 2 } },
     },
     capabilities: { sortable: true, filterable: true },
+    filter: predicateFilterOnly,
     cellRenderer: ({ row }) => formatCurrency(row?.totalExpenses ?? null),
   },
   {
@@ -1300,6 +1334,7 @@ const typedColumns: DataGridAppColumnInput<GridLotRow>[] = [
       format: { number: { locale: 'ru-RU', style: 'currency', currency: 'RUB', maximumFractionDigits: 2 } },
     },
     capabilities: { sortable: true, filterable: true },
+    filter: predicateFilterOnly,
     cellRenderer: ({ row }) => formatCurrency(row?.fullEntryCost ?? null),
   },
   {
@@ -1314,6 +1349,7 @@ const typedColumns: DataGridAppColumnInput<GridLotRow>[] = [
       format: { number: { locale: 'ru-RU', style: 'currency', currency: 'RUB', maximumFractionDigits: 2 } },
     },
     capabilities: { sortable: true, filterable: true },
+    filter: predicateFilterOnly,
     cellRenderer: ({ row }) => formatCurrency(row?.potentialProfit ?? null),
   },
   {
@@ -1324,6 +1360,7 @@ const typedColumns: DataGridAppColumnInput<GridLotRow>[] = [
     initialState: { width: 100 },
     presentation: { align: 'right', headerAlign: 'right', format: { number: { locale: 'ru-RU', style: 'percent', maximumFractionDigits: 1 } } },
     capabilities: { sortable: true, filterable: true },
+    filter: percentPredicateFilter,
     cellRenderer: ({ row }) => formatApiPercent(row?.roiValue),
   },
   {
@@ -1334,6 +1371,7 @@ const typedColumns: DataGridAppColumnInput<GridLotRow>[] = [
     initialState: { width: 146 },
     presentation: { align: 'right', headerAlign: 'right', format: { number: { locale: 'ru-RU', style: 'percent', maximumFractionDigits: 1 } } },
     capabilities: { sortable: true, filterable: true },
+    filter: percentPredicateFilter,
     cellRenderer: ({ row }) => formatApiPercent(row?.marketDiscount),
   },
   {
@@ -1348,6 +1386,7 @@ const typedColumns: DataGridAppColumnInput<GridLotRow>[] = [
       format: { number: { locale: 'ru-RU', style: 'currency', currency: 'RUB', maximumFractionDigits: 2 } },
     },
     capabilities: { sortable: true, filterable: true },
+    filter: predicateFilterOnly,
     cellRenderer: ({ row }) => formatCurrency(row?.formulaMaxPurchasePrice ?? null),
   },
   {
@@ -1356,15 +1395,17 @@ const typedColumns: DataGridAppColumnInput<GridLotRow>[] = [
     dataType: 'boolean',
     initialState: { width: 112 },
     capabilities: { sortable: true, filterable: true, editable: true },
+    filter: predicateFilterOnly,
   },
   {
     key: 'exclusionReason',
     label: 'Причина исключения',
     initialState: { width: 188 },
     capabilities: { sortable: true, filterable: true, editable: true },
+    filter: predicateFilterOnly,
   },
-  { key: 'status', label: 'Статус', initialState: { width: 170 } },
-  { key: 'organizer', label: 'Организатор', initialState: { width: 240 } },
+  { key: 'status', label: 'Статус', initialState: { width: 170 }, filter: predicateFilterOnly },
+  { key: 'organizer', label: 'Организатор', initialState: { width: 240 }, filter: predicateFilterOnly },
   {
     key: 'applicationDeadline',
     label: 'Прием заявок до',
@@ -1383,6 +1424,7 @@ const typedColumns: DataGridAppColumnInput<GridLotRow>[] = [
       },
     },
     capabilities: { sortable: true, filterable: true },
+    filter: predicateFilterOnly,
   },
   {
     key: 'auctionDate',
@@ -1402,6 +1444,7 @@ const typedColumns: DataGridAppColumnInput<GridLotRow>[] = [
       },
     },
     capabilities: { sortable: true, filterable: true },
+    filter: predicateFilterOnly,
   },
   {
     key: 'lastSeenAt',
@@ -1421,6 +1464,7 @@ const typedColumns: DataGridAppColumnInput<GridLotRow>[] = [
       },
     },
     capabilities: { sortable: true, filterable: true },
+    filter: predicateFilterOnly,
   },
   {
     key: 'lifecycleStatus',
@@ -1442,8 +1486,6 @@ const typedColumns: DataGridAppColumnInput<GridLotRow>[] = [
 ]
 
 const columns = typedColumns as unknown as DataGridAppColumnInput[]
-const VALUE_FILTER_COLUMN_KEYS = new Set(['analysisLabel', 'analysisCategory', 'isNew', 'lifecycleStatus'])
-const PERCENT_FILTER_COLUMN_KEYS = new Set(['roiValue', 'marketDiscount'])
 const columnMenuOptions = {
   trigger: 'button+contextmenu',
   items: ['sort', 'group', 'pin', 'filter'],
@@ -1473,9 +1515,8 @@ const columnMenuOptions = {
   },
   columns: Object.fromEntries(
     typedColumns
-      .map((column) => String(column.key))
-      .filter((key) => !VALUE_FILTER_COLUMN_KEYS.has(key))
-      .map((key) => [key, { hide: ['filter'] }]),
+      .filter((column) => column.filter?.valueSet === false)
+      .map((column) => [String(column.key), { hide: ['filter'] }]),
   ),
 } as unknown as DataGridColumnMenuProp
 
@@ -2091,144 +2132,6 @@ function setGridColumnWidths(widths: unknown, options: { persist?: boolean } = {
   return nextWidths
 }
 
-function sanitizeGridValueSetFilters(filterModel: DataGridFilterSnapshot | null | undefined): DataGridFilterSnapshot | null {
-  if (!filterModel) return null
-
-  const columnFilters = { ...(filterModel.columnFilters ?? {}) } as unknown as Record<string, Record<string, unknown>>
-  for (const [key, payload] of Object.entries(columnFilters)) {
-    if (!payload || typeof payload !== 'object') continue
-    const filterPayload = payload
-    if (filterPayload.kind === 'predicate' && PERCENT_FILTER_COLUMN_KEYS.has(key)) {
-      columnFilters[key] = {
-        ...filterPayload,
-        value: normalizePercentFilterValue(key, filterPayload.value),
-        value2: normalizePercentFilterValue(key, filterPayload.value2),
-      }
-      continue
-    }
-    if (VALUE_FILTER_COLUMN_KEYS.has(key)) continue
-    if (filterPayload.kind === 'valueSet') {
-      delete columnFilters[key]
-    }
-  }
-
-  const nextFilterModel = {
-    ...filterModel,
-    columnFilters,
-    advancedFilters: sanitizePercentAdvancedFilters(filterModel.advancedFilters),
-    advancedExpression: sanitizePercentAdvancedExpression(filterModel.advancedExpression),
-  } as unknown as DataGridFilterSnapshot
-  return hasGridFilterModel(nextFilterModel) ? nextFilterModel : null
-}
-
-function normalizePercentFilterValue(key: unknown, value: unknown) {
-  if (!PERCENT_FILTER_COLUMN_KEYS.has(String(key))) return value
-  if (value === null || value === undefined || value === '') return value
-
-  const parsed = Number(String(value).trim().replace(/\s+/g, '').replace('%', '').replace(',', '.'))
-  if (!Number.isFinite(parsed)) return value
-  return String(parsed / 100)
-}
-
-function sanitizePercentPredicatePayload(payload: unknown) {
-  if (!payload || typeof payload !== 'object') return payload
-
-  const record = payload as Record<string, unknown>
-  if (!('value' in record) && !('value2' in record)) return payload
-  const next: Record<string, unknown> = {
-    ...record,
-    value: normalizePercentFilterValue(record.key, record.value),
-  }
-  const value2 = normalizePercentFilterValue(record.key, record.value2)
-  if (value2 !== undefined) {
-    next.value2 = value2
-  } else {
-    delete next.value2
-  }
-  if (next.value === undefined) {
-    delete next.value
-  }
-  return next
-}
-
-function sanitizePercentPredicatePayloadForKey(payload: unknown, key: string) {
-  if (!payload || typeof payload !== 'object') return payload
-
-  const record = payload as Record<string, unknown>
-  const next: Record<string, unknown> = { ...record }
-  if ('value' in record) {
-    const value = normalizePercentFilterValue(key, record.value)
-    if (value !== undefined) next.value = value
-    else delete next.value
-  }
-  if ('value2' in record) {
-    const value2 = normalizePercentFilterValue(key, record.value2)
-    if (value2 !== undefined) next.value2 = value2
-    else delete next.value2
-  }
-  return {
-    ...next,
-  }
-}
-
-function sanitizePercentAdvancedFilters(value: unknown) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
-
-  const next: Record<string, unknown> = {}
-  for (const [key, payload] of Object.entries(value as Record<string, unknown>)) {
-    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-      continue
-    }
-
-    const record = payload as Record<string, unknown>
-    const clauses = Array.isArray(record.clauses)
-      ? record.clauses
-          .map((clause) => {
-            const sanitized = sanitizePercentPredicatePayload(clause)
-            return sanitizePercentPredicatePayloadForKey(sanitized, key)
-          })
-          .filter(isMeaningfulAdvancedClause)
-      : []
-    if (!clauses.length) continue
-
-    next[key] = {
-      ...record,
-      clauses,
-    }
-  }
-  return Object.keys(next).length ? next : undefined
-}
-
-function sanitizePercentAdvancedExpression(value: unknown): unknown {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
-
-  const record = value as Record<string, unknown>
-  if (record.kind === 'condition') {
-    const sanitized = sanitizePercentPredicatePayload(record)
-    return isMeaningfulAdvancedClause(sanitized) ? sanitized : null
-  }
-  if (record.kind === 'group') {
-    const children = Array.isArray(record.children)
-      ? record.children.map(sanitizePercentAdvancedExpression).filter((child) => child !== null)
-      : []
-    if (!children.length) return null
-    if (children.length === 1) return children[0]
-    return {
-      ...record,
-      children,
-    }
-  }
-  if (record.kind === 'not') {
-    const child = sanitizePercentAdvancedExpression(record.child)
-    if (child === null) return null
-    return {
-      ...record,
-      child,
-    }
-  }
-  return null
-}
-
 function sanitizeGridSavedView<TRow extends Record<string, unknown>>(
   savedView: DataGridSavedViewSnapshot<TRow>,
   options: { dropSort?: boolean } = {},
@@ -2245,7 +2148,6 @@ function sanitizeGridSavedView<TRow extends Record<string, unknown>>(
         snapshot: {
           ...rowSnapshot,
           sortModel: options.dropSort ? [] : rowSnapshot.sortModel,
-          filterModel: sanitizeGridValueSetFilters(rowSnapshot.filterModel),
           pagination: {
             ...rowSnapshot.pagination,
             enabled: false,
@@ -2717,13 +2619,12 @@ function createCatalogDataSource(): CatalogDataSource {
       }
       try {
         const effectiveFilterModel = resolveCatalogPullFilterModel(request.filterModel, request.reason)
-        const sanitizedFilterModel = sanitizeGridValueSetFilters(effectiveFilterModel)
         const shouldResetViewport = shouldResetCatalogPullViewport(request.reason)
         const pullRange = shouldResetViewport ? buildCatalogServerViewportRange(request.range) : request.range
         const result = await auctionServerDataSource.pull({
           ...request,
           range: pullRange,
-          filterModel: sanitizedFilterModel,
+          filterModel: effectiveFilterModel,
         })
         if (shouldResetViewport) {
           scheduleCatalogViewportRecovery(pullRange)
