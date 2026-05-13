@@ -53,6 +53,15 @@ async def update_user_interest_profile(
     return await user_interest_profile_service.update(session, current_user, profile_id, payload)
 
 
+@router.post("/{profile_id}/refresh-from-preset", response_model=UserInterestProfileResponse)
+async def refresh_user_interest_profile_from_preset(
+    profile_id: str,
+    session: AsyncSession = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
+) -> UserInterestProfileResponse:
+    return await user_interest_profile_service.refresh_from_preset(session, current_user, profile_id)
+
+
 @router.delete("/{profile_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_user_interest_profile(
     profile_id: str,

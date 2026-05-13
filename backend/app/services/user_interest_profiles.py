@@ -126,6 +126,25 @@ class UserInterestProfileService:
         await session.refresh(profile)
         return UserInterestProfileResponse.model_validate(profile, from_attributes=True)
 
+    async def refresh_from_preset(
+        self,
+        session: AsyncSession,
+        user: UserModel,
+        profile_id: str,
+    ) -> UserInterestProfileResponse:
+        profile = await self._get_owned_profile(session, user.id, profile_id)
+        if not profile.source_filter_preset_id:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Profile is not linked to a preset.")
+        preset = await self._get_owned_preset(session, user.id, profile.source_filter_preset_id)
+        profile.profile_payload = build_profile_payload_from_filter_preset(preset.filters)
+        preset_min_rating = _filter_int(preset.filters, "minRating", "min_rating")
+        if preset_min_rating is not None:
+            profile.min_rating = preset_min_rating
+        profile.updated_at = datetime.now(UTC)
+        await session.commit()
+        await session.refresh(profile)
+        return UserInterestProfileResponse.model_validate(profile, from_attributes=True)
+
     async def delete(self, session: AsyncSession, user: UserModel, profile_id: str) -> None:
         profile = await self._get_owned_profile(session, user.id, profile_id)
         await session.delete(profile)

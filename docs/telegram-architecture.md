@@ -158,6 +158,8 @@ MVP-срез:
 - user-scoped enqueue проходит по активным профилям, проверяет profile match и создает записи только подходящим пользователям;
 - sender отправляет в `telegram_chat_id` записи, если он задан, иначе использует глобальный fallback `TELEGRAM_CHAT_ID`;
 - frontend позволяет создать профиль интересов из текущих фильтров каталога и управлять активностью/Telegram-флагом.
+- frontend позволяет подключить сохраненный filter preset к Telegram: backend конвертирует preset filters в `LotScoringProfile` и сохраняет связь `source_filter_preset_id`;
+- связанный профиль можно обновить из измененного среза через `refresh-from-preset`.
 
 Что пока не входит в MVP:
 

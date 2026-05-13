@@ -41,6 +41,13 @@ export async function updateUserInterestProfile(
   })
 }
 
+export async function refreshUserInterestProfileFromPreset(profileId: string): Promise<UserInterestProfile> {
+  return apiRequest<UserInterestProfile>(`/user-interest-profiles/${profileId}/refresh-from-preset`, {
+    method: 'POST',
+    auth: true,
+  })
+}
+
 export async function deleteUserInterestProfile(profileId: string): Promise<void> {
   await apiRequest<unknown>(`/user-interest-profiles/${profileId}`, {
     method: 'DELETE',

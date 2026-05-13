@@ -228,6 +228,33 @@ class UserInterestProfileServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.commits, 1)
         self.assertEqual(session.refreshed, [profile])
 
+    async def test_refresh_from_preset_updates_linked_profile_payload(self) -> None:
+        profile = make_profile(source_filter_preset_id="preset_1", min_rating=70)
+        preset = make_preset(filters={"minPrice": "3000000", "status": "Mercedes", "minRating": 90})
+        session = FakeSession(scalar_results=[profile, preset])
+        service = UserInterestProfileService()
+
+        response = await service.refresh_from_preset(session, make_user(), profile.id)
+
+        self.assertEqual(response.profile_payload["budget_min"], "3000000")
+        self.assertEqual(response.profile_payload["desired_keywords"], ["Mercedes"])
+        self.assertEqual(response.min_rating, 90)
+        self.assertEqual(profile.profile_payload["budget_min"], "3000000")
+        self.assertEqual(session.commits, 1)
+        self.assertEqual(session.refreshed, [profile])
+
+    async def test_refresh_from_preset_requires_linked_profile(self) -> None:
+        profile = make_profile(source_filter_preset_id=None)
+        session = FakeSession(scalar_results=[profile])
+        service = UserInterestProfileService()
+
+        with self.assertRaises(HTTPException) as error:
+            await service.refresh_from_preset(session, make_user(), profile.id)
+
+        self.assertEqual(error.exception.status_code, 409)
+        self.assertEqual(error.exception.detail, "Profile is not linked to a preset.")
+        self.assertEqual(session.commits, 0)
+
     async def test_delete_requires_ownership_and_deletes_owned_profile(self) -> None:
         profile = make_profile()
         service = UserInterestProfileService()

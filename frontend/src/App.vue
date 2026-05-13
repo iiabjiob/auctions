@@ -36,6 +36,7 @@ import {
   createUserInterestProfileFromPreset,
   deleteUserInterestProfile,
   fetchUserInterestProfiles,
+  refreshUserInterestProfileFromPreset,
   updateUserInterestProfile,
 } from './api/userInterestProfiles'
 import AuthLoginScreen from './components/AuthLoginScreen.vue'
@@ -4030,6 +4031,23 @@ async function patchInterestProfile(profile: UserInterestProfile, payload: Param
   }
 }
 
+async function refreshInterestProfileFromPreset(profile: UserInterestProfile) {
+  if (!profile.source_filter_preset_id) return
+
+  interestProfilesSaving.value = true
+  interestProfilesError.value = ''
+  try {
+    const updated = await refreshUserInterestProfileFromPreset(profile.id)
+    userInterestProfiles.value = sortUserInterestProfiles(
+      userInterestProfiles.value.map((item) => (item.id === updated.id ? updated : item)),
+    )
+  } catch (error) {
+    interestProfilesError.value = error instanceof Error ? error.message : 'Не удалось обновить профиль из среза'
+  } finally {
+    interestProfilesSaving.value = false
+  }
+}
+
 async function removeInterestProfile(profile: UserInterestProfile) {
   interestProfilesSaving.value = true
   interestProfilesError.value = ''
@@ -5877,6 +5895,14 @@ onUnmounted(() => {
                       </button>
                       <button class="secondary-button" type="button" @click="void toggleInterestProfileTelegram(profile)">
                         {{ profile.telegram_enabled ? 'Telegram выкл.' : 'Telegram вкл.' }}
+                      </button>
+                      <button
+                        class="secondary-button"
+                        type="button"
+                        :disabled="!profile.source_filter_preset_id"
+                        @click="void refreshInterestProfileFromPreset(profile)"
+                      >
+                        Обновить из среза
                       </button>
                       <button class="secondary-button secondary-button--danger" type="button" @click="void removeInterestProfile(profile)">
                         Удалить
