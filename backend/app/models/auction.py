@@ -263,6 +263,11 @@ class TelegramNotificationOutbox(Base):
     decision_report_id: Mapped[int] = mapped_column(
         ForeignKey("auction_lot_decision_reports.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    telegram_chat_id: Mapped[str | None] = mapped_column(String(128))
+    interest_profile_id: Mapped[str | None] = mapped_column(
+        ForeignKey("user_interest_profiles.id", ondelete="SET NULL"), index=True
+    )
     dedupe_key: Mapped[str] = mapped_column(String(128), nullable=False)
     cooldown_key: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", index=True)

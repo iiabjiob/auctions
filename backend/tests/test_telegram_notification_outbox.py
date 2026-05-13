@@ -136,8 +136,26 @@ class TelegramNotificationOutboxTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(entry.status, "pending")
         self.assertEqual(entry.dedupe_key, eligibility.dedupe_key)
         self.assertEqual(entry.cooldown_key, eligibility.cooldown_key)
+        self.assertIsNone(entry.user_id)
+        self.assertIsNone(entry.telegram_chat_id)
+        self.assertIsNone(entry.interest_profile_id)
         self.assertEqual(entry.cooldown_until, GENERATED_AT + timedelta(hours=1))
         self.assertIn("Tracked excavator", entry.message_payload["text"])
+
+    def test_user_scoped_fields_are_optional_for_backward_compatibility(self) -> None:
+        report = make_report()
+        global_entry = make_outbox_entry(report, status=TelegramNotificationStatus.PENDING)
+        user_entry = make_outbox_entry(report, status=TelegramNotificationStatus.PENDING)
+        user_entry.user_id = "user-1"
+        user_entry.telegram_chat_id = "123456789"
+        user_entry.interest_profile_id = "uip_1"
+
+        self.assertIsNone(global_entry.user_id)
+        self.assertIsNone(global_entry.telegram_chat_id)
+        self.assertIsNone(global_entry.interest_profile_id)
+        self.assertEqual(user_entry.user_id, "user-1")
+        self.assertEqual(user_entry.telegram_chat_id, "123456789")
+        self.assertEqual(user_entry.interest_profile_id, "uip_1")
 
     async def test_ineligible_report_does_not_enqueue(self) -> None:
         report = make_report(
