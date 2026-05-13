@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.procurement import ProcurementLotRecord, ProcurementSourceState
 from app.schemas.procurements import ProcurementLotItem, ProcurementSyncResult
+from app.services.procurement_classification import ProcurementClassification, classify_procurement_lot
 from app.services.procurement_scoring import score_procurement_lot
 from app.services.procurement_values import parse_scraped_datetime
 from app.services.zakupki_scraper import fetch_procurement_list, source_info
@@ -24,6 +25,7 @@ NEWNESS_WINDOW_DAYS = 3
 @dataclass(slots=True)
 class PreparedProcurementLot:
     item: ProcurementLotItem
+    classification: ProcurementClassification
     normalized_item: dict
     content_hash: str
 
@@ -87,6 +89,10 @@ async def sync_zakupki_procurements(session: AsyncSession, *, limit: int | None 
                 first_seen_at=now,
                 last_seen_at=now,
                 is_new=is_new,
+                category=prepared.classification.category,
+                matched_keywords=prepared.classification.matched_keywords,
+                excluded_keywords=prepared.classification.excluded_keywords,
+                filter_reason=prepared.classification.filter_reason,
                 attractiveness_score=attractiveness.score,
                 attractiveness_level=attractiveness.level,
                 attractiveness_reasons=attractiveness.reasons,
@@ -123,6 +129,10 @@ async def sync_zakupki_procurements(session: AsyncSession, *, limit: int | None 
         record.documents_url = item.documents_url
         record.documentation_present = item.documentation_present
         record.is_new = _is_new(publication_at=publication_at or record.first_seen_at, observed_at=now)
+        record.category = prepared.classification.category
+        record.matched_keywords = prepared.classification.matched_keywords
+        record.excluded_keywords = prepared.classification.excluded_keywords
+        record.filter_reason = prepared.classification.filter_reason
         record.attractiveness_score = attractiveness.score
         record.attractiveness_level = attractiveness.level
         record.attractiveness_reasons = attractiveness.reasons
@@ -143,11 +153,24 @@ async def sync_zakupki_procurements(session: AsyncSession, *, limit: int | None 
 
 
 def prepare_procurement_lot(item: ProcurementLotItem) -> PreparedProcurementLot:
+    classification = classify_procurement_lot(item)
     normalized = item.model_dump(mode="json")
+    normalized["classification"] = {
+        "category": classification.category,
+        "matched_keywords": classification.matched_keywords,
+        "excluded_keywords": classification.excluded_keywords,
+        "filter_reason": classification.filter_reason,
+        "is_relevant": classification.is_relevant,
+    }
     content_hash = hashlib.sha256(
         json.dumps(normalized, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()
-    return PreparedProcurementLot(item=item, normalized_item=normalized, content_hash=content_hash)
+    return PreparedProcurementLot(
+        item=item,
+        classification=classification,
+        normalized_item=normalized,
+        content_hash=content_hash,
+    )
 
 
 async def _find_record(session: AsyncSession, *, source_code: str, external_id: str) -> ProcurementLotRecord | None:
