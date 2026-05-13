@@ -7,46 +7,59 @@ Before running any of the commands below in a devcontainer, activate the backend
 
 For one-click startup in VS Code, run task `backend: start all` (Terminal → Run Task). It launches all processes below in parallel, each in its own dedicated terminal.
 
-
 1.1. Migrations:
-	```bash
-	uv run alembic upgrade head
-	```
+
+```bash
+uv run alembic upgrade head
+```
 
 1.2. Seed default user (optional, explicit):
-	```bash
-	uv run python -m app.seeds.default_user
-	```
-1.3.  Seed default user on prodaction:
 
-	```bash
-	docker compose -f docker-compose.prod.yml exec backend python -m app.seeds.default_user
-	```
+```bash
+uv run python -m app.seeds.default_user
+```
+
+1.3. Seed default user in production:
+
+```bash
+docker compose -f docker-compose.prod.yml exec backend python -m app.seeds.default_user
+```
+
+2. Backend API server:
+
+```bash
+uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
 
 3. Auction sync worker:
-	```bash
-	uv run python -m app.worker.auction_sync_worker
-	```
+
+```bash
+uv run python -m app.worker.auction_sync_worker
+```
 
 4. Auction analysis worker:
-	```bash
-	uv run python -m app.worker.auction_analysis_worker
-	```
+
+```bash
+uv run python -m app.worker.auction_analysis_worker
+```
 
 5. Auction enrichment worker:
-	```bash
-	uv run python -m app.worker.auction_enrichment_worker
-	```
+
+```bash
+uv run python -m app.worker.auction_enrichment_worker
+```
 
 6. Auction actuality worker:
-	```bash
-	uv run python -m app.worker.auction_actuality_worker
-	```
+
+```bash
+uv run python -m app.worker.auction_actuality_worker
+```
 
 7. Telegram sender worker:
-	```bash
-	uv run python -m app.worker.telegram_sender_worker
-	```
+
+```bash
+uv run python -m app.worker.telegram_sender_worker
+```
 
 The worker refreshes enabled auction vendors on `AUCTION_SYNC_INTERVAL_SECONDS`, adds up to `AUCTION_SYNC_INTERVAL_JITTER_SECONDS` of random jitter, writes snapshots to Postgres, and publishes `sync.started`, `sync.progress`, `sync.completed`, and `sync.failed` messages to the Redis Stream configured by `AUCTION_EVENTS_STREAM`. The default is a polite schedule: every 12 hours with jitter, no sync immediately on worker start, one TBankrot page per run, and no background detail fetches. Use manual sync or short development intervals only for controlled local runs.
 

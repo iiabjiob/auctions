@@ -380,7 +380,7 @@ class AuctionCatalogSqlTests(unittest.TestCase):
         self.assertIn(" IN ", sql)
         self.assertEqual(sql.count("regexp_replace("), 1)
 
-    def test_grid_roi_filter_uses_persisted_row_value(self) -> None:
+    def test_grid_roi_filter_uses_computed_formula(self) -> None:
         predicate = _grid_filter_predicate(
             {
                 "columnFilters": {
@@ -394,11 +394,44 @@ class AuctionCatalogSqlTests(unittest.TestCase):
         compiled = predicate.compile(dialect=postgresql.dialect())
         sql = str(compiled)
 
-        self.assertNotIn("/", sql)
-        self.assertNotIn("market_value", compiled.params.values())
-        self.assertNotIn("current_price_value", compiled.params.values())
-        self.assertNotIn("platform_fee", compiled.params.values())
-        self.assertIn("roi", compiled.params.values())
+        self.assertIn("/", sql)
+        self.assertIn("market_value", compiled.params.values())
+        self.assertIn("current_price_value", compiled.params.values())
+        self.assertIn("initial_price_value", compiled.params.values())
+        self.assertIn("platform_fee", compiled.params.values())
+        self.assertNotIn("roi", compiled.params.values())
+
+    def test_grid_roi_filter_accepts_display_percent_value(self) -> None:
+        predicate = _grid_filter_predicate(
+            {
+                "columnFilters": {
+                    "roiValue": {"kind": "predicate", "operator": "gte", "value": "25"},
+                },
+                "advancedFilters": {},
+            }
+        )
+
+        self.assertIsNotNone(predicate)
+        compiled = predicate.compile(dialect=postgresql.dialect())
+
+        self.assertIn(">=", str(compiled))
+        self.assertIn(Decimal("0.25"), compiled.params.values())
+
+    def test_grid_market_discount_filter_accepts_display_percent_value(self) -> None:
+        predicate = _grid_filter_predicate(
+            {
+                "columnFilters": {
+                    "marketDiscount": {"kind": "predicate", "operator": "gte", "value": "30%"},
+                },
+                "advancedFilters": {},
+            }
+        )
+
+        self.assertIsNotNone(predicate)
+        compiled = predicate.compile(dialect=postgresql.dialect())
+
+        self.assertIn(">=", str(compiled))
+        self.assertIn(Decimal("0.3"), compiled.params.values())
 
     def test_grid_current_price_filter_accepts_api_aliases(self) -> None:
         for key in ("price", "currentPrice", "currentPriceValue", "current_price_value"):
@@ -506,9 +539,9 @@ class AuctionCatalogSqlTests(unittest.TestCase):
             ("total_expenses", "gte", "1", "total_expenses"),
             ("full_entry_cost", "gte", "1", "full_entry_cost"),
             ("potential_profit", "gte", "1", "potential_profit"),
-            ("roi", "gte", "1", "roi"),
-            ("roi_value", "gte", "1", "roi"),
-            ("market_discount", "gte", "1", "market_discount"),
+            ("roi", "gte", "1", "market_value"),
+            ("roi_value", "gte", "1", "market_value"),
+            ("market_discount", "gte", "1", "market_value"),
             ("formula_max_purchase_price", "gte", "1", "formula_max_purchase_price"),
             ("is_new", "equals", True, None),
             ("exclude_from_analysis", "equals", True, "exclude_from_analysis"),
@@ -525,7 +558,7 @@ class AuctionCatalogSqlTests(unittest.TestCase):
                     compiled = predicate.compile(dialect=postgresql.dialect())
                     self.assertIn(expected_param, compiled.params.values())
 
-    def test_grid_roi_sort_uses_persisted_row_value(self) -> None:
+    def test_grid_roi_sort_uses_computed_formula(self) -> None:
         statement = _apply_record_sort(
             _build_persisted_lots_statement(LotDatagridFilters(source="tbankrot"), ("tbankrot",)),
             sort_model=[{"key": "roiValue", "direction": "desc"}],
@@ -534,10 +567,11 @@ class AuctionCatalogSqlTests(unittest.TestCase):
         sql = str(compiled)
 
         self.assertIn("ORDER BY", sql)
-        self.assertNotIn("/", sql)
-        self.assertNotIn("market_value", compiled.params.values())
-        self.assertNotIn("current_price_value", compiled.params.values())
-        self.assertIn("roi", compiled.params.values())
+        self.assertIn("/", sql)
+        self.assertIn("market_value", compiled.params.values())
+        self.assertIn("current_price_value", compiled.params.values())
+        self.assertIn("initial_price_value", compiled.params.values())
+        self.assertNotIn("roi", compiled.params.values())
 
     def test_grid_value_set_string_filter_is_case_insensitive(self) -> None:
         predicate = _grid_filter_predicate(

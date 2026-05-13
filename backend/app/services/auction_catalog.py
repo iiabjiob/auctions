@@ -625,7 +625,7 @@ def _grid_column_expression(key: str | None):
         "lotName": (AuctionLotRecord.lot_name, "text"),
         "lotNumber": (AuctionLotRecord.lot_number, "text"),
         "lotUrl": (_json_text_value("lot_url"), "text"),
-        "marketDiscount": (_json_decimal_value("market_discount"), "number"),
+        "marketDiscount": (_market_discount_expression(), "percent"),
         "marketValue": (_json_decimal_value("market_value"), "number"),
         "minimumPrice": (_json_decimal_value("minimum_price_value"), "number"),
         "modelCategory": (_json_text_value("model_category"), "text"),
@@ -639,7 +639,7 @@ def _grid_column_expression(key: str | None):
         "ratingLevel": (_json_nested_text_value("rating", "level"), "text"),
         "ratingScore": (AuctionLotRecord.rating_score, "number"),
         "repairCost": (_json_decimal_value("repair_cost"), "number"),
-        "roiValue": (_json_decimal_value("roi"), "number"),
+        "roiValue": (_roi_expression(), "percent"),
         "source": (AuctionLotRecord.source_code, "text"),
         "sourcePosition": (_json_integer_value("source_position"), "number"),
         "sourceTitle": (func.coalesce(_json_text_value("source_title"), AuctionLotRecord.source_code), "text"),
@@ -764,7 +764,7 @@ def _predicate_filter_condition(key, operator, value=None, value2=None, case_sen
         return None
 
     text_expression = cast(expression, String)
-    comparable_expression = expression if value_type in {"number", "boolean", "datetime"} else text_expression
+    comparable_expression = expression if value_type in {"number", "percent", "boolean", "datetime"} else text_expression
     normalized_value = _coerce_filter_value(value, value_type)
     normalized_value2 = _coerce_filter_value(value2, value_type)
 
@@ -895,6 +895,13 @@ def _coerce_filter_value(value, value_type: str):
             return Decimal(str(value).replace(" ", "").replace(",", "."))
         except (DecimalException, ValueError):
             return None
+    if value_type == "percent":
+        try:
+            raw_value = str(value).strip()
+            parsed = Decimal(raw_value.replace(" ", "").replace("%", "").replace(",", "."))
+        except (DecimalException, ValueError):
+            return None
+        return parsed / Decimal("100") if "%" in raw_value or abs(parsed) > Decimal("1") else parsed
     return str(value) if value_type == "text" else value
 
 
@@ -1046,10 +1053,43 @@ def _json_nested_text_value(first_key: str, second_key: str):
     return AuctionLotRecord.datagrid_row[first_key][second_key].as_string()
 
 
-def _json_decimal_value(key: str):
+def _json_decimal_value(key: str, *, precision: int = 14, scale: int = 2):
     cleaned = func.regexp_replace(_json_text_value(key), "[^0-9,.-]+", "", "g")
     normalized = func.replace(cleaned, ",", ".")
-    return cast(func.nullif(normalized, ""), Numeric(14, 2))
+    return cast(func.nullif(normalized, ""), Numeric(precision, scale))
+
+
+def _total_expenses_expression():
+    return (
+        func.coalesce(_json_decimal_value("platform_fee"), 0)
+        + func.coalesce(_json_decimal_value("delivery_cost"), 0)
+        + func.coalesce(_json_decimal_value("dismantling_cost"), 0)
+        + func.coalesce(_json_decimal_value("repair_cost"), 0)
+        + func.coalesce(_json_decimal_value("storage_cost"), 0)
+        + func.coalesce(_json_decimal_value("legal_cost"), 0)
+        + func.coalesce(_json_decimal_value("other_costs"), 0)
+    )
+
+
+def _full_entry_cost_expression():
+    price = func.coalesce(_json_decimal_value("current_price_value"), _json_decimal_value("initial_price_value"))
+    return price + _total_expenses_expression()
+
+
+def _potential_profit_expression():
+    full_entry_cost = _full_entry_cost_expression()
+    return _json_decimal_value("market_value") - full_entry_cost
+
+
+def _roi_expression():
+    full_entry_cost = _full_entry_cost_expression()
+    return _potential_profit_expression() / func.nullif(full_entry_cost, 0)
+
+
+def _market_discount_expression():
+    price = func.coalesce(_json_decimal_value("current_price_value"), _json_decimal_value("initial_price_value"))
+    market_value = _json_decimal_value("market_value")
+    return Decimal("1") - (price / func.nullif(market_value, 0))
 
 
 def _json_integer_value(key: str):
