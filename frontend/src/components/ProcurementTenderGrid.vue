@@ -165,8 +165,8 @@ const filters = reactive({
 const gridStatus = computed(() => {
   if (errorMessage.value) return errorMessage.value
   if (loading.value && !loadedOnce.value) return 'Загружаем закупки'
-  if (latestDatasetVersion.value !== null) return `Версия данных ${latestDatasetVersion.value}`
-  return 'Ожидаем данные'
+  if (loadedOnce.value) return `Загружено ${total.value}`
+  return 'Ожидаем загрузку'
 })
 
 const filterNumber = (value: string) => {
@@ -239,7 +239,7 @@ const prefetchOptions = {
 const columns = defineDataGridColumns<ProcurementGridRow>()([
   {
     key: 'score',
-    label: 'Балл',
+    label: 'Рейтинг',
     dataType: 'number',
     initialState: { width: 86 },
     presentation: { align: 'right', headerAlign: 'right' },
@@ -252,10 +252,10 @@ const columns = defineDataGridColumns<ProcurementGridRow>()([
   },
   { key: 'scoreLevel', label: 'Сигнал', initialState: { width: 108 }, capabilities: { sortable: true, filterable: true } },
   { key: 'workflowStatus', label: 'Этап', initialState: { width: 150 }, capabilities: { sortable: true, filterable: true, editable: true } },
-  { key: 'source', label: 'Источник', initialState: { width: 94 }, capabilities: { sortable: true, filterable: true } },
+  { key: 'source', label: 'Площадка', initialState: { width: 120 }, capabilities: { sortable: true, filterable: true } },
   {
     key: 'registryNumber',
-    label: 'Номер',
+    label: 'Закупка',
     initialState: { width: 142 },
     capabilities: { sortable: true, filterable: true },
     cellRenderer: ({ row, displayValue }) =>
@@ -266,13 +266,13 @@ const columns = defineDataGridColumns<ProcurementGridRow>()([
   { key: 'law', label: 'Закон', initialState: { width: 86 }, capabilities: { sortable: true, filterable: true } },
   { key: 'customerName', label: 'Заказчик', initialState: { width: 260 }, capabilities: { sortable: true, filterable: true }, filter: predicateFilterOnly },
   { key: 'customerInn', label: 'ИНН', initialState: { width: 120 }, capabilities: { sortable: true, filterable: true }, filter: predicateFilterOnly },
-  { key: 'deliveryRegion', label: 'Регион', initialState: { width: 160 }, capabilities: { sortable: true, filterable: true } },
-  { key: 'title', label: 'Предмет', initialState: { width: 420 }, capabilities: { sortable: true, filterable: true }, filter: predicateFilterOnly },
+  { key: 'deliveryRegion', label: 'Локация', initialState: { width: 180 }, capabilities: { sortable: true, filterable: true } },
+  { key: 'title', label: 'Наименование', initialState: { width: 430 }, capabilities: { sortable: true, filterable: true }, filter: predicateFilterOnly },
   { key: 'category', label: 'Категория', initialState: { width: 150 }, capabilities: { sortable: true, filterable: true } },
-  moneyColumn('initialPrice', 'НМЦК', 136),
+  moneyColumn('initialPrice', 'Начальная цена', 150),
   numberColumn('quantity', 'Кол-во', 112, true),
   moneyColumn('unitNmck', 'НМЦК/ед.', 130, true),
-  datetimeColumn('applicationDeadline', 'Заявки до', 170),
+  datetimeColumn('applicationDeadline', 'Прием заявок до', 180),
   {
     key: 'specificationUrl',
     label: 'ТЗ',
@@ -502,20 +502,6 @@ function refreshGrid() {
   return rowModel.value?.refresh('manual') ?? Promise.resolve()
 }
 
-function resetFilters() {
-  filters.source = 'zakupki'
-  filters.law = ''
-  filters.status = ''
-  filters.workflowStatus = ''
-  filters.assignee = ''
-  filters.category = ''
-  filters.minPrice = ''
-  filters.maxPrice = ''
-  filters.minScore = 0
-  filters.onlyNew = false
-  void refreshGrid()
-}
-
 function persistColumnWidths(widths: Readonly<Record<string, number | null>> | null) {
   const normalized = Object.fromEntries(
     Object.entries(widths ?? {}).filter((entry): entry is [string, number] => typeof entry[1] === 'number'),
@@ -616,48 +602,17 @@ onUnmounted(() => {
         <span class="eyebrow">ЕИС Закупки</span>
         <h1>Лоты закупок для отбора</h1>
       </div>
-      <div class="procurement-grid-actions">
-        <span class="detail-muted">{{ gridStatus }}</span>
-        <button class="secondary-button" type="button" @click="resetFilters">Сброс</button>
-        <button class="secondary-button" type="button" :disabled="loading" @click="refreshGrid">Обновить</button>
-      </div>
     </header>
 
     <section class="summary-strip" aria-label="Сводка закупок">
       <div class="summary-strip__group">
-        <div><span>Всего</span><strong>{{ total }}</strong></div>
+        <div><span>Найдено</span><strong>{{ total }}</strong></div>
         <div><span>Новые</span><strong>{{ summary.newCount }}</strong></div>
         <div><span>Релевантные</span><strong>{{ summary.relevantCount }}</strong></div>
-        <div><span>Приоритет</span><strong>{{ summary.highScoreCount }}</strong></div>
+        <div><span>Рейтинг 75+</span><strong>{{ summary.highScoreCount }}</strong></div>
         <div><span>На решение</span><strong>{{ summary.decisionPendingCount }}</strong></div>
       </div>
-    </section>
-
-    <section class="procurement-filter-bar" aria-label="Фильтры закупок">
-      <label>
-        <span>Закон</span>
-        <input v-model="filters.law" type="text" @change="refreshGrid" />
-      </label>
-      <label>
-        <span>Статус</span>
-        <input v-model="filters.status" type="text" @change="refreshGrid" />
-      </label>
-      <label>
-        <span>Этап</span>
-        <input v-model="filters.workflowStatus" type="text" @change="refreshGrid" />
-      </label>
-      <label>
-        <span>Категория</span>
-        <input v-model="filters.category" type="text" @change="refreshGrid" />
-      </label>
-      <label>
-        <span>Мин. балл</span>
-        <input v-model.number="filters.minScore" type="number" min="0" max="100" @change="refreshGrid" />
-      </label>
-      <label class="procurement-filter-bar__check">
-        <input v-model="filters.onlyNew" type="checkbox" @change="refreshGrid" />
-        <span>Только новые</span>
-      </label>
+      <p class="summary-strip__status">{{ gridStatus }}</p>
     </section>
 
     <div v-if="errorMessage" class="error-banner">{{ errorMessage }}</div>
