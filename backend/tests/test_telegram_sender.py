@@ -341,6 +341,11 @@ class TelegramSenderTests(unittest.IsolatedAsyncioTestCase):
             patch.object(telegram_sender_worker, "settings", settings),
             patch.object(telegram_sender_worker, "AsyncSessionLocal", return_value=FakeSessionContext(session)),
             patch.object(telegram_sender_worker, "send_pending_telegram_notifications", AsyncMock(return_value=result)) as send_batch,
+            patch.object(
+                telegram_sender_worker,
+                "send_pending_procurement_telegram_notifications",
+                AsyncMock(return_value=TelegramSenderBatchResult()),
+            ) as send_procurement_batch,
         ):
             payload = await telegram_sender_worker.run_sender_batch()
 
@@ -351,6 +356,8 @@ class TelegramSenderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(send_batch.await_args.kwargs["chat_id"], "chat")
         self.assertEqual(send_batch.await_args.kwargs["limit"], 7)
         self.assertTrue(send_batch.await_args.kwargs["dry_run"])
+        send_procurement_batch.assert_awaited_once()
+        self.assertEqual(send_procurement_batch.await_args.kwargs["limit"], 6)
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, event, func
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, event, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -103,6 +103,52 @@ class ProcurementLotRecord(Base):
     )
 
     source_state: Mapped[ProcurementSourceState] = relationship(back_populates="lots")
+    telegram_notifications: Mapped[list["ProcurementTelegramNotificationOutbox"]] = relationship(back_populates="lot")
+
+
+class ProcurementTelegramNotificationOutbox(Base):
+    __tablename__ = "procurement_telegram_notification_outbox"
+    __table_args__ = (
+        UniqueConstraint("dedupe_key", name="uq_procurement_telegram_outbox_dedupe_key"),
+        Index(
+            "uq_procurement_telegram_outbox_lot_event_delivery",
+            "procurement_lot_record_id",
+            "event_type",
+            unique=True,
+            postgresql_where=text("status IN ('pending', 'sent')"),
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'sent', 'failed', 'skipped')",
+            name="ck_procurement_telegram_outbox_status",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    procurement_lot_record_id: Mapped[int] = mapped_column(
+        ForeignKey("procurement_lot_records.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    telegram_chat_id: Mapped[str | None] = mapped_column(String(128))
+    dedupe_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    cooldown_key: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", index=True)
+    priority: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    message_payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    event_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    cooldown_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    lot: Mapped[ProcurementLotRecord] = relationship(back_populates="telegram_notifications")
 
 
 @event.listens_for(ProcurementLotRecord, "before_insert")

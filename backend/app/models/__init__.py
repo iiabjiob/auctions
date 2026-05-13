@@ -12,7 +12,7 @@ from app.models.auction import (
 from app.models.auction_analysis_config import AuctionAnalysisConfigModel
 from app.models.filter_preset import FilterPresetModel
 from app.models.grid import GridChangeEventModel, GridOperationModel, GridRevisionModel
-from app.models.procurement import ProcurementLotRecord, ProcurementSourceState
+from app.models.procurement import ProcurementLotRecord, ProcurementSourceState, ProcurementTelegramNotificationOutbox
 from app.models.scoring_profile import ScoringProfileModel
 from app.models.telegram_connect_token import TelegramConnectTokenModel
 from app.models.user_interest_profile import UserInterestProfileModel
@@ -31,6 +31,7 @@ __all__ = [
     "AuctionSourceState",
     "ProcurementLotRecord",
     "ProcurementSourceState",
+    "ProcurementTelegramNotificationOutbox",
     "TelegramNotificationOutbox",
     "FilterPresetModel",
     "GridChangeEventModel",

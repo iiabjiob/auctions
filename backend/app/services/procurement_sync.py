@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.procurement import ProcurementLotRecord, ProcurementSourceState
 from app.schemas.procurements import ProcurementLotItem, ProcurementSyncResult
 from app.services.procurement_classification import ProcurementClassification, classify_procurement_lot
+from app.services.procurement_notifications import enqueue_procurement_telegram_notifications
 from app.services.procurement_scoring import apply_procurement_score
 from app.services.procurement_values import parse_scraped_datetime
 from app.services.zakupki_scraper import fetch_procurement_list, source_info
@@ -100,6 +101,8 @@ async def sync_zakupki_procurements(session: AsyncSession, *, limit: int | None 
             )
             apply_procurement_score(record, current_time=now)
             session.add(record)
+            await session.flush()
+            await enqueue_procurement_telegram_notifications(session, record, now=now)
             result.created += 1
             continue
 
@@ -136,6 +139,7 @@ async def sync_zakupki_procurements(session: AsyncSession, *, limit: int | None 
         record.normalized_item = prepared.normalized_item
         record.raw_item = item.model_dump(mode="json")
         apply_procurement_score(record, current_time=now)
+        await enqueue_procurement_telegram_notifications(session, record, now=now)
         if status_changed:
             record.status_changed_at = now
             result.status_changed += 1
