@@ -284,7 +284,7 @@ class TelegramNotificationOutboxTests(unittest.IsolatedAsyncioTestCase):
             min_rating=80,
         )
         session = FakeSession(
-            scalar_results=[None, None],
+            scalar_results=[None, None, None],
             scalars_results=[[matching, non_matching], [make_telegram_binding(user_id="user-1")]],
         )
 
@@ -322,7 +322,7 @@ class TelegramNotificationOutboxTests(unittest.IsolatedAsyncioTestCase):
         )
         profile = make_interest_profile(id="uip_transport", owner_user_id="user-1", min_rating=50)
         session = FakeSession(
-            scalar_results=[None, None],
+            scalar_results=[None, None, None],
             scalars_results=[[profile], [make_telegram_binding(user_id="user-1")]],
         )
 
@@ -349,7 +349,7 @@ class TelegramNotificationOutboxTests(unittest.IsolatedAsyncioTestCase):
         first = make_interest_profile(id="uip_1", owner_user_id="user-1")
         second = make_interest_profile(id="uip_2", owner_user_id="user-2")
         session = FakeSession(
-            scalar_results=[None, None, None, None],
+            scalar_results=[None, None, None, None, None, None],
             scalars_results=[
                 [first, second],
                 [
@@ -374,6 +374,56 @@ class TelegramNotificationOutboxTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len({entry.dedupe_key for entry in entries}), 2)
         self.assertEqual(len({entry.cooldown_key for entry in entries}), 2)
         self.assertEqual(session.flushes, 1)
+
+    async def test_user_scoped_enqueue_skips_same_lot_for_same_user_across_profiles(self) -> None:
+        record = make_record()
+        record.rating_score = 92
+        report = make_report(record_id=record.id)
+        first = make_interest_profile(id="uip_1", owner_user_id="user-1")
+        second = make_interest_profile(id="uip_2", owner_user_id="user-1")
+        session = FakeSession(
+            scalar_results=[None, None, None],
+            scalars_results=[[first, second], [make_telegram_binding(user_id="user-1")]],
+        )
+
+        entries = await enqueue_user_scoped_lot_telegram_notifications(
+            session,
+            make_snapshot(report),
+            record,
+            detail_cache=make_detail_cache(),
+            report=report,
+            now=GENERATED_AT,
+        )
+
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0].user_id, "user-1")
+        self.assertEqual(entries[0].interest_profile_id, "uip_1")
+        self.assertEqual(session.flushes, 1)
+
+    async def test_user_scoped_enqueue_returns_existing_user_lot_delivery_without_duplicate_insert(self) -> None:
+        record = make_record()
+        record.rating_score = 92
+        report = make_report(record_id=record.id)
+        profile = make_interest_profile(id="uip_2", owner_user_id="user-1")
+        existing = make_outbox_entry(report, status=TelegramNotificationStatus.SENT)
+        existing.user_id = "user-1"
+        existing.interest_profile_id = "uip_1"
+        existing.dedupe_key = f"telegram:user-1:uip_1:{record.id}:old-report-hash"
+        existing.cooldown_key = f"telegram:user-1:uip_1:{record.id}"
+        session = FakeSession(scalar_results=[existing], scalars_results=[[profile], [make_telegram_binding()]])
+
+        entries = await enqueue_user_scoped_lot_telegram_notifications(
+            session,
+            make_snapshot(report),
+            record,
+            detail_cache=make_detail_cache(),
+            report=report,
+            now=GENERATED_AT,
+        )
+
+        self.assertEqual(entries, [existing])
+        self.assertEqual(session.added, [])
+        self.assertEqual(session.flushes, 0)
 
     async def test_user_scoped_enqueue_returns_existing_entry_without_duplicate_insert(self) -> None:
         record = make_record()

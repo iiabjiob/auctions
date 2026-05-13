@@ -385,6 +385,7 @@ async def enqueue_user_scoped_lot_telegram_notifications(
     )
     entries: list[TelegramNotificationOutbox] = []
     added_entries = 0
+    seen_user_lot_keys: set[tuple[str, int]] = set()
 
     for interest_profile in profiles:
         match = evaluate_user_interest_match(
@@ -410,6 +411,20 @@ async def enqueue_user_scoped_lot_telegram_notifications(
             profile=scoring_profile,
         )
         if not eligibility.should_notify:
+            continue
+
+        user_lot_key = (interest_profile.owner_user_id, resolved_report.record_id)
+        if user_lot_key in seen_user_lot_keys:
+            continue
+        seen_user_lot_keys.add(user_lot_key)
+
+        existing_user_lot_delivery = await _existing_user_lot_delivery(
+            session,
+            user_id=interest_profile.owner_user_id,
+            lot_record_id=resolved_report.record_id,
+        )
+        if existing_user_lot_delivery is not None:
+            entries.append(existing_user_lot_delivery)
             continue
 
         dedupe_key = _user_notification_dedupe_key(
@@ -883,6 +898,33 @@ def _notification_blockers(report: LotDecisionReport) -> list[str]:
 
 
 def _cooldown_blocking_statuses() -> tuple[str, str]:
+    return (
+        TelegramNotificationStatus.PENDING.value,
+        TelegramNotificationStatus.SENT.value,
+    )
+
+
+async def _existing_user_lot_delivery(
+    session: AsyncSession,
+    *,
+    user_id: str,
+    lot_record_id: int,
+) -> TelegramNotificationOutbox | None:
+    return await session.scalar(
+        select(TelegramNotificationOutbox)
+        .where(TelegramNotificationOutbox.user_id == user_id)
+        .where(TelegramNotificationOutbox.lot_record_id == lot_record_id)
+        .where(TelegramNotificationOutbox.status.in_(_user_lot_delivery_blocking_statuses()))
+        .order_by(
+            TelegramNotificationOutbox.sent_at.desc().nullslast(),
+            TelegramNotificationOutbox.scheduled_at.desc(),
+            TelegramNotificationOutbox.id.desc(),
+        )
+        .limit(1)
+    )
+
+
+def _user_lot_delivery_blocking_statuses() -> tuple[str, str]:
     return (
         TelegramNotificationStatus.PENDING.value,
         TelegramNotificationStatus.SENT.value,

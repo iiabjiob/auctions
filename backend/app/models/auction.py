@@ -343,6 +343,13 @@ class TelegramNotificationOutbox(Base):
     __tablename__ = "telegram_notification_outbox"
     __table_args__ = (
         UniqueConstraint("dedupe_key", name="uq_telegram_notification_outbox_dedupe_key"),
+        Index(
+            "uq_telegram_notification_outbox_user_lot_delivery",
+            "user_id",
+            "lot_record_id",
+            unique=True,
+            postgresql_where=text("user_id IS NOT NULL AND status IN ('pending', 'sent')"),
+        ),
         CheckConstraint(
             "status IN ('pending', 'sent', 'failed', 'skipped')",
             name="ck_telegram_notification_outbox_status",
