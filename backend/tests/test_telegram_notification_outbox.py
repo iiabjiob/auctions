@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 
-from app.models import UserInterestProfileModel
+from app.models import UserInterestProfileModel, UserTelegramBindingModel
 from app.models.auction import AuctionLotDecisionReport, TelegramNotificationOutbox
 from app.schemas.lot_decision_report import (
     ActionRecommendation,
@@ -33,9 +33,11 @@ class FakeSession:
         self,
         scalar_results: list[object | None] | None = None,
         scalars_result: list[object] | None = None,
+        scalars_results: list[list[object]] | None = None,
     ) -> None:
         self.scalar_results = list(scalar_results or [])
         self.scalars_result = list(scalars_result or [])
+        self.scalars_results = list(scalars_results or [])
         self.statements = []
         self.scalars_statements = []
         self.added: list[object] = []
@@ -49,6 +51,8 @@ class FakeSession:
 
     async def scalars(self, statement):  # noqa: ANN001
         self.scalars_statements.append(statement)
+        if self.scalars_results:
+            return FakeScalars(self.scalars_results.pop(0))
         return FakeScalars(self.scalars_result)
 
     def add(self, obj: object) -> None:
@@ -150,6 +154,16 @@ def make_interest_profile(**overrides: object) -> UserInterestProfileModel:
     }
     values.update(overrides)
     return UserInterestProfileModel(**values)
+
+
+def make_telegram_binding(**overrides: object) -> UserTelegramBindingModel:
+    values = {
+        "user_id": "user-1",
+        "telegram_chat_id": "123456789",
+        "username": "auction_user",
+    }
+    values.update(overrides)
+    return UserTelegramBindingModel(**values)
 
 
 class TelegramNotificationOutboxTests(unittest.IsolatedAsyncioTestCase):
@@ -269,7 +283,10 @@ class TelegramNotificationOutboxTests(unittest.IsolatedAsyncioTestCase):
             profile_payload={"target_categories": ["Автомобили"], "desired_keywords": ["BMW"]},
             min_rating=80,
         )
-        session = FakeSession(scalar_results=[None, None], scalars_result=[matching, non_matching])
+        session = FakeSession(
+            scalar_results=[None, None],
+            scalars_results=[[matching, non_matching], [make_telegram_binding(user_id="user-1")]],
+        )
 
         entries = await enqueue_user_scoped_lot_telegram_notifications(
             session,
@@ -286,7 +303,7 @@ class TelegramNotificationOutboxTests(unittest.IsolatedAsyncioTestCase):
         entry = entries[0]
         self.assertEqual(entry.user_id, "user-1")
         self.assertEqual(entry.interest_profile_id, "uip_match")
-        self.assertIsNone(entry.telegram_chat_id)
+        self.assertEqual(entry.telegram_chat_id, "123456789")
         self.assertEqual(entry.status, "pending")
         self.assertEqual(entry.dedupe_key, f"telegram:user-1:uip_match:{record.id}:{make_snapshot(report).report_hash}")
         self.assertEqual(entry.cooldown_key, f"telegram:user-1:uip_match:{record.id}")
@@ -299,7 +316,16 @@ class TelegramNotificationOutboxTests(unittest.IsolatedAsyncioTestCase):
         report = make_report(record_id=record.id)
         first = make_interest_profile(id="uip_1", owner_user_id="user-1")
         second = make_interest_profile(id="uip_2", owner_user_id="user-2")
-        session = FakeSession(scalar_results=[None, None, None, None], scalars_result=[first, second])
+        session = FakeSession(
+            scalar_results=[None, None, None, None],
+            scalars_results=[
+                [first, second],
+                [
+                    make_telegram_binding(user_id="user-1", telegram_chat_id="111"),
+                    make_telegram_binding(user_id="user-2", telegram_chat_id="222"),
+                ],
+            ],
+        )
 
         entries = await enqueue_user_scoped_lot_telegram_notifications(
             session,
@@ -312,6 +338,7 @@ class TelegramNotificationOutboxTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(entries), 2)
         self.assertEqual({entry.user_id for entry in entries}, {"user-1", "user-2"})
+        self.assertEqual({entry.telegram_chat_id for entry in entries}, {"111", "222"})
         self.assertEqual(len({entry.dedupe_key for entry in entries}), 2)
         self.assertEqual(len({entry.cooldown_key for entry in entries}), 2)
         self.assertEqual(session.flushes, 1)
@@ -327,7 +354,7 @@ class TelegramNotificationOutboxTests(unittest.IsolatedAsyncioTestCase):
         existing.interest_profile_id = "uip_1"
         existing.dedupe_key = f"telegram:user-1:uip_1:{record.id}:{snapshot.report_hash}"
         existing.cooldown_key = f"telegram:user-1:uip_1:{record.id}"
-        session = FakeSession(scalar_results=[existing], scalars_result=[profile])
+        session = FakeSession(scalar_results=[existing], scalars_results=[[profile], [make_telegram_binding()]])
 
         entries = await enqueue_user_scoped_lot_telegram_notifications(
             session,
@@ -352,7 +379,7 @@ class TelegramNotificationOutboxTests(unittest.IsolatedAsyncioTestCase):
             profile_payload={"target_categories": ["Автомобили"], "desired_keywords": ["BMW"]},
             min_rating=80,
         )
-        session = FakeSession(scalars_result=[profile])
+        session = FakeSession(scalars_results=[[profile], []])
 
         entries = await enqueue_user_scoped_lot_telegram_notifications(
             session,

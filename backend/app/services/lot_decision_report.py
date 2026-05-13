@@ -18,6 +18,7 @@ from app.models.auction import (
     TelegramNotificationOutbox,
 )
 from app.models.user_interest_profile import UserInterestProfileModel
+from app.models.user_telegram_binding import UserTelegramBindingModel
 from app.schemas.lot_decision_report import (
     ActionRecommendation,
     DecisionLevel,
@@ -378,6 +379,10 @@ async def enqueue_user_scoped_lot_telegram_notifications(
     resolved_report = report or LotDecisionReport.model_validate(snapshot.report_payload)
     current_time = now or datetime.now(UTC)
     profiles = await _active_telegram_interest_profiles(session)
+    telegram_bindings = await _telegram_bindings_by_user_id(
+        session,
+        {profile.owner_user_id for profile in profiles},
+    )
     entries: list[TelegramNotificationOutbox] = []
     added_entries = 0
 
@@ -443,11 +448,12 @@ async def enqueue_user_scoped_lot_telegram_notifications(
             else current_time + timedelta(seconds=cooldown_seconds)
         )
         message = render_telegram_lot_message(profile_report)
+        telegram_binding = telegram_bindings.get(interest_profile.owner_user_id)
         entry = TelegramNotificationOutbox(
             lot_record_id=resolved_report.record_id,
             decision_report_id=decision_report_id,
             user_id=interest_profile.owner_user_id,
-            telegram_chat_id=None,
+            telegram_chat_id=telegram_binding.telegram_chat_id if telegram_binding is not None else None,
             interest_profile_id=interest_profile.id,
             dedupe_key=dedupe_key,
             cooldown_key=cooldown_key,
@@ -1004,6 +1010,17 @@ async def _active_telegram_interest_profiles(session: AsyncSession) -> list[User
         .order_by(UserInterestProfileModel.owner_user_id.asc(), UserInterestProfileModel.id.asc())
     )
     return list((await session.scalars(statement)).all())
+
+
+async def _telegram_bindings_by_user_id(
+    session: AsyncSession,
+    user_ids: set[str],
+) -> dict[str, UserTelegramBindingModel]:
+    if not user_ids:
+        return {}
+    statement = select(UserTelegramBindingModel).where(UserTelegramBindingModel.user_id.in_(sorted(user_ids)))
+    bindings = (await session.scalars(statement)).all()
+    return {binding.user_id: binding for binding in bindings}
 
 
 def _user_notification_dedupe_key(

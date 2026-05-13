@@ -14,6 +14,7 @@ from app.models.filter_preset import FilterPresetModel
 from app.models.grid import GridChangeEventModel, GridOperationModel, GridRevisionModel
 from app.models.scoring_profile import ScoringProfileModel
 from app.models.user_interest_profile import UserInterestProfileModel
+from app.models.user_telegram_binding import UserTelegramBindingModel
 from app.models.user import UserModel
 
 __all__ = [
@@ -33,5 +34,6 @@ __all__ = [
     "GridRevisionModel",
     "ScoringProfileModel",
     "UserInterestProfileModel",
+    "UserTelegramBindingModel",
     "UserModel",
 ]
