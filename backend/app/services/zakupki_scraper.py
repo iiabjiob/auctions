@@ -70,25 +70,35 @@ def iter_procurement_list(
     timeout: int = 30,
 ) -> Iterable[ProcurementLotItem]:
     yielded = 0
-    page = max(1, start_page)
-    while limit is None or yielded < limit:
-        html_text = fetch_search_page(
-            page=page,
-            records_per_page=records_per_page,
-            search_keywords=search_keywords,
-            timeout=timeout,
-        )
-        result = parse_search_results_with_diagnostics(html_text)
-        _log_parse_diagnostics(page=page, diagnostics=result.diagnostics)
-        items = result.items
-        if not items:
-            return
-        for item in items:
-            yield item
-            yielded += 1
-            if limit is not None and yielded >= limit:
-                return
-        page += 1
+    seen_external_ids: set[str] = set()
+    for keyword in _search_keyword_queries(search_keywords):
+        page = max(1, start_page)
+        while limit is None or yielded < limit:
+            html_text = fetch_search_page(
+                page=page,
+                records_per_page=records_per_page,
+                search_keywords=(keyword,),
+                timeout=timeout,
+            )
+            result = parse_search_results_with_diagnostics(html_text)
+            _log_parse_diagnostics(page=page, diagnostics=result.diagnostics)
+            items = result.items
+            if not items:
+                break
+            for item in items:
+                if item.external_id in seen_external_ids:
+                    continue
+                seen_external_ids.add(item.external_id)
+                yield item
+                yielded += 1
+                if limit is not None and yielded >= limit:
+                    return
+            page += 1
+
+
+def _search_keyword_queries(search_keywords: tuple[str, ...] | list[str] | None = None) -> tuple[str, ...]:
+    keywords = tuple(search_keywords or DEFAULT_SEARCH_KEYWORDS)
+    return tuple(dict.fromkeys(keyword.strip() for keyword in keywords if keyword.strip()))
 
 
 def fetch_procurement_list(limit: int | None = None, *, page: int = 1) -> list[ProcurementLotItem]:
@@ -103,11 +113,20 @@ def fetch_search_page(
     timeout: int = 30,
 ) -> str:
     params = build_search_params(page=page, records_per_page=records_per_page, search_keywords=search_keywords)
+    logger.info(
+        "Fetching zakupki search page",
+        extra={
+            "page": page,
+            "records_per_page": records_per_page,
+            "search_keywords": list(search_keywords or DEFAULT_SEARCH_KEYWORDS),
+        },
+    )
     gateway_response = fetch_search_page_via_gateway(params=params, timeout=timeout)
     if gateway_response is not None:
         return gateway_response
 
     url = f"{BASE_URL}{SEARCH_PATH}?{urlencode(params)}"
+    logger.info("Fetching zakupki search page directly", extra={"url": url})
     request = Request(url, headers=DEFAULT_HEADERS)
     with urlopen(request, timeout=timeout) as response:
         return response.read().decode(_response_encoding(response.headers.get("Content-Type")), "replace")
@@ -144,6 +163,17 @@ def fetch_search_page_via_gateway(*, params: dict[str, str | int], timeout: int 
         response_payload = json.loads(response.read().decode("utf-8"))
 
     status = int(response_payload.get("status") or 0)
+    logger.info(
+        "Fetched zakupki page via gateway",
+        extra={
+            "gateway_url": gateway_url,
+            "target_path": SEARCH_PATH,
+            "status": status,
+            "elapsed_ms": response_payload.get("elapsed_ms"),
+            "body_length": len(str(response_payload.get("body") or "")),
+            "truncated": bool(response_payload.get("truncated")),
+        },
+    )
     if status < 200 or status >= 300:
         raise RuntimeError(f"Zakupki fetch gateway returned HTTP {status}")
     if response_payload.get("body_base64"):
@@ -390,6 +420,16 @@ def _response_encoding(content_type: str | None) -> str:
 
 
 def _log_parse_diagnostics(*, page: int, diagnostics: SearchParseDiagnostics) -> None:
+    logger.info(
+        "Parsed zakupki search page",
+        extra={
+            "page": page,
+            "total_chunks": diagnostics.total_chunks,
+            "parsed_items": diagnostics.parsed_items,
+            "skipped_chunks": diagnostics.skipped_chunks,
+            "missing_required_fields": diagnostics.missing_required_fields,
+        },
+    )
     if diagnostics.skipped_chunks or diagnostics.missing_required_fields:
         logger.info(
             "Parsed zakupki search page with missing fields",

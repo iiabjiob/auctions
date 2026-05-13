@@ -8,7 +8,13 @@ from unittest.mock import patch
 
 from app.services.procurement_scoring import score_procurement_lot
 from app.services.procurement_values import parse_money
-from app.services.zakupki_scraper import build_search_params, fetch_search_page_via_gateway, parse_search_results, parse_search_results_with_diagnostics
+from app.services.zakupki_scraper import (
+    build_search_params,
+    fetch_search_page_via_gateway,
+    iter_procurement_list,
+    parse_search_results,
+    parse_search_results_with_diagnostics,
+)
 
 
 class FakeResponse:
@@ -100,6 +106,33 @@ class ZakupkiScraperTests(unittest.TestCase):
         self.assertEqual(request.full_url, "http://fetcher:8080/fetch")
         self.assertEqual(request.headers["Authorization"], "Bearer secret")
         self.assertEqual(urlopen_mock.call_args.kwargs["timeout"], 15)
+
+    def test_iter_procurement_list_searches_keywords_separately(self) -> None:
+        empty_html = '<p class="noRecords">Поиск не дал результатов</p>'
+        item_html = """
+        <div class="registry-entry__header-mid__number">
+          <a href="https://zakupki.gov.ru/epz/order/notice/ea20/view/common-info.html?regNumber=0149200002326002213">
+            № 0149200002326002213
+          </a>
+        </div>
+        <div class="registry-entry__header-mid__title text-normal">Подача заявок</div>
+        <div class="registry-entry__body-block">
+          <div class="registry-entry__body-title">Объект закупки</div>
+          <div class="registry-entry__body-value">Поставка медицинской одежды</div>
+        </div>
+        <div class="registry-entry__body-block">
+          <div class="registry-entry__body-title">Заказчик</div>
+          <div class="registry-entry__body-value">ГОБУЗ БОЛЬНИЦА</div>
+        </div>
+        """
+
+        with patch("app.services.zakupki_scraper.fetch_search_page", side_effect=[empty_html, item_html]) as fetch_page:
+            items = list(iter_procurement_list(limit=1, search_keywords=("спецодежда", "медицинская одежда")))
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].registry_number, "0149200002326002213")
+        self.assertEqual(fetch_page.call_args_list[0].kwargs["search_keywords"], ("спецодежда",))
+        self.assertEqual(fetch_page.call_args_list[1].kwargs["search_keywords"], ("медицинская одежда",))
 
     def test_parse_44fz_fixture_extracts_source_fields(self) -> None:
         html = """
