@@ -310,6 +310,38 @@ class TelegramNotificationOutboxTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(entry.cooldown_until, GENERATED_AT + timedelta(hours=1))
         self.assertEqual(session.flushes, 1)
 
+    async def test_user_scoped_enqueue_uses_profile_match_for_watch_rating(self) -> None:
+        record = make_record()
+        record.rating_score = 55
+        report = make_report(
+            record_id=record.id,
+            rating_score=55,
+            rating_level="medium",
+            decision_level=DecisionLevel.WATCH,
+            recommendation=ActionRecommendation.MONITOR,
+        )
+        profile = make_interest_profile(id="uip_transport", owner_user_id="user-1", min_rating=50)
+        session = FakeSession(
+            scalar_results=[None, None],
+            scalars_results=[[profile], [make_telegram_binding(user_id="user-1")]],
+        )
+
+        entries = await enqueue_user_scoped_lot_telegram_notifications(
+            session,
+            make_snapshot(report),
+            record,
+            detail_cache=make_detail_cache(),
+            report=report,
+            now=GENERATED_AT,
+            cooldown_seconds=3600,
+        )
+
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0].status, "pending")
+        self.assertEqual(entries[0].priority, "urgent")
+        self.assertEqual(entries[0].interest_profile_id, "uip_transport")
+        self.assertEqual(session.flushes, 1)
+
     async def test_user_scoped_enqueue_allows_same_lot_for_two_users(self) -> None:
         record = make_record()
         record.rating_score = 92

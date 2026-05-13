@@ -404,7 +404,11 @@ async def enqueue_user_scoped_lot_telegram_notifications(
                 "profile_fit_summary": "; ".join(match.reasons[:3]) or None,
             }
         )
-        eligibility = evaluate_lot_notification_eligibility(profile_report, profile=scoring_profile)
+        eligibility = _evaluate_interest_profile_notification_eligibility(
+            profile_report,
+            interest_profile,
+            profile=scoring_profile,
+        )
         if not eligibility.should_notify:
             continue
 
@@ -924,6 +928,63 @@ def _notification_priority(report: LotDecisionReport, *, blocked: bool) -> str:
     if report.decision_level == DecisionLevel.CALCULATE or near_deadline:
         return "medium"
     return "low"
+
+
+def _evaluate_interest_profile_notification_eligibility(
+    report: LotDecisionReport,
+    interest_profile: UserInterestProfileModel,
+    *,
+    profile: LotScoringProfile,
+) -> LotNotificationEligibility:
+    eligibility = evaluate_lot_notification_eligibility(report, profile=profile)
+    if eligibility.should_notify:
+        return eligibility
+
+    blockers = _interest_profile_notification_blockers(report, interest_profile)
+    should_notify = not blockers
+    priority = _interest_profile_notification_priority(report)
+    profile_hash = report.profile_hash or build_lot_scoring_profile_hash(profile)
+    return LotNotificationEligibility(
+        should_notify=should_notify,
+        priority=priority if should_notify else "low",
+        reasons=(
+            (
+                "interest_profile_match",
+                f"min_rating:{int(getattr(interest_profile, 'min_rating', 0) or 0)}",
+            )
+            if should_notify
+            else ()
+        ),
+        blockers=tuple(blockers),
+        dedupe_key=_notification_dedupe_key(report, profile_hash=profile_hash),
+        cooldown_key=_notification_cooldown_key(report, profile_hash=profile_hash),
+    )
+
+
+def _interest_profile_notification_blockers(
+    report: LotDecisionReport,
+    interest_profile: UserInterestProfileModel,
+) -> list[str]:
+    blockers: list[str] = []
+    if report.decision_level == DecisionLevel.IGNORE or report.recommendation == ActionRecommendation.IGNORE:
+        blockers.append("decision_ignore")
+    for risk in report.risks:
+        if risk.level == "high":
+            blockers.append(f"high_risk:{risk.code}")
+    min_rating = int(getattr(interest_profile, "min_rating", 0) or 0)
+    if report.rating_score < min_rating:
+        blockers.append(f"rating_below_profile_min:{report.rating_score}<{min_rating}")
+    if not _report_has_profile_fit(report):
+        blockers.append("profile_fit_missing")
+    return blockers
+
+
+def _interest_profile_notification_priority(report: LotDecisionReport) -> str:
+    if _report_is_near_deadline(report):
+        return "urgent"
+    if report.rating_score >= NOTIFICATION_HIGH_SCORE:
+        return "high"
+    return "medium"
 
 
 def _report_has_profile_fit(report: LotDecisionReport) -> bool:

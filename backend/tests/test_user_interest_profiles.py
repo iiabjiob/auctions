@@ -9,6 +9,7 @@ from app.schemas.user_interest_profiles import (
     UserInterestProfileFromPreset,
     UserInterestProfileUpdate,
 )
+from app.services.user_interest_profiles import build_profile_payload_from_filter_preset, _grid_filter_min_number
 
 
 class UserInterestProfileSchemaTests(unittest.TestCase):
@@ -63,6 +64,50 @@ class UserInterestProfileSchemaTests(unittest.TestCase):
         self.assertEqual(payload.preset_id, "preset_1")
         self.assertEqual(payload.name, "BMW Telegram")
         self.assertEqual(payload.min_rating, 85)
+
+    def test_build_profile_payload_from_preset_reads_grid_view_filters(self) -> None:
+        grid_view = {
+            "state": {
+                "rows": {
+                    "snapshot": {
+                        "filterModel": {
+                            "columnFilters": {
+                                "category": {"kind": "valueSet", "tokens": ["string:Транспорт и техника"]},
+                                "price": {"kind": "predicate", "operator": "gte", "value": "2000000"},
+                            },
+                            "advancedFilters": {},
+                        },
+                    },
+                },
+            },
+        }
+
+        payload = build_profile_payload_from_filter_preset({}, grid_view)
+
+        self.assertEqual(payload["target_categories"], ["Транспорт и техника"])
+        self.assertEqual(payload["budget_min"], "2000000")
+
+    def test_grid_filter_min_number_reads_rating_from_grid_view(self) -> None:
+        grid_view = {
+            "state": {
+                "rows": {
+                    "snapshot": {
+                        "filterModel": {
+                            "columnFilters": {},
+                            "advancedFilters": {
+                                "ratingScore": {
+                                    "clauses": [
+                                        {"operator": "gte", "value": "50"},
+                                    ],
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        }
+
+        self.assertEqual(_grid_filter_min_number(grid_view, "ratingScore"), 50)
 
 
 if __name__ == "__main__":

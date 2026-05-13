@@ -5783,7 +5783,7 @@ onUnmounted(() => {
                         {{ profile.is_active ? 'Отключить' : 'Включить' }}
                       </button>
                       <button class="secondary-button" type="button" @click="void toggleInterestProfileTelegram(profile)">
-                        {{ profile.telegram_enabled ? 'Telegram выкл.' : 'Telegram вкл.' }}
+                        {{ profile.telegram_enabled ? 'Telegram вкл.' : 'Telegram выкл.' }}
                       </button>
                       <button
                         class="secondary-button"
