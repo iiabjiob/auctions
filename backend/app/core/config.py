@@ -76,7 +76,12 @@ class Settings(BaseSettings):
     auction_actuality_sweep_interval_seconds: int = 60 * 15
     auction_actuality_sweep_batch_size: int = 500
     telegram_bot_token: str | None = None
+    telegram_bot_username: str | None = None
+    telegram_webhook_secret: str | None = None
+    telegram_webhook_url: str | None = None
+    telegram_webhook_auto_register: bool = True
     telegram_chat_id: str | None = None
+    telegram_connect_token_ttl_seconds: int = 10 * 60
     telegram_sender_dry_run: bool = True
     telegram_sender_batch_limit: int = 20
     telegram_sender_max_attempts: int = 3

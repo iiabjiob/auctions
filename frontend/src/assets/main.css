@@ -763,6 +763,13 @@ h2 {
   background: linear-gradient(135deg, var(--color-surface-subtle), var(--color-surface));
 }
 
+.interest-profile-panel--telegram {
+  border-color: rgba(28, 126, 214, 0.28);
+  background:
+    radial-gradient(circle at top right, rgba(28, 126, 214, 0.12), transparent 34%),
+    linear-gradient(135deg, var(--color-surface), var(--color-surface-subtle));
+}
+
 .interest-profile-panel__header,
 .interest-profile-card {
   display: flex;
@@ -798,6 +805,11 @@ h2 {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 12px;
   align-items: end;
+}
+
+.interest-profile-connect-note {
+  color: var(--color-text-strong) !important;
+  font-weight: 600;
 }
 
 .interest-profile-card--empty {

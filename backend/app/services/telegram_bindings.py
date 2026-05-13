@@ -26,11 +26,19 @@ class TelegramBindingService:
         user: UserModel,
         payload: TelegramBindingUpsert,
     ) -> TelegramBindingResponse:
-        binding = await self._get_model_for_user(session, user.id)
+        return await self.upsert_for_user_id(session, user.id, payload)
+
+    async def upsert_for_user_id(
+        self,
+        session: AsyncSession,
+        user_id: str,
+        payload: TelegramBindingUpsert,
+    ) -> TelegramBindingResponse:
+        binding = await self._get_model_for_user(session, user_id)
         current_time = datetime.now(UTC)
         if binding is None:
             binding = UserTelegramBindingModel(
-                user_id=user.id,
+                user_id=user_id,
                 telegram_chat_id=payload.telegram_chat_id,
                 username=payload.username,
                 connected_at=current_time,

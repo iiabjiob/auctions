@@ -21,6 +21,10 @@ from sqlalchemy import text
 
 from app.core.config import get_settings
 from app.core.logger import get_logger
+from app.services.telegram_webhook_registration import (
+    TelegramWebhookRegistrationError,
+    telegram_webhook_registrar,
+)
 
 
 settings = get_settings()
@@ -54,6 +58,19 @@ async def lifespan(app: FastAPI):
 
     # Healthchecks
     # await check_database_connection()
+    try:
+        webhook_result = await telegram_webhook_registrar.ensure_webhook(
+            bot_token=settings.telegram_bot_token,
+            webhook_url=settings.telegram_webhook_url,
+            webhook_secret=settings.telegram_webhook_secret,
+            enabled=settings.telegram_webhook_auto_register,
+        )
+        if webhook_result.registered:
+            logger.info("Telegram webhook registered")
+        else:
+            logger.info("Telegram webhook registration skipped: %s", webhook_result.reason)
+    except TelegramWebhookRegistrationError as exc:
+        logger.error("Telegram webhook registration failed: %s", exc)
 
     try:
         yield

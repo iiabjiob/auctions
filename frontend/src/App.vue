@@ -39,6 +39,7 @@ import {
   refreshUserInterestProfileFromPreset,
   updateUserInterestProfile,
 } from './api/userInterestProfiles'
+import { createTelegramConnectToken } from './api/telegram'
 import AuthLoginScreen from './components/AuthLoginScreen.vue'
 import AnalysisSignalTooltip from './components/AnalysisSignalTooltip.vue'
 import LotNameCell from './components/LotNameCell.vue'
@@ -734,6 +735,9 @@ const presetsLoading = ref(false)
 const interestProfilesLoading = ref(false)
 const interestProfilesSaving = ref(false)
 const interestProfilesError = ref('')
+const telegramConnectLoading = ref(false)
+const telegramConnectUrl = ref('')
+const telegramConnectExpiresAt = ref('')
 const analysisConfigLoading = ref(false)
 const analysisConfigSaving = ref(false)
 const analysisConfigError = ref('')
@@ -4008,6 +4012,21 @@ async function createInterestProfileFromSelectedPreset() {
   }
 }
 
+async function connectTelegramBot() {
+  telegramConnectLoading.value = true
+  interestProfilesError.value = ''
+  try {
+    const response = await createTelegramConnectToken()
+    telegramConnectUrl.value = response.connect_url
+    telegramConnectExpiresAt.value = response.expires_at
+    window.open(response.connect_url, '_blank', 'noopener,noreferrer')
+  } catch (error) {
+    interestProfilesError.value = error instanceof Error ? error.message : 'Не удалось создать ссылку подключения Telegram'
+  } finally {
+    telegramConnectLoading.value = false
+  }
+}
+
 async function toggleInterestProfileActive(profile: UserInterestProfile) {
   await patchInterestProfile(profile, { is_active: !profile.is_active })
 }
@@ -5808,6 +5827,29 @@ onUnmounted(() => {
               </p>
 
               <div v-if="interestProfilesError" class="error-banner">{{ interestProfilesError }}</div>
+
+              <section class="interest-profile-panel interest-profile-panel--telegram" aria-label="Подключить Telegram-бота">
+                <div class="interest-profile-panel__header">
+                  <div>
+                    <h3>Подключить Telegram-бота</h3>
+                    <p>
+                      Создайте одноразовую ссылку, откройте бота и подтвердите подключение. Chat ID сохранится
+                      автоматически после команды /start.
+                    </p>
+                    <p v-if="telegramConnectUrl" class="interest-profile-connect-note">
+                      Ссылка создана до {{ formatDateTime(telegramConnectExpiresAt) }}.
+                    </p>
+                  </div>
+                  <button
+                    class="primary-button"
+                    type="button"
+                    :disabled="telegramConnectLoading"
+                    @click="void connectTelegramBot()"
+                  >
+                    {{ telegramConnectLoading ? 'Создаем...' : 'Открыть бота' }}
+                  </button>
+                </div>
+              </section>
 
               <section class="interest-profile-panel" aria-label="Создать профиль из текущих фильтров">
                 <div class="interest-profile-panel__header">

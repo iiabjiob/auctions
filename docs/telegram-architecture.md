@@ -153,17 +153,31 @@ MVP-срез:
 - `user_interest_profiles` хранит пользовательские профили интересов на базе `LotScoringProfile`;
 - `/api/v1/user-interest-profiles` дает CRUD для профилей текущего пользователя;
 - `user_telegram_bindings` хранит `user_id -> telegram_chat_id`;
-- `/api/v1/telegram/binding` дает минимальное ручное подключение/обновление/удаление Telegram chat;
+- `/api/v1/telegram/binding` дает минимальное ручное подключение/обновление/удаление Telegram chat как fallback;
+- `/api/v1/telegram/connect-token` выдает одноразовую deep-link ссылку вида `https://t.me/<bot>?start=connect_<token>`;
+- `/api/v1/telegram/webhook` принимает `/start connect_<token>`, валидирует `X-Telegram-Bot-Api-Secret-Token`, сохраняет `user_id -> telegram_chat_id` и отвечает пользователю через бота;
+- на старте API автоматически вызывает Telegram `setWebhook`, если заданы `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_URL` и `TELEGRAM_WEBHOOK_SECRET`;
 - `telegram_notification_outbox` содержит `user_id`, `telegram_chat_id` и `interest_profile_id`;
 - user-scoped enqueue проходит по активным профилям, проверяет profile match и создает записи только подходящим пользователям;
 - sender отправляет в `telegram_chat_id` записи, если он задан, иначе использует глобальный fallback `TELEGRAM_CHAT_ID`;
-- frontend позволяет создать профиль интересов из текущих фильтров каталога и управлять активностью/Telegram-флагом.
+- frontend позволяет создать профиль интересов из текущих фильтров каталога и управлять активностью/Telegram-флагом;
+- frontend дает кнопку подключения Telegram-бота через одноразовую ссылку;
 - frontend позволяет подключить сохраненный filter preset к Telegram: backend конвертирует preset filters в `LotScoringProfile` и сохраняет связь `source_filter_preset_id`;
 - при обновлении сохраненного среза frontend синхронизирует связанные Telegram-профили через `refresh-from-preset`.
 
 Что пока не входит в MVP:
 
-- deep-link / webhook бота для автоматической привязки Telegram;
 - тарифы, квоты и лимиты уведомлений;
 - полноценная форма редактирования всех полей профиля во frontend;
 - перенос старых глобальных pending-уведомлений в user-scoped формат.
+
+Для автоматической привязки Telegram нужны env-настройки:
+
+```text
+TELEGRAM_BOT_TOKEN=<bot token>
+TELEGRAM_BOT_USERNAME=<bot username без @>
+TELEGRAM_WEBHOOK_URL=https://<public-host>/api/v1/telegram/webhook
+TELEGRAM_WEBHOOK_SECRET=<секрет для X-Telegram-Bot-Api-Secret-Token>
+TELEGRAM_WEBHOOK_AUTO_REGISTER=true
+TELEGRAM_CONNECT_TOKEN_TTL_SECONDS=600
+```
