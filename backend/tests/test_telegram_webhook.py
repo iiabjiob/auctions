@@ -18,12 +18,18 @@ class FakeConnectService:
 
 
 class FakeBindingService:
-    def __init__(self) -> None:
+    def __init__(self, binding: object | None = None) -> None:
+        self.binding = binding
+        self.chat_ids: list[str] = []
         self.calls: list[tuple[str, str, str | None]] = []
 
     async def upsert_for_user_id(self, session: object, user_id: str, payload) -> object:  # noqa: ANN001
         self.calls.append((user_id, payload.telegram_chat_id, payload.username))
         return SimpleNamespace(user_id=user_id, telegram_chat_id=payload.telegram_chat_id, username=payload.username)
+
+    async def get_model_for_chat_id(self, session: object, telegram_chat_id: str) -> object | None:
+        self.chat_ids.append(telegram_chat_id)
+        return self.binding
 
 
 class FakeSender:
@@ -35,6 +41,24 @@ class FakeSender:
         if self.error is not None:
             raise self.error
         self.messages.append((bot_token, chat_id, text))
+
+
+class FakeScalarResult:
+    def __init__(self, rows: list[object]) -> None:
+        self.rows = rows
+
+    def all(self) -> list[object]:
+        return self.rows
+
+
+class FakeSession:
+    def __init__(self, profiles: list[object] | None = None) -> None:
+        self.profiles = profiles or []
+        self.scalar_statements: list[object] = []
+
+    async def scalars(self, statement: object) -> FakeScalarResult:
+        self.scalar_statements.append(statement)
+        return FakeScalarResult(self.profiles)
 
 
 class TelegramWebhookServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -78,6 +102,73 @@ class TelegramWebhookServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(sender.messages), 1)
         self.assertEqual(sender.messages[0][0], "bot-token")
         self.assertEqual(sender.messages[0][1], "123456")
+        self.assertIn("/status", sender.messages[0][2])
+
+    async def test_handle_update_replies_with_help_for_plain_start(self) -> None:
+        connect_service = FakeConnectService(SimpleNamespace(user_id="user-1"))
+        binding_service = FakeBindingService()
+        sender = FakeSender()
+        service = TelegramWebhookService(
+            connect_service=connect_service,
+            binding_service=binding_service,
+            sender=sender,
+        )
+
+        result = await service.handle_update(
+            object(),
+            {"message": {"text": "/start", "chat": {"id": 123456}}},
+            bot_token="bot-token",
+        )
+
+        self.assertEqual(result.action, "help")
+        self.assertEqual(connect_service.tokens, [])
+        self.assertEqual(binding_service.calls, [])
+        self.assertEqual(len(sender.messages), 1)
+        self.assertIn("кнопку подключения Telegram", sender.messages[0][2])
+
+    async def test_handle_update_replies_with_status_profiles(self) -> None:
+        connect_service = FakeConnectService(SimpleNamespace(user_id="user-1"))
+        binding_service = FakeBindingService(SimpleNamespace(user_id="user-1"))
+        sender = FakeSender()
+        service = TelegramWebhookService(
+            connect_service=connect_service,
+            binding_service=binding_service,
+            sender=sender,
+        )
+
+        result = await service.handle_update(
+            FakeSession([SimpleNamespace(name="BMW <x5>"), SimpleNamespace(name="Коммерческая техника")]),
+            {"message": {"text": "/status", "chat": {"id": 123456}}},
+            bot_token="bot-token",
+        )
+
+        self.assertEqual(result.action, "status")
+        self.assertEqual(connect_service.tokens, [])
+        self.assertEqual(binding_service.chat_ids, ["123456"])
+        self.assertEqual(len(sender.messages), 1)
+        self.assertIn("Активные подборки", sender.messages[0][2])
+        self.assertIn("BMW &lt;x5&gt;", sender.messages[0][2])
+
+    async def test_handle_update_replies_with_status_when_chat_is_not_connected(self) -> None:
+        connect_service = FakeConnectService(SimpleNamespace(user_id="user-1"))
+        binding_service = FakeBindingService(None)
+        sender = FakeSender()
+        service = TelegramWebhookService(
+            connect_service=connect_service,
+            binding_service=binding_service,
+            sender=sender,
+        )
+
+        result = await service.handle_update(
+            FakeSession(),
+            {"message": {"text": "/status@auction_bot", "chat": {"id": 123456}}},
+            bot_token="bot-token",
+        )
+
+        self.assertEqual(result.action, "status")
+        self.assertEqual(binding_service.chat_ids, ["123456"])
+        self.assertEqual(len(sender.messages), 1)
+        self.assertIn("пока не подключен", sender.messages[0][2])
 
     async def test_handle_update_ignores_unrelated_messages(self) -> None:
         connect_service = FakeConnectService(SimpleNamespace(user_id="user-1"))

@@ -61,6 +61,16 @@ class TelegramBindingService:
         await session.delete(binding)
         await session.commit()
 
+    async def get_model_for_chat_id(
+        self,
+        session: AsyncSession,
+        telegram_chat_id: str,
+    ) -> UserTelegramBindingModel | None:
+        statement = select(UserTelegramBindingModel).where(
+            UserTelegramBindingModel.telegram_chat_id == telegram_chat_id,
+        )
+        return await session.scalar(statement)
+
     async def _get_model_for_user(
         self,
         session: AsyncSession,
