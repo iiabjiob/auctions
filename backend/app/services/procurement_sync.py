@@ -66,10 +66,13 @@ async def sync_zakupki_procurements(session: AsyncSession, *, limit: int | None 
                 title=item.title,
                 status=item.status,
                 customer_name=item.customer_name,
+                customer_inn=item.customer_inn,
                 organizer_name=item.organizer_name,
                 procedure_type=item.procedure_type,
                 platform_name=item.platform_name,
                 region=item.region,
+                delivery_region=item.delivery_region,
+                delivery_address=item.delivery_address,
                 initial_price=item.initial_price,
                 initial_price_value=item.initial_price_value,
                 currency=item.currency,
@@ -77,6 +80,9 @@ async def sync_zakupki_procurements(session: AsyncSession, *, limit: int | None 
                 application_deadline_at=deadline_at,
                 notice_url=item.notice_url,
                 print_url=item.print_url,
+                specification_url=item.specification_url,
+                documents_url=item.documents_url,
+                documentation_present=item.documentation_present,
                 content_hash=prepared.content_hash,
                 first_seen_at=now,
                 last_seen_at=now,
@@ -99,10 +105,13 @@ async def sync_zakupki_procurements(session: AsyncSession, *, limit: int | None 
         record.title = item.title
         record.status = item.status
         record.customer_name = item.customer_name
+        record.customer_inn = item.customer_inn
         record.organizer_name = item.organizer_name
         record.procedure_type = item.procedure_type
         record.platform_name = item.platform_name
         record.region = item.region
+        record.delivery_region = item.delivery_region
+        record.delivery_address = item.delivery_address
         record.initial_price = item.initial_price
         record.initial_price_value = item.initial_price_value
         record.currency = item.currency
@@ -110,6 +119,9 @@ async def sync_zakupki_procurements(session: AsyncSession, *, limit: int | None 
         record.application_deadline_at = deadline_at
         record.notice_url = item.notice_url
         record.print_url = item.print_url
+        record.specification_url = item.specification_url
+        record.documents_url = item.documents_url
+        record.documentation_present = item.documentation_present
         record.is_new = _is_new(publication_at=publication_at or record.first_seen_at, observed_at=now)
         record.attractiveness_score = attractiveness.score
         record.attractiveness_level = attractiveness.level

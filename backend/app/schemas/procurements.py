@@ -22,10 +22,13 @@ class ProcurementLotItem(BaseModel):
     title: str | None = None
     status: str | None = None
     customer_name: str | None = None
+    customer_inn: str | None = None
     organizer_name: str | None = None
     procedure_type: str | None = None
     platform_name: str | None = None
     region: str | None = None
+    delivery_region: str | None = None
+    delivery_address: str | None = None
     initial_price: str | None = None
     initial_price_value: Decimal | None = None
     currency: str | None = None
@@ -33,6 +36,9 @@ class ProcurementLotItem(BaseModel):
     application_deadline: str | None = None
     notice_url: str | None = None
     print_url: str | None = None
+    documents_url: str | None = None
+    specification_url: str | None = None
+    documentation_present: bool | None = None
     raw_fields: dict[str, str] = Field(default_factory=dict)
 
 

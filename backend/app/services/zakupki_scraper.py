@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import html
+import logging
 import re
+from dataclasses import dataclass, field
 from collections.abc import Iterable
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -13,6 +15,18 @@ from app.services.procurement_values import parse_money
 BASE_URL = "https://zakupki.gov.ru"
 SEARCH_PATH = "/epz/order/extendedsearch/results.html"
 DEFAULT_RECORDS_PER_PAGE = 50
+DEFAULT_SEARCH_KEYWORDS = (
+    "спецодежда",
+    "специальная одежда",
+    "рабочая одежда",
+    "медицинская одежда",
+    "халат медицинский",
+    "костюм медицинский",
+    "спортивная форма",
+    "униформа",
+    "форменная одежда",
+    "пошив одежды",
+)
 DEFAULT_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.6",
@@ -21,6 +35,24 @@ DEFAULT_HEADERS = {
         "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
     ),
 }
+logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class SearchParseDiagnostics:
+    total_chunks: int = 0
+    parsed_items: int = 0
+    skipped_chunks: int = 0
+    missing_required_fields: dict[str, int] = field(default_factory=dict)
+
+    def record_missing(self, field_name: str) -> None:
+        self.missing_required_fields[field_name] = self.missing_required_fields.get(field_name, 0) + 1
+
+
+@dataclass(slots=True)
+class ParsedSearchResults:
+    items: list[ProcurementLotItem]
+    diagnostics: SearchParseDiagnostics
 
 
 def source_info() -> ProcurementSourceInfo:
@@ -32,13 +64,21 @@ def iter_procurement_list(
     limit: int | None = None,
     start_page: int = 1,
     records_per_page: int = DEFAULT_RECORDS_PER_PAGE,
+    search_keywords: tuple[str, ...] | list[str] | None = None,
     timeout: int = 30,
 ) -> Iterable[ProcurementLotItem]:
     yielded = 0
     page = max(1, start_page)
     while limit is None or yielded < limit:
-        html_text = fetch_search_page(page=page, records_per_page=records_per_page, timeout=timeout)
-        items = parse_search_results(html_text)
+        html_text = fetch_search_page(
+            page=page,
+            records_per_page=records_per_page,
+            search_keywords=search_keywords,
+            timeout=timeout,
+        )
+        result = parse_search_results_with_diagnostics(html_text)
+        _log_parse_diagnostics(page=page, diagnostics=result.diagnostics)
+        items = result.items
         if not items:
             return
         for item in items:
@@ -53,10 +93,40 @@ def fetch_procurement_list(limit: int | None = None, *, page: int = 1) -> list[P
     return list(iter_procurement_list(limit=limit, start_page=page))
 
 
-def fetch_search_page(*, page: int = 1, records_per_page: int = DEFAULT_RECORDS_PER_PAGE, timeout: int = 30) -> str:
-    params = {
+def fetch_search_page(
+    *,
+    page: int = 1,
+    records_per_page: int = DEFAULT_RECORDS_PER_PAGE,
+    search_keywords: tuple[str, ...] | list[str] | None = None,
+    timeout: int = 30,
+) -> str:
+    url = build_search_url(page=page, records_per_page=records_per_page, search_keywords=search_keywords)
+    request = Request(url, headers=DEFAULT_HEADERS)
+    with urlopen(request, timeout=timeout) as response:
+        return response.read().decode(_response_encoding(response.headers.get("Content-Type")), "replace")
+
+
+def build_search_url(
+    *,
+    page: int = 1,
+    records_per_page: int = DEFAULT_RECORDS_PER_PAGE,
+    search_keywords: tuple[str, ...] | list[str] | None = None,
+) -> str:
+    params = build_search_params(page=page, records_per_page=records_per_page, search_keywords=search_keywords)
+    return f"{BASE_URL}{SEARCH_PATH}?{urlencode(params)}"
+
+
+def build_search_params(
+    *,
+    page: int = 1,
+    records_per_page: int = DEFAULT_RECORDS_PER_PAGE,
+    search_keywords: tuple[str, ...] | list[str] | None = None,
+) -> dict[str, str | int]:
+    keywords = tuple(search_keywords or DEFAULT_SEARCH_KEYWORDS)
+    params: dict[str, str | int] = {
         "morphology": "on",
         "search-filter": "Дате размещения",
+        "searchString": " ".join(keyword.strip() for keyword in keywords if keyword.strip()),
         "pageNumber": page,
         "sortDirection": "false",
         "recordsPerPage": f"_{records_per_page}",
@@ -65,20 +135,25 @@ def fetch_search_page(*, page: int = 1, records_per_page: int = DEFAULT_RECORDS_
         "fz44": "on",
         "fz223": "on",
     }
-    url = f"{BASE_URL}{SEARCH_PATH}?{urlencode(params)}"
-    request = Request(url, headers=DEFAULT_HEADERS)
-    with urlopen(request, timeout=timeout) as response:
-        return response.read().decode(_response_encoding(response.headers.get("Content-Type")), "replace")
+    return params
 
 
 def parse_search_results(html_text: str) -> list[ProcurementLotItem]:
+    return parse_search_results_with_diagnostics(html_text).items
+
+
+def parse_search_results_with_diagnostics(html_text: str) -> ParsedSearchResults:
     chunks = _entry_chunks(html_text)
+    diagnostics = SearchParseDiagnostics(total_chunks=len(chunks))
     items: list[ProcurementLotItem] = []
     for chunk in chunks:
-        item = _parse_entry(chunk)
+        item = _parse_entry(chunk, diagnostics=diagnostics)
         if item is not None:
             items.append(item)
-    return items
+            diagnostics.parsed_items += 1
+        else:
+            diagnostics.skipped_chunks += 1
+    return ParsedSearchResults(items=items, diagnostics=diagnostics)
 
 
 def _entry_chunks(html_text: str) -> list[str]:
@@ -91,13 +166,15 @@ def _entry_chunks(html_text: str) -> list[str]:
     return chunks
 
 
-def _parse_entry(chunk: str) -> ProcurementLotItem | None:
+def _parse_entry(chunk: str, *, diagnostics: SearchParseDiagnostics | None = None) -> ProcurementLotItem | None:
     number_match = re.search(
         r'<div class="registry-entry__header-mid__number">\s*<a[^>]+href="([^"]+)"[^>]*>\s*№\s*([0-9]+)\s*</a>',
         chunk,
         re.S,
     )
     if not number_match:
+        if diagnostics is not None:
+            diagnostics.record_missing("registry_number")
         return None
 
     notice_url = _absolute_url(html.unescape(number_match.group(1)))
@@ -108,12 +185,27 @@ def _parse_entry(chunk: str) -> ProcurementLotItem | None:
     price = _first_body_value(raw_fields, "Начальная цена", "Начальная (максимальная) цена контракта")
     price = price or _extract_price_block(chunk)
     customer = _first_body_value(raw_fields, "Заказчик", "Организация, осуществляющая размещение")
+    customer_inn = _extract_customer_inn(chunk, notice_url=notice_url)
     organizer = _first_body_value(raw_fields, "Организация, осуществляющая размещение", "Размещено")
     procedure_type = _first_body_value(raw_fields, "Способ определения поставщика", "Способ закупки")
     platform = _first_body_value(raw_fields, "Электронная площадка")
     region = _first_body_value(raw_fields, "Регион")
+    delivery_region = _first_body_value(raw_fields, "Место поставки", "Регион поставки")
+    delivery_address = _first_body_value(raw_fields, "Адрес поставки", "Место поставки")
     publication_date = _extract_labeled_datetime(chunk, "Размещено")
     application_deadline = _extract_labeled_datetime(chunk, "Окончание подачи заявок")
+    documents_url = _extract_documents_url(chunk, notice_url=notice_url)
+
+    if diagnostics is not None:
+        for field_name, value in (
+            ("title", title),
+            ("status", status),
+            ("customer_name", customer),
+            ("initial_price", price),
+            ("application_deadline", application_deadline),
+        ):
+            if not value:
+                diagnostics.record_missing(field_name)
 
     return ProcurementLotItem(
         source="zakupki",
@@ -123,10 +215,13 @@ def _parse_entry(chunk: str) -> ProcurementLotItem | None:
         title=title,
         status=status,
         customer_name=customer,
+        customer_inn=customer_inn,
         organizer_name=organizer if organizer != customer else None,
         procedure_type=procedure_type,
         platform_name=platform,
         region=region,
+        delivery_region=delivery_region,
+        delivery_address=delivery_address,
         initial_price=price,
         initial_price_value=parse_money(price),
         currency="RUB" if price and ("₽" in price or "8381" in price or "руб" in price.lower()) else None,
@@ -134,6 +229,9 @@ def _parse_entry(chunk: str) -> ProcurementLotItem | None:
         application_deadline=application_deadline,
         notice_url=notice_url,
         print_url=_extract_print_url(chunk),
+        documents_url=documents_url,
+        specification_url=documents_url,
+        documentation_present=bool(documents_url),
         raw_fields=raw_fields,
     )
 
@@ -191,6 +289,24 @@ def _extract_print_url(chunk: str) -> str | None:
     return _absolute_url(html.unescape(match.group(1))) if match else None
 
 
+def _extract_documents_url(chunk: str, *, notice_url: str) -> str | None:
+    match = re.search(r'href="([^"]*(?:documents|doc|view/doc)[^"]*)"', chunk, re.I)
+    if match:
+        return _absolute_url(html.unescape(match.group(1)))
+    if "/common-info.html" in notice_url:
+        return notice_url.replace("/common-info.html", "/documents.html")
+    return None
+
+
+def _extract_customer_inn(chunk: str, *, notice_url: str) -> str | None:
+    for value in (chunk, notice_url):
+        match = re.search(r"[?&]inn=(\d{10}|\d{12})(?:&|$)", html.unescape(value))
+        if match:
+            return match.group(1)
+    match = re.search(r"\bИНН\b[^0-9]{0,20}(\d{10}|\d{12})", _clean_html(chunk), re.I)
+    return match.group(1) if match else None
+
+
 def _first_match_text(chunk: str, pattern: str) -> str | None:
     match = re.search(pattern, chunk, re.S)
     return _clean_html(match.group(1)) if match else None
@@ -226,3 +342,17 @@ def _response_encoding(content_type: str | None) -> str:
         if match:
             return match.group(1).strip()
     return "utf-8"
+
+
+def _log_parse_diagnostics(*, page: int, diagnostics: SearchParseDiagnostics) -> None:
+    if diagnostics.skipped_chunks or diagnostics.missing_required_fields:
+        logger.info(
+            "Parsed zakupki search page with missing fields",
+            extra={
+                "page": page,
+                "total_chunks": diagnostics.total_chunks,
+                "parsed_items": diagnostics.parsed_items,
+                "skipped_chunks": diagnostics.skipped_chunks,
+                "missing_required_fields": diagnostics.missing_required_fields,
+            },
+        )
