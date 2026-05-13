@@ -17,6 +17,7 @@ from app.models.auction import (
     AuctionLotWorkItem,
     TelegramNotificationOutbox,
 )
+from app.models.user_interest_profile import UserInterestProfileModel
 from app.schemas.lot_decision_report import (
     ActionRecommendation,
     DecisionLevel,
@@ -34,6 +35,10 @@ from app.schemas.scoring_profile_fit import LotProfileFitEvaluation
 from app.services.auction_datagrid_payload import validate_datagrid_row_payload
 from app.services.lot_evidence import build_lot_evidence
 from app.services.scoring_profile_fit import evaluate_lot_profile_fit
+from app.services.user_interest_matching import (
+    build_lot_scoring_profile_from_interest,
+    evaluate_user_interest_match,
+)
 
 
 NEAR_DEADLINE_HOURS = 72
@@ -355,6 +360,115 @@ async def enqueue_lot_telegram_notification_outbox(
     return entry
 
 
+async def enqueue_user_scoped_lot_telegram_notifications(
+    session: AsyncSession,
+    snapshot: AuctionLotDecisionReport,
+    record: AuctionLotRecord,
+    *,
+    detail_cache: AuctionLotDetailCache | None = None,
+    work_item: AuctionLotWorkItem | None = None,
+    report: LotDecisionReport | None = None,
+    now: datetime | None = None,
+    cooldown_seconds: int = TELEGRAM_NOTIFICATION_COOLDOWN_SECONDS,
+) -> list[TelegramNotificationOutbox]:
+    decision_report_id = getattr(snapshot, "id", None)
+    if decision_report_id is None:
+        return []
+
+    resolved_report = report or LotDecisionReport.model_validate(snapshot.report_payload)
+    current_time = now or datetime.now(UTC)
+    profiles = await _active_telegram_interest_profiles(session)
+    entries: list[TelegramNotificationOutbox] = []
+    added_entries = 0
+
+    for interest_profile in profiles:
+        match = evaluate_user_interest_match(
+            record,
+            interest_profile,
+            detail_cache=detail_cache,
+            work_item=work_item,
+            report=resolved_report,
+        )
+        if not match.matches:
+            continue
+
+        scoring_profile = build_lot_scoring_profile_from_interest(interest_profile)
+        profile_report = resolved_report.model_copy(
+            update={
+                "profile_hash": match.profile_hash,
+                "profile_fit_summary": "; ".join(match.reasons[:3]) or None,
+            }
+        )
+        eligibility = evaluate_lot_notification_eligibility(profile_report, profile=scoring_profile)
+        if not eligibility.should_notify:
+            continue
+
+        dedupe_key = _user_notification_dedupe_key(
+            user_id=interest_profile.owner_user_id,
+            interest_profile_id=interest_profile.id,
+            lot_record_id=resolved_report.record_id,
+            report_hash=snapshot.report_hash,
+        )
+        existing = await session.scalar(
+            select(TelegramNotificationOutbox).where(
+                TelegramNotificationOutbox.dedupe_key == dedupe_key,
+            )
+        )
+        if existing is not None:
+            entries.append(existing)
+            continue
+
+        cooldown_key = _user_notification_cooldown_key(
+            user_id=interest_profile.owner_user_id,
+            interest_profile_id=interest_profile.id,
+            lot_record_id=resolved_report.record_id,
+        )
+        active_cooldown = await session.scalar(
+            select(TelegramNotificationOutbox)
+            .where(TelegramNotificationOutbox.cooldown_key == cooldown_key)
+            .where(TelegramNotificationOutbox.status.in_(_cooldown_blocking_statuses()))
+            .where(TelegramNotificationOutbox.cooldown_until.is_not(None))
+            .where(TelegramNotificationOutbox.cooldown_until > current_time)
+            .order_by(TelegramNotificationOutbox.cooldown_until.desc())
+            .limit(1)
+        )
+        status = (
+            TelegramNotificationStatus.SKIPPED.value
+            if active_cooldown is not None
+            else TelegramNotificationStatus.PENDING.value
+        )
+        cooldown_until = (
+            active_cooldown.cooldown_until
+            if active_cooldown is not None
+            else current_time + timedelta(seconds=cooldown_seconds)
+        )
+        message = render_telegram_lot_message(profile_report)
+        entry = TelegramNotificationOutbox(
+            lot_record_id=resolved_report.record_id,
+            decision_report_id=decision_report_id,
+            user_id=interest_profile.owner_user_id,
+            telegram_chat_id=None,
+            interest_profile_id=interest_profile.id,
+            dedupe_key=dedupe_key,
+            cooldown_key=cooldown_key,
+            status=status,
+            priority=eligibility.priority,
+            message_payload=message.model_dump(mode="json"),
+            report_hash=snapshot.report_hash,
+            scheduled_at=current_time,
+            cooldown_until=cooldown_until,
+            created_at=current_time,
+            updated_at=current_time,
+        )
+        session.add(entry)
+        entries.append(entry)
+        added_entries += 1
+
+    if added_entries:
+        await session.flush()
+    return entries
+
+
 async def generate_and_persist_lot_decision_report_snapshot(
     session: AsyncSession,
     record: AuctionLotRecord,
@@ -374,6 +488,14 @@ async def generate_and_persist_lot_decision_report_snapshot(
     )
     snapshot = await upsert_lot_decision_report_snapshot(session, report)
     await enqueue_lot_telegram_notification_outbox(session, snapshot, report=report, profile=profile)
+    await enqueue_user_scoped_lot_telegram_notifications(
+        session,
+        snapshot,
+        record,
+        detail_cache=detail_cache,
+        work_item=work_item,
+        report=report,
+    )
     return snapshot
 
 
@@ -872,6 +994,35 @@ def _notification_cooldown_key(report: LotDecisionReport, *, profile_hash: str |
             "profile_hash": profile_hash,
         }
     )
+
+
+async def _active_telegram_interest_profiles(session: AsyncSession) -> list[UserInterestProfileModel]:
+    statement = (
+        select(UserInterestProfileModel)
+        .where(UserInterestProfileModel.is_active.is_(True))
+        .where(UserInterestProfileModel.telegram_enabled.is_(True))
+        .order_by(UserInterestProfileModel.owner_user_id.asc(), UserInterestProfileModel.id.asc())
+    )
+    return list((await session.scalars(statement)).all())
+
+
+def _user_notification_dedupe_key(
+    *,
+    user_id: str,
+    interest_profile_id: str,
+    lot_record_id: int,
+    report_hash: str,
+) -> str:
+    return f"telegram:{user_id}:{interest_profile_id}:{lot_record_id}:{report_hash}"
+
+
+def _user_notification_cooldown_key(
+    *,
+    user_id: str,
+    interest_profile_id: str,
+    lot_record_id: int,
+) -> str:
+    return f"telegram:{user_id}:{interest_profile_id}:{lot_record_id}"
 
 
 def _stable_hash(payload: dict[str, Any]) -> str:

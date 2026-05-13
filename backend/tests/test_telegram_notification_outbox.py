@@ -3,7 +3,9 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from unittest.mock import AsyncMock, patch
 
+from app.models import UserInterestProfileModel
 from app.models.auction import AuctionLotDecisionReport, TelegramNotificationOutbox
 from app.schemas.lot_decision_report import (
     ActionRecommendation,
@@ -16,17 +18,26 @@ from app.schemas.lot_decision_report import (
 from app.services.lot_decision_report import (
     build_lot_decision_report_snapshot_hash,
     enqueue_lot_telegram_notification_outbox,
+    enqueue_user_scoped_lot_telegram_notifications,
     evaluate_lot_notification_eligibility,
+    generate_and_persist_lot_decision_report_snapshot,
 )
+from tests.test_lot_evidence import make_detail_cache, make_record
 
 
 GENERATED_AT = datetime(2026, 5, 8, 12, 0, tzinfo=timezone.utc)
 
 
 class FakeSession:
-    def __init__(self, scalar_results: list[object | None] | None = None) -> None:
+    def __init__(
+        self,
+        scalar_results: list[object | None] | None = None,
+        scalars_result: list[object] | None = None,
+    ) -> None:
         self.scalar_results = list(scalar_results or [])
+        self.scalars_result = list(scalars_result or [])
         self.statements = []
+        self.scalars_statements = []
         self.added: list[object] = []
         self.flushes = 0
 
@@ -36,11 +47,23 @@ class FakeSession:
             return self.scalar_results.pop(0)
         return None
 
+    async def scalars(self, statement):  # noqa: ANN001
+        self.scalars_statements.append(statement)
+        return FakeScalars(self.scalars_result)
+
     def add(self, obj: object) -> None:
         self.added.append(obj)
 
     async def flush(self) -> None:
         self.flushes += 1
+
+
+class FakeScalars:
+    def __init__(self, values: list[object]) -> None:
+        self.values = values
+
+    def all(self) -> list[object]:
+        return self.values
 
 
 def make_report(**overrides: object) -> LotDecisionReport:
@@ -109,6 +132,24 @@ def make_outbox_entry(report: LotDecisionReport, *, status: TelegramNotification
         scheduled_at=GENERATED_AT,
         cooldown_until=GENERATED_AT + timedelta(hours=1),
     )
+
+
+def make_interest_profile(**overrides: object) -> UserInterestProfileModel:
+    values = {
+        "id": "uip_1",
+        "owner_user_id": "user-1",
+        "name": "Special machinery",
+        "profile_payload": {
+            "target_categories": ["Спецтехника"],
+            "budget_min": "800000",
+        },
+        "min_rating": 80,
+        "notification_priority_threshold": "medium",
+        "telegram_enabled": True,
+        "is_active": True,
+    }
+    values.update(overrides)
+    return UserInterestProfileModel(**values)
 
 
 class TelegramNotificationOutboxTests(unittest.IsolatedAsyncioTestCase):
@@ -216,6 +257,149 @@ class TelegramNotificationOutboxTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(entry.cooldown_until, active_cooldown.cooldown_until)
         self.assertNotEqual(entry.dedupe_key, active_cooldown.dedupe_key)
         self.assertEqual(session.flushes, 1)
+
+    async def test_user_scoped_enqueue_inserts_for_matching_profile_only(self) -> None:
+        record = make_record()
+        record.rating_score = 92
+        report = make_report(record_id=record.id)
+        matching = make_interest_profile(id="uip_match", owner_user_id="user-1")
+        non_matching = make_interest_profile(
+            id="uip_bmw",
+            owner_user_id="user-2",
+            profile_payload={"target_categories": ["Автомобили"], "desired_keywords": ["BMW"]},
+            min_rating=80,
+        )
+        session = FakeSession(scalar_results=[None, None], scalars_result=[matching, non_matching])
+
+        entries = await enqueue_user_scoped_lot_telegram_notifications(
+            session,
+            make_snapshot(report),
+            record,
+            detail_cache=make_detail_cache(),
+            report=report,
+            now=GENERATED_AT,
+            cooldown_seconds=3600,
+        )
+
+        self.assertEqual(entries, session.added)
+        self.assertEqual(len(entries), 1)
+        entry = entries[0]
+        self.assertEqual(entry.user_id, "user-1")
+        self.assertEqual(entry.interest_profile_id, "uip_match")
+        self.assertIsNone(entry.telegram_chat_id)
+        self.assertEqual(entry.status, "pending")
+        self.assertEqual(entry.dedupe_key, f"telegram:user-1:uip_match:{record.id}:{make_snapshot(report).report_hash}")
+        self.assertEqual(entry.cooldown_key, f"telegram:user-1:uip_match:{record.id}")
+        self.assertEqual(entry.cooldown_until, GENERATED_AT + timedelta(hours=1))
+        self.assertEqual(session.flushes, 1)
+
+    async def test_user_scoped_enqueue_allows_same_lot_for_two_users(self) -> None:
+        record = make_record()
+        record.rating_score = 92
+        report = make_report(record_id=record.id)
+        first = make_interest_profile(id="uip_1", owner_user_id="user-1")
+        second = make_interest_profile(id="uip_2", owner_user_id="user-2")
+        session = FakeSession(scalar_results=[None, None, None, None], scalars_result=[first, second])
+
+        entries = await enqueue_user_scoped_lot_telegram_notifications(
+            session,
+            make_snapshot(report),
+            record,
+            detail_cache=make_detail_cache(),
+            report=report,
+            now=GENERATED_AT,
+        )
+
+        self.assertEqual(len(entries), 2)
+        self.assertEqual({entry.user_id for entry in entries}, {"user-1", "user-2"})
+        self.assertEqual(len({entry.dedupe_key for entry in entries}), 2)
+        self.assertEqual(len({entry.cooldown_key for entry in entries}), 2)
+        self.assertEqual(session.flushes, 1)
+
+    async def test_user_scoped_enqueue_returns_existing_entry_without_duplicate_insert(self) -> None:
+        record = make_record()
+        record.rating_score = 92
+        report = make_report(record_id=record.id)
+        snapshot = make_snapshot(report)
+        profile = make_interest_profile(id="uip_1", owner_user_id="user-1")
+        existing = make_outbox_entry(report, status=TelegramNotificationStatus.PENDING)
+        existing.user_id = "user-1"
+        existing.interest_profile_id = "uip_1"
+        existing.dedupe_key = f"telegram:user-1:uip_1:{record.id}:{snapshot.report_hash}"
+        existing.cooldown_key = f"telegram:user-1:uip_1:{record.id}"
+        session = FakeSession(scalar_results=[existing], scalars_result=[profile])
+
+        entries = await enqueue_user_scoped_lot_telegram_notifications(
+            session,
+            snapshot,
+            record,
+            detail_cache=make_detail_cache(),
+            report=report,
+            now=GENERATED_AT,
+        )
+
+        self.assertEqual(entries, [existing])
+        self.assertEqual(session.added, [])
+        self.assertEqual(session.flushes, 0)
+
+    async def test_user_scoped_enqueue_skips_when_no_profile_matches(self) -> None:
+        record = make_record()
+        record.rating_score = 92
+        report = make_report(record_id=record.id)
+        profile = make_interest_profile(
+            id="uip_bmw",
+            owner_user_id="user-1",
+            profile_payload={"target_categories": ["Автомобили"], "desired_keywords": ["BMW"]},
+            min_rating=80,
+        )
+        session = FakeSession(scalars_result=[profile])
+
+        entries = await enqueue_user_scoped_lot_telegram_notifications(
+            session,
+            make_snapshot(report),
+            record,
+            detail_cache=make_detail_cache(),
+            report=report,
+            now=GENERATED_AT,
+        )
+
+        self.assertEqual(entries, [])
+        self.assertEqual(session.added, [])
+        self.assertEqual(session.flushes, 0)
+
+    async def test_generate_snapshot_flow_invokes_user_scoped_enqueue(self) -> None:
+        record = make_record()
+        record.rating_score = 92
+        record.rating_level = "high"
+        snapshot = make_snapshot(make_report(record_id=record.id))
+        session = FakeSession()
+
+        with (
+            patch(
+                "app.services.lot_decision_report.upsert_lot_decision_report_snapshot",
+                AsyncMock(return_value=snapshot),
+            ) as upsert_snapshot,
+            patch(
+                "app.services.lot_decision_report.enqueue_lot_telegram_notification_outbox",
+                AsyncMock(return_value=None),
+            ) as enqueue_global,
+            patch(
+                "app.services.lot_decision_report.enqueue_user_scoped_lot_telegram_notifications",
+                AsyncMock(return_value=[]),
+            ) as enqueue_user_scoped,
+        ):
+            result = await generate_and_persist_lot_decision_report_snapshot(
+                session,
+                record,
+                make_detail_cache(),
+                None,
+            )
+
+        self.assertIs(result, snapshot)
+        upsert_snapshot.assert_awaited_once()
+        enqueue_global.assert_awaited_once()
+        enqueue_user_scoped.assert_awaited_once()
+        self.assertIs(enqueue_user_scoped.await_args.args[2], record)
 
 
 if __name__ == "__main__":
