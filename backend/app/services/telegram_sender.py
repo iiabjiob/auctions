@@ -141,8 +141,8 @@ async def send_pending_telegram_notifications(
         return TelegramSenderBatchResult()
     if dry_run:
         return TelegramSenderBatchResult(selected=len(entries), dry_run=len(entries))
-    if not bot_token or not chat_id:
-        raise ValueError("telegram_bot_token and telegram_chat_id are required when dry-run is disabled")
+    if not bot_token:
+        raise ValueError("telegram_bot_token is required when dry-run is disabled")
 
     resolved_sender = sender or TelegramBotApiSender()
     sent = 0
@@ -150,10 +150,22 @@ async def send_pending_telegram_notifications(
     retried = 0
     for entry in entries:
         message_payload = entry.message_payload if isinstance(entry.message_payload, dict) else {}
+        target_chat_id = _target_chat_id(entry, fallback_chat_id=chat_id)
+        if target_chat_id is None:
+            _mark_retry_or_failed(
+                entry,
+                message="Telegram chat_id is not configured for notification",
+                retryable=False,
+                max_attempts=max_attempts,
+                base_backoff_seconds=base_backoff_seconds,
+                now=current_time,
+            )
+            failed += 1
+            continue
         try:
             await resolved_sender.send_message(
                 bot_token=bot_token,
-                chat_id=chat_id,
+                chat_id=target_chat_id,
                 text=str(message_payload.get("text") or ""),
                 parse_mode=str(message_payload.get("parse_mode") or "HTML"),
             )
@@ -213,6 +225,14 @@ async def _pending_entries(session: AsyncSession, *, limit: int, now: datetime) 
         .with_for_update(skip_locked=True)
     )
     return list((await session.scalars(statement)).all())
+
+
+def _target_chat_id(entry: TelegramNotificationOutbox, *, fallback_chat_id: str | None) -> str | None:
+    entry_chat_id = str(entry.telegram_chat_id or "").strip()
+    if entry_chat_id:
+        return entry_chat_id
+    fallback = str(fallback_chat_id or "").strip()
+    return fallback or None
 
 
 def _mark_sent(entry: TelegramNotificationOutbox, *, now: datetime) -> None:

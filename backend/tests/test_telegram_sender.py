@@ -142,6 +142,65 @@ class TelegramSenderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sender.calls[0]["text"], "Lot message")
         self.assertEqual(session.flushes, 1)
 
+    async def test_per_entry_chat_id_overrides_global_chat_id(self) -> None:
+        entry = make_entry(telegram_chat_id="personal-chat")
+        sender = FakeSender()
+        session = FakeSession([entry])
+
+        result = await send_pending_telegram_notifications(
+            session,
+            bot_token="token",
+            chat_id="global-chat",
+            limit=10,
+            dry_run=False,
+            sender=sender,
+            now=NOW,
+        )
+
+        self.assertEqual(result, TelegramSenderBatchResult(selected=1, sent=1))
+        self.assertEqual(sender.calls[0]["chat_id"], "personal-chat")
+        self.assertEqual(entry.status, "sent")
+
+    async def test_global_chat_id_is_fallback_for_legacy_entries(self) -> None:
+        entry = make_entry(telegram_chat_id=None)
+        sender = FakeSender()
+        session = FakeSession([entry])
+
+        result = await send_pending_telegram_notifications(
+            session,
+            bot_token="token",
+            chat_id="global-chat",
+            limit=10,
+            dry_run=False,
+            sender=sender,
+            now=NOW,
+        )
+
+        self.assertEqual(result, TelegramSenderBatchResult(selected=1, sent=1))
+        self.assertEqual(sender.calls[0]["chat_id"], "global-chat")
+
+    async def test_missing_chat_id_fails_entry_without_crashing_batch(self) -> None:
+        entry = make_entry(telegram_chat_id=None)
+        sender = FakeSender()
+        session = FakeSession([entry])
+
+        result = await send_pending_telegram_notifications(
+            session,
+            bot_token="token",
+            chat_id=None,
+            limit=10,
+            dry_run=False,
+            sender=sender,
+            now=NOW,
+        )
+
+        self.assertEqual(result, TelegramSenderBatchResult(selected=1, failed=1))
+        self.assertEqual(sender.calls, [])
+        self.assertEqual(entry.status, "failed")
+        self.assertEqual(entry.last_error, "Telegram chat_id is not configured for notification")
+        self.assertEqual(entry.failed_at, NOW)
+        self.assertEqual(session.flushes, 1)
+
     async def test_dry_run_does_not_send_or_mutate_entry(self) -> None:
         entry = make_entry()
         sender = FakeSender()
