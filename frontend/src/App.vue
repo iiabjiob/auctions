@@ -49,6 +49,7 @@ import AuthLoginScreen from './components/AuthLoginScreen.vue'
 import AnalysisSignalTooltip from './components/AnalysisSignalTooltip.vue'
 import LotNameCell from './components/LotNameCell.vue'
 import RatingInfoTooltip from './components/RatingInfoTooltip.vue'
+import ProcurementTenderGrid from './components/ProcurementTenderGrid.vue'
 import SourceDiagnosticsView from './components/SourceDiagnosticsView.vue'
 import {
   createAuctionServerDatasource,
@@ -2475,6 +2476,15 @@ async function postAuctionServerGridJson<TResponse>(path: string, payload: unkno
   })
 }
 
+async function postProcurementServerGridJson<TResponse>(path: string, payload: unknown, signal?: AbortSignal) {
+  return fetchJson<TResponse>(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    signal,
+  })
+}
+
 function createAuctionServerCatalogDataSource(): CatalogAuctionServerDataSource {
   return createAuctionServerDatasource<ApiLotRow, GridLotRow>({
     postJson: postAuctionServerGridJson,
@@ -4876,7 +4886,6 @@ watch(filters, () => {
 watch(isAuthenticated, (authenticated) => {
   if (authenticated) {
     void loadLots()
-    if (isTendersModule.value) void loadProcurementLots()
     void loadPresets()
     void loadUserInterestProfiles()
     startAuctionEvents()
@@ -4890,14 +4899,9 @@ watch(isAuthenticated, (authenticated) => {
   resetCatalogState()
 })
 
-watch(isTendersModule, (active) => {
-  if (active) void loadProcurementLots()
-})
-
 onMounted(() => {
   if (isAuthenticated.value) {
     void loadLots()
-    if (isTendersModule.value) void loadProcurementLots()
     void loadPresets()
     void loadUserInterestProfiles()
     startAuctionEvents()
@@ -5590,82 +5594,12 @@ onUnmounted(() => {
 
       <SourceDiagnosticsView v-else-if="isDiagnosticsModule" />
 
-      <section v-else class="procurement-workspace" aria-label="Закупки">
-        <header class="auction-toolbar">
-          <div class="toolbar-title">
-            <button
-              class="app-mobile-menu-button"
-              type="button"
-              aria-label="Открыть меню"
-              :aria-expanded="mobileRailOpen"
-              @click="toggleMobileRail"
-            >
-              <span></span>
-              <span></span>
-              <span></span>
-            </button>
-            <span class="eyebrow">ЕИС Закупки</span>
-            <h1>Лоты закупок для отбора</h1>
-          </div>
-          <button class="secondary-button" type="button" :disabled="procurementLoading" @click="loadProcurementLots">
-            Обновить
-          </button>
-        </header>
-
-        <section class="summary-strip" aria-label="Сводка закупок">
-          <div class="summary-strip__group">
-            <div>
-              <span>Найдено</span>
-              <strong>{{ procurementTotal }}</strong>
-            </div>
-            <div>
-              <span>На экране</span>
-              <strong>{{ procurementLots.length }}</strong>
-            </div>
-          </div>
-        </section>
-
-        <div v-if="procurementError" class="error-banner">{{ procurementError }}</div>
-        <div v-else-if="procurementLoading" class="detail-muted">Загрузка закупок</div>
-        <div v-else class="procurement-table-wrap">
-          <table class="procurement-table">
-            <thead>
-              <tr>
-                <th>Рейтинг</th>
-                <th>Номер</th>
-                <th>Предмет</th>
-                <th>Цена</th>
-                <th>Статус</th>
-                <th>Заказчик</th>
-                <th>Дедлайн</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="lot in procurementLots" :key="lot.id">
-                <td>
-                  <strong>{{ lot.attractiveness.score }}</strong>
-                  <small>{{ lot.attractiveness.level }}</small>
-                </td>
-                <td>
-                  <a v-if="lot.notice_url" :href="lot.notice_url" target="_blank" rel="noreferrer">
-                    {{ lot.registry_number }}
-                  </a>
-                  <span v-else>{{ lot.registry_number }}</span>
-                  <small>{{ lot.law }}</small>
-                </td>
-                <td>{{ lot.title || 'Без названия' }}</td>
-                <td>{{ formatApiMoney(lot.initial_price_value) || 'Не указана' }}</td>
-                <td>{{ lot.status || 'Неизвестно' }}</td>
-                <td>{{ lot.customer_name || 'Не указан' }}</td>
-                <td>{{ formatDateTime(lot.application_deadline_at) || 'Не указан' }}</td>
-              </tr>
-              <tr v-if="!procurementLots.length">
-                <td colspan="7">Закупки еще не загружены. Запустите sync или дождитесь worker.</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </section>
+      <ProcurementTenderGrid
+        v-else
+        :post-json="postProcurementServerGridJson"
+        :mobile-rail-open="mobileRailOpen"
+        @toggle-mobile-rail="toggleMobileRail"
+      />
     </section>
 
     <Teleport to="#affino-dialog-host">
