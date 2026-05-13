@@ -1976,6 +1976,7 @@ input[type='range'] {
 
   .workspace-area {
     grid-row: 2;
+    height: 100%;
     min-height: 0;
   }
 
@@ -2009,6 +2010,17 @@ input[type='range'] {
 
   .grid-surface :where(.datagrid-app-toolbar__button) {
     flex: 1 1 auto;
+  }
+
+  .grid-surface :where(.grid-body-viewport),
+  .grid-surface :where(.grid-body-content),
+  .grid-surface :where(.grid-pane-content) {
+    opacity: 1 !important;
+    filter: none !important;
+  }
+
+  .grid-surface :where(.grid-cell) {
+    color: var(--color-text-body) !important;
   }
 
   .app-rail__menu-content--presets,
