@@ -1029,33 +1029,29 @@ const columns = defineDataGridColumns<GridLotRow>()([
     label: 'Сигнал',
     initialState: { width: 176 },
     capabilities: { sortable: true, filterable: true },
-    cellRenderer: ({ row }) =>
-      row
-        ? row.analysisReasons.length
-          ? h(
-              AnalysisSignalTooltip,
-              {
-                reasons: row.analysisReasons,
-              },
-              {
-                default: () =>
-                  h(
-                    'span',
-                    {
-                      class: ['analysis-pill', `analysis-pill--${row.analysisColor || 'yellow'}`],
-                    },
-                    row.analysisLabel,
-                  ),
-              },
-            )
-          : h(
-              'span',
-              {
-                class: ['analysis-pill', `analysis-pill--${row.analysisColor || 'yellow'}`],
-              },
-              row.analysisLabel,
-            )
-        : '',
+    cellRenderer: ({ row }) => {
+      if (!row) return ''
+
+      const reasons = Array.isArray(row.analysisReasons) ? row.analysisReasons : []
+      const pill = h(
+        'span',
+        {
+          class: ['analysis-pill', `analysis-pill--${row.analysisColor || 'yellow'}`],
+        },
+        row.analysisLabel,
+      )
+      return reasons.length
+        ? h(
+            AnalysisSignalTooltip,
+            {
+              reasons,
+            },
+            {
+              default: () => pill,
+            },
+          )
+        : pill
+    },
   },
   { key: 'analysisCategory', label: 'Категория', initialState: { width: 168 } },
   {
@@ -2824,7 +2820,7 @@ function mapApiRow(row: ApiLotRow, rowRevision = gridRowRevision.value): GridLot
     analysisColor: row.analysis.color,
     analysisLabel: row.analysis.label,
     analysisCategory: row.category ?? row.model_category ?? row.analysis.category ?? '',
-    analysisReasons: row.analysis.reasons,
+    analysisReasons: Array.isArray(row.analysis.reasons) ? row.analysis.reasons : [],
     source: row.source,
     sourceTitle: row.source_title,
     auctionId: row.auction_id ?? '',
@@ -2873,7 +2869,7 @@ function mapApiRow(row: ApiLotRow, rowRevision = gridRowRevision.value): GridLot
     actualityCheckedAt: parseDateTime(row.actuality_checked_at),
     ratingScore: row.rating.score,
     ratingLevel: row.rating.level,
-    ratingReasons: row.rating.reasons,
+    ratingReasons: Array.isArray(row.rating.reasons) ? row.rating.reasons : [],
     ratingBreakdown: row.rating.breakdown ?? null,
     workDecisionStatus: row.work_decision_status ?? '',
     lotUrl: row.lot_url ?? '',
