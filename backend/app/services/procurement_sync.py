@@ -4,14 +4,15 @@ import hashlib
 import asyncio
 import json
 import logging
+from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.procurement import ProcurementLotRecord, ProcurementSourceState
-from app.schemas.procurements import ProcurementLotItem, ProcurementSyncResult
+from app.models.procurement import ProcurementLotRecord, ProcurementSourceState, ProcurementSourceSyncRun, ProcurementSourceSyncState
+from app.schemas.procurements import ProcurementLotItem, ProcurementSourceInfo, ProcurementSyncResult
 from app.services.procurement_classification import ProcurementClassification, classify_procurement_lot
 from app.services.procurement_notifications import enqueue_procurement_telegram_notifications
 from app.services.procurement_scoring import apply_procurement_score
@@ -25,6 +26,8 @@ from app.services.procurement_values import parse_scraped_datetime
 
 logger = logging.getLogger(__name__)
 NEWNESS_WINDOW_DAYS = 3
+CRITICAL_FIELDS = ("registry_number", "title", "initial_price_value", "application_deadline_at", "notice_url")
+_MISSING = object()
 
 
 @dataclass(slots=True)
@@ -84,107 +87,208 @@ async def sync_procurement_source_provider(
     source_state.last_synced_at = now
 
     result = ProcurementSyncResult(source=info.code, fetched=0, created=0, updated=0, unchanged=0, status_changed=0)
-    items = await asyncio.to_thread(lambda: list(provider.iter_lots(limit=limit)))
-    for item in items:
-        result.fetched += 1
-        prepared = prepare_procurement_lot(item)
-        record = await _find_record(session, source_code=info.code, external_id=item.external_id)
-        publication_at = parse_scraped_datetime(item.publication_date)
-        deadline_at = parse_scraped_datetime(item.application_deadline)
-        is_new = _is_new(publication_at=publication_at, observed_at=now)
+    missing_critical_fields: Counter[str] = Counter()
+    parser_failure_count = 0
+    parser_version = getattr(provider, "parser_version", None)
+    await _upsert_source_sync_state(
+        session,
+        info.code,
+        last_sync_started_at=now,
+        last_sync_result="running",
+        last_sync_error=None,
+        last_sync_error_code=None,
+        parser_version=parser_version,
+    )
+    logger.info(
+        "Procurement sync started: source=%s url=%s enabled=%s parser=%s limit=%s",
+        info.code,
+        info.website,
+        info.enabled,
+        parser_version,
+        limit,
+    )
 
-        if record is None:
-            record = ProcurementLotRecord(
-                source_code=info.code,
-                external_id=item.external_id,
-                registry_number=item.registry_number,
-                law=item.law,
-                title=item.title,
-                status=item.status,
-                customer_name=item.customer_name,
-                customer_inn=item.customer_inn,
-                organizer_name=item.organizer_name,
-                procedure_type=item.procedure_type,
-                platform_name=item.platform_name,
-                region=item.region,
-                delivery_region=item.delivery_region,
-                delivery_address=item.delivery_address,
-                initial_price=item.initial_price,
-                initial_price_value=item.initial_price_value,
-                currency=item.currency,
-                publication_at=publication_at,
-                application_deadline_at=deadline_at,
-                notice_url=item.notice_url,
-                print_url=item.print_url,
-                specification_url=item.specification_url,
-                documents_url=item.documents_url,
-                documentation_present=item.documentation_present,
-                content_hash=prepared.content_hash,
-                first_seen_at=now,
-                last_seen_at=now,
-                is_new=is_new,
-                category=prepared.classification.category,
-                matched_keywords=prepared.classification.matched_keywords,
-                excluded_keywords=prepared.classification.excluded_keywords,
-                filter_reason=prepared.classification.filter_reason,
-                attractiveness_score=0,
-                attractiveness_level="reject",
-                attractiveness_reasons=[],
-                normalized_item=prepared.normalized_item,
-                raw_item=item.model_dump(mode="json"),
-            )
+    try:
+        items = await asyncio.to_thread(lambda: list(provider.iter_lots(limit=limit)))
+        for item in items:
+            result.fetched += 1
+            prepared = prepare_procurement_lot(item)
+            record = await _find_record(session, source_code=info.code, external_id=item.external_id)
+            publication_at = parse_scraped_datetime(item.publication_date)
+            deadline_at = parse_scraped_datetime(item.application_deadline)
+            is_new = _is_new(publication_at=publication_at, observed_at=now)
+            _record_missing_critical_fields(item, deadline_at, missing_critical_fields)
+
+            if record is None:
+                record = ProcurementLotRecord(
+                    source_code=info.code,
+                    external_id=item.external_id,
+                    registry_number=item.registry_number,
+                    law=item.law,
+                    title=item.title,
+                    status=item.status,
+                    customer_name=item.customer_name,
+                    customer_inn=item.customer_inn,
+                    organizer_name=item.organizer_name,
+                    procedure_type=item.procedure_type,
+                    platform_name=item.platform_name,
+                    region=item.region,
+                    delivery_region=item.delivery_region,
+                    delivery_address=item.delivery_address,
+                    initial_price=item.initial_price,
+                    initial_price_value=item.initial_price_value,
+                    currency=item.currency,
+                    publication_at=publication_at,
+                    application_deadline_at=deadline_at,
+                    notice_url=item.notice_url,
+                    print_url=item.print_url,
+                    specification_url=item.specification_url,
+                    documents_url=item.documents_url,
+                    documentation_present=item.documentation_present,
+                    content_hash=prepared.content_hash,
+                    first_seen_at=now,
+                    last_seen_at=now,
+                    is_new=is_new,
+                    category=prepared.classification.category,
+                    matched_keywords=prepared.classification.matched_keywords,
+                    excluded_keywords=prepared.classification.excluded_keywords,
+                    filter_reason=prepared.classification.filter_reason,
+                    attractiveness_score=0,
+                    attractiveness_level="reject",
+                    attractiveness_reasons=[],
+                    normalized_item=prepared.normalized_item,
+                    raw_item=item.model_dump(mode="json"),
+                )
+                apply_procurement_score(record, current_time=now)
+                session.add(record)
+                await session.flush()
+                await enqueue_procurement_telegram_notifications(session, record, now=now)
+                result.created += 1
+                continue
+
+            status_changed = record.status != item.status
+            content_changed = record.content_hash != prepared.content_hash
+            record.last_seen_at = now
+            record.registry_number = item.registry_number
+            record.law = item.law
+            record.title = item.title
+            record.status = item.status
+            record.customer_name = item.customer_name
+            record.customer_inn = item.customer_inn
+            record.organizer_name = item.organizer_name
+            record.procedure_type = item.procedure_type
+            record.platform_name = item.platform_name
+            record.region = item.region
+            record.delivery_region = item.delivery_region
+            record.delivery_address = item.delivery_address
+            record.initial_price = item.initial_price
+            record.initial_price_value = item.initial_price_value
+            record.currency = item.currency
+            record.publication_at = publication_at
+            record.application_deadline_at = deadline_at
+            record.notice_url = item.notice_url
+            record.print_url = item.print_url
+            record.specification_url = item.specification_url
+            record.documents_url = item.documents_url
+            record.documentation_present = item.documentation_present
+            record.is_new = _is_new(publication_at=publication_at or record.first_seen_at, observed_at=now)
+            record.category = prepared.classification.category
+            record.matched_keywords = prepared.classification.matched_keywords
+            record.excluded_keywords = prepared.classification.excluded_keywords
+            record.filter_reason = prepared.classification.filter_reason
+            record.normalized_item = prepared.normalized_item
+            record.raw_item = item.model_dump(mode="json")
             apply_procurement_score(record, current_time=now)
-            session.add(record)
-            await session.flush()
             await enqueue_procurement_telegram_notifications(session, record, now=now)
-            result.created += 1
-            continue
+            if status_changed:
+                record.status_changed_at = now
+                result.status_changed += 1
+            if content_changed:
+                record.content_hash = prepared.content_hash
+                result.updated += 1
+            else:
+                result.unchanged += 1
+    except Exception as error:
+        completed_at = datetime.now(UTC)
+        parser_failure_count = max(parser_failure_count, 1)
+        await session.rollback()
+        await _ensure_source_state(session, info, completed_at=completed_at)
+        await _upsert_source_sync_state(
+            session,
+            info.code,
+            last_sync_started_at=now,
+            last_sync_completed_at=completed_at,
+            last_sync_result="failed",
+            last_sync_error=str(error)[:2000],
+            last_sync_error_code=type(error).__name__,
+            last_sync_fetched=result.fetched,
+            last_sync_created=result.created,
+            last_sync_updated=result.updated,
+            last_sync_unchanged=result.unchanged,
+            last_sync_status_changed=result.status_changed,
+            last_sync_parser_failures=parser_failure_count,
+            last_sync_missing_critical_fields=dict(missing_critical_fields),
+            parser_version=parser_version,
+        )
+        await _append_source_sync_run(
+            session,
+            source_code=info.code,
+            started_at=now,
+            completed_at=completed_at,
+            result="failed",
+            sync_result=result,
+            parser_failure_count=parser_failure_count,
+            missing_critical_fields=dict(missing_critical_fields),
+            parser_version=parser_version,
+            error_code=type(error).__name__,
+            error_message=str(error)[:2000],
+        )
+        await session.commit()
+        logger.exception("Procurement sync failed: source=%s url=%s parser=%s", info.code, info.website, parser_version)
+        raise
 
-        status_changed = record.status != item.status
-        content_changed = record.content_hash != prepared.content_hash
-        record.last_seen_at = now
-        record.registry_number = item.registry_number
-        record.law = item.law
-        record.title = item.title
-        record.status = item.status
-        record.customer_name = item.customer_name
-        record.customer_inn = item.customer_inn
-        record.organizer_name = item.organizer_name
-        record.procedure_type = item.procedure_type
-        record.platform_name = item.platform_name
-        record.region = item.region
-        record.delivery_region = item.delivery_region
-        record.delivery_address = item.delivery_address
-        record.initial_price = item.initial_price
-        record.initial_price_value = item.initial_price_value
-        record.currency = item.currency
-        record.publication_at = publication_at
-        record.application_deadline_at = deadline_at
-        record.notice_url = item.notice_url
-        record.print_url = item.print_url
-        record.specification_url = item.specification_url
-        record.documents_url = item.documents_url
-        record.documentation_present = item.documentation_present
-        record.is_new = _is_new(publication_at=publication_at or record.first_seen_at, observed_at=now)
-        record.category = prepared.classification.category
-        record.matched_keywords = prepared.classification.matched_keywords
-        record.excluded_keywords = prepared.classification.excluded_keywords
-        record.filter_reason = prepared.classification.filter_reason
-        record.normalized_item = prepared.normalized_item
-        record.raw_item = item.model_dump(mode="json")
-        apply_procurement_score(record, current_time=now)
-        await enqueue_procurement_telegram_notifications(session, record, now=now)
-        if status_changed:
-            record.status_changed_at = now
-            result.status_changed += 1
-        if content_changed:
-            record.content_hash = prepared.content_hash
-            result.updated += 1
-        else:
-            result.unchanged += 1
-
+    completed_at = datetime.now(UTC)
+    source_state.last_synced_at = completed_at
+    await _upsert_source_sync_state(
+        session,
+        info.code,
+        last_sync_completed_at=completed_at,
+        last_successful_sync_at=completed_at,
+        last_sync_result="success",
+        last_sync_error=None,
+        last_sync_error_code=None,
+        last_sync_fetched=result.fetched,
+        last_sync_created=result.created,
+        last_sync_updated=result.updated,
+        last_sync_unchanged=result.unchanged,
+        last_sync_status_changed=result.status_changed,
+        last_sync_parser_failures=parser_failure_count,
+        last_sync_missing_critical_fields=dict(missing_critical_fields),
+        parser_version=parser_version,
+    )
+    await _append_source_sync_run(
+        session,
+        source_code=info.code,
+        started_at=now,
+        completed_at=completed_at,
+        result="success",
+        sync_result=result,
+        parser_failure_count=parser_failure_count,
+        missing_critical_fields=dict(missing_critical_fields),
+        parser_version=parser_version,
+    )
     await session.commit()
-    logger.info("%s procurement sync finished: %s", info.code, result.model_dump(mode="json"))
+    logger.info(
+        "Procurement sync finished: source=%s url=%s status=success parser=%s fetched=%s created=%s updated=%s unchanged=%s missing=%s",
+        info.code,
+        info.website,
+        parser_version,
+        result.fetched,
+        result.created,
+        result.updated,
+        result.unchanged,
+        dict(missing_critical_fields),
+    )
     return result
 
 
@@ -207,6 +311,136 @@ def prepare_procurement_lot(item: ProcurementLotItem) -> PreparedProcurementLot:
         normalized_item=normalized,
         content_hash=content_hash,
     )
+
+
+async def _ensure_source_state(
+    session: AsyncSession,
+    info: ProcurementSourceInfo,
+    *,
+    completed_at: datetime | None = None,
+) -> ProcurementSourceState:
+    source_state = await session.get(ProcurementSourceState, info.code)
+    if source_state is None:
+        source_state = ProcurementSourceState(
+            code=info.code,
+            title=info.title,
+            website=info.website,
+            enabled=info.enabled,
+        )
+        session.add(source_state)
+    else:
+        source_state.title = info.title
+        source_state.website = info.website
+        source_state.enabled = info.enabled
+    if completed_at is not None:
+        source_state.last_synced_at = completed_at
+    return source_state
+
+
+async def _upsert_source_sync_state(
+    session: AsyncSession,
+    source_code: str,
+    *,
+    last_sync_started_at: datetime | None | object = _MISSING,
+    last_sync_completed_at: datetime | None | object = _MISSING,
+    last_successful_sync_at: datetime | None | object = _MISSING,
+    last_sync_result: str | None | object = _MISSING,
+    last_sync_error: str | None | object = _MISSING,
+    last_sync_error_code: str | None | object = _MISSING,
+    last_sync_fetched: int | None | object = _MISSING,
+    last_sync_created: int | None | object = _MISSING,
+    last_sync_updated: int | None | object = _MISSING,
+    last_sync_unchanged: int | None | object = _MISSING,
+    last_sync_status_changed: int | None | object = _MISSING,
+    last_sync_parser_failures: int | None | object = _MISSING,
+    last_sync_missing_critical_fields: dict | object = _MISSING,
+    parser_version: str | None | object = _MISSING,
+) -> None:
+    sync_state = await session.get(ProcurementSourceSyncState, source_code)
+    if sync_state is None:
+        sync_state = ProcurementSourceSyncState(source_code=source_code, last_sync_missing_critical_fields={})
+        session.add(sync_state)
+
+    if last_sync_started_at is not _MISSING:
+        sync_state.last_sync_started_at = last_sync_started_at
+    if last_sync_completed_at is not _MISSING:
+        sync_state.last_sync_completed_at = last_sync_completed_at
+    if last_successful_sync_at is not _MISSING:
+        sync_state.last_successful_sync_at = last_successful_sync_at
+    if last_sync_result is not _MISSING:
+        sync_state.last_sync_result = last_sync_result
+    if last_sync_error is not _MISSING:
+        sync_state.last_sync_error = last_sync_error
+    if last_sync_error_code is not _MISSING:
+        sync_state.last_sync_error_code = last_sync_error_code
+    if last_sync_fetched is not _MISSING:
+        sync_state.last_sync_fetched = last_sync_fetched
+    if last_sync_created is not _MISSING:
+        sync_state.last_sync_created = last_sync_created
+    if last_sync_updated is not _MISSING:
+        sync_state.last_sync_updated = last_sync_updated
+    if last_sync_unchanged is not _MISSING:
+        sync_state.last_sync_unchanged = last_sync_unchanged
+    if last_sync_status_changed is not _MISSING:
+        sync_state.last_sync_status_changed = last_sync_status_changed
+    if last_sync_parser_failures is not _MISSING:
+        sync_state.last_sync_parser_failures = last_sync_parser_failures
+    if last_sync_missing_critical_fields is not _MISSING:
+        sync_state.last_sync_missing_critical_fields = dict(last_sync_missing_critical_fields or {})
+    if parser_version is not _MISSING:
+        sync_state.parser_version = parser_version
+
+
+async def _append_source_sync_run(
+    session: AsyncSession,
+    *,
+    source_code: str,
+    started_at: datetime,
+    completed_at: datetime | None,
+    result: str,
+    sync_result: ProcurementSyncResult,
+    parser_failure_count: int,
+    missing_critical_fields: dict[str, int],
+    parser_version: str | None,
+    error_code: str | None = None,
+    error_message: str | None = None,
+) -> None:
+    session.add(
+        ProcurementSourceSyncRun(
+            source_code=source_code,
+            started_at=started_at,
+            completed_at=completed_at,
+            result=result,
+            fetched_count=sync_result.fetched,
+            created_count=sync_result.created,
+            updated_count=sync_result.updated,
+            unchanged_count=sync_result.unchanged,
+            status_changed_count=sync_result.status_changed,
+            parser_failure_count=parser_failure_count,
+            missing_critical_fields=dict(missing_critical_fields),
+            parser_version=parser_version,
+            error_code=error_code,
+            error_message=error_message,
+        )
+    )
+
+
+def _record_missing_critical_fields(
+    item: ProcurementLotItem,
+    application_deadline_at: datetime | None,
+    counter: Counter[str],
+) -> None:
+    values = {
+        "registry_number": item.registry_number,
+        "title": item.title,
+        "initial_price_value": item.initial_price_value,
+        "application_deadline_at": application_deadline_at,
+        "notice_url": item.notice_url,
+    }
+    for field_name in CRITICAL_FIELDS:
+        value = values[field_name]
+        if value is None or (isinstance(value, str) and not value.strip()):
+            counter[field_name] += 1
 
 
 async def _find_record(session: AsyncSession, *, source_code: str, external_id: str) -> ProcurementLotRecord | None:

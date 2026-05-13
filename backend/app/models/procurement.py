@@ -26,6 +26,54 @@ class ProcurementSourceState(Base):
     lots: Mapped[list["ProcurementLotRecord"]] = relationship(back_populates="source_state")
 
 
+class ProcurementSourceSyncState(Base):
+    __tablename__ = "procurement_source_sync_states"
+
+    source_code: Mapped[str] = mapped_column(ForeignKey("procurement_source_states.code"), primary_key=True)
+    last_sync_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    last_sync_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    last_successful_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    last_sync_result: Mapped[str | None] = mapped_column(String(32), index=True)
+    last_sync_error: Mapped[str | None] = mapped_column(Text)
+    last_sync_error_code: Mapped[str | None] = mapped_column(String(64), index=True)
+    last_sync_fetched: Mapped[int | None] = mapped_column(Integer)
+    last_sync_created: Mapped[int | None] = mapped_column(Integer)
+    last_sync_updated: Mapped[int | None] = mapped_column(Integer)
+    last_sync_unchanged: Mapped[int | None] = mapped_column(Integer)
+    last_sync_status_changed: Mapped[int | None] = mapped_column(Integer)
+    last_sync_parser_failures: Mapped[int | None] = mapped_column(Integer)
+    last_sync_missing_critical_fields: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    parser_version: Mapped[str | None] = mapped_column(String(64), index=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    source_state: Mapped[ProcurementSourceState] = relationship()
+
+
+class ProcurementSourceSyncRun(Base):
+    __tablename__ = "procurement_source_sync_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_code: Mapped[str] = mapped_column(ForeignKey("procurement_source_states.code"), nullable=False, index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    result: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    fetched_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    unchanged_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    status_changed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    parser_failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    missing_critical_fields: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    parser_version: Mapped[str | None] = mapped_column(String(64), index=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), index=True)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    source_state: Mapped[ProcurementSourceState] = relationship()
+
+
 class ProcurementLotRecord(Base):
     __tablename__ = "procurement_lot_records"
     __table_args__ = (

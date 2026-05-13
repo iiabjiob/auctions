@@ -12,6 +12,7 @@ class ProcurementSourceProvider(Protocol):
     title: str
     website: str
     enabled: bool
+    parser_version: str | None
 
     def info(self) -> ProcurementSourceInfo:
         ...
@@ -31,6 +32,7 @@ class EisZakupkiProvider:
     title = "ЕИС Закупки"
     website = "https://zakupki.gov.ru"
     enabled = True
+    parser_version = "zakupki-eis-v1"
 
     def info(self) -> ProcurementSourceInfo:
         info = zakupki_source_info()
@@ -54,6 +56,7 @@ class DisabledProcurementSourceProvider:
     title: str
     website: str
     enabled: bool = False
+    parser_version: str | None = None
 
     def info(self) -> ProcurementSourceInfo:
         return ProcurementSourceInfo(code=self.code, title=self.title, website=self.website, enabled=False)

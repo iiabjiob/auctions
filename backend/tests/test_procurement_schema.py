@@ -7,7 +7,12 @@ from pathlib import Path
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import CreateTable
 
-from app.models.procurement import ProcurementLotRecord, ProcurementTelegramNotificationOutbox
+from app.models.procurement import (
+    ProcurementLotRecord,
+    ProcurementSourceSyncRun,
+    ProcurementSourceSyncState,
+    ProcurementTelegramNotificationOutbox,
+)
 
 
 class ProcurementSchemaTests(unittest.TestCase):
@@ -72,6 +77,15 @@ class ProcurementSchemaTests(unittest.TestCase):
         self.assertIn("message_payload JSONB NOT NULL", ddl)
         self.assertIn("ck_procurement_telegram_outbox_status", ddl)
 
+    def test_procurement_sync_diagnostic_tables_compile_for_postgres(self) -> None:
+        state_ddl = str(CreateTable(ProcurementSourceSyncState.__table__).compile(dialect=postgresql.dialect()))
+        run_ddl = str(CreateTable(ProcurementSourceSyncRun.__table__).compile(dialect=postgresql.dialect()))
+
+        self.assertIn("procurement_source_sync_states", state_ddl)
+        self.assertIn("last_sync_missing_critical_fields JSONB", state_ddl)
+        self.assertIn("procurement_source_sync_runs", run_ddl)
+        self.assertIn("parser_failure_count INTEGER NOT NULL", run_ddl)
+
     def test_procurement_search_text_includes_v1_fields(self) -> None:
         record = ProcurementLotRecord(
             source_code="zakupki",
@@ -96,13 +110,13 @@ class ProcurementSchemaTests(unittest.TestCase):
         self.assertIn("7700000000", record.search_text or "")
         self.assertIn("review", record.search_text or "")
 
-    def test_procurement_telegram_outbox_migration_follows_current_head(self) -> None:
-        migration_path = Path("alembic/versions/202605130014_add_procurement_telegram_outbox.py")
-        spec = importlib.util.spec_from_file_location("procurement_telegram_outbox_migration", migration_path)
+    def test_procurement_diagnostics_migration_follows_current_head(self) -> None:
+        migration_path = Path("alembic/versions/202605130015_add_procurement_pipeline_diagnostics.py")
+        spec = importlib.util.spec_from_file_location("procurement_diagnostics_migration", migration_path)
         self.assertIsNotNone(spec)
         self.assertIsNotNone(spec.loader)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
 
-        self.assertEqual(module.revision, "202605130014")
-        self.assertEqual(module.down_revision, "202605130013")
+        self.assertEqual(module.revision, "202605130015")
+        self.assertEqual(module.down_revision, "202605130014")
