@@ -4,7 +4,7 @@ import unittest
 import asyncio
 from datetime import UTC, datetime
 from decimal import Decimal
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 from sqlalchemy.dialects import postgresql
 
@@ -720,7 +720,12 @@ class LotEnrichmentRequirementTests(unittest.TestCase):
         with patch("app.services.lot_enrichment.ensure_lot_detail_cache", return_value=detail_cache) as ensure_detail:
             result = asyncio.run(execute_lot_enrichment_candidates(FakeSession(), limit=10))
 
-        ensure_detail.assert_awaited_once()
+        ensure_detail.assert_awaited_once_with(
+            ANY,
+            record,
+            refresh=True,
+            include_price_schedule=False,
+        )
         self.assertEqual(result.processed_count, 1)
         self.assertEqual(result.fetched_count, 1)
         self.assertEqual(result.candidate_record_ids, [1])
@@ -748,7 +753,12 @@ class LotEnrichmentRequirementTests(unittest.TestCase):
         with patch("app.services.lot_enrichment.ensure_lot_detail_cache", return_value=detail_cache) as ensure_detail:
             result = asyncio.run(execute_lot_enrichment_candidates(FakeSession(), limit=10))
 
-        ensure_detail.assert_awaited_once()
+        ensure_detail.assert_awaited_once_with(
+            ANY,
+            record,
+            refresh=True,
+            include_price_schedule=True,
+        )
         self.assertEqual(result.fetched_count, 1)
         self.assertIsNone(record.enrichment_requested_at)
         self.assertIsNone(record.enrichment_requested_reason)

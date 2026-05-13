@@ -429,7 +429,12 @@ async def execute_lot_enrichment_candidates(
             select(AuctionLotDetailCache).where(AuctionLotDetailCache.lot_record_id == record.id)
         )
         fetched_at_before = detail_cache_before.fetched_at if detail_cache_before is not None else None
-        detail_cache = await ensure_lot_detail_cache(session, record, refresh=True)
+        detail_cache = await ensure_lot_detail_cache(
+            session,
+            record,
+            refresh=True,
+            include_price_schedule=force_live_refresh,
+        )
         fetched_count += 1
         refresh_failed = force_live_refresh and (
             detail_cache is None or (fetched_at_before is not None and detail_cache.fetched_at == fetched_at_before)
