@@ -19,9 +19,9 @@ def procurement_lot_grid_row_id(record: ProcurementLotRecord) -> str:
 
 async def bump_procurement_lot_dataset_version(
     session: AsyncSession,
-    record: ProcurementLotRecord,
+    record: ProcurementLotRecord | None = None,
     *,
-    event_type: str,
+    event_type: str | None = None,
     payload: Mapping[str, Any] | None = None,
     workspace_id: str = DEFAULT_GRID_WORKSPACE_ID,
 ) -> int:
@@ -30,6 +30,6 @@ async def bump_procurement_lot_dataset_version(
         workspace_id,
         PROCUREMENT_LOTS_TABLE_ID,
         event_type=event_type,
-        row_id=procurement_lot_grid_row_id(record),
+        row_id=procurement_lot_grid_row_id(record) if record is not None else None,
         payload=payload,
     )

@@ -16,6 +16,7 @@ from app.schemas.procurements import ProcurementLotItem, ProcurementSourceInfo, 
 from app.services.procurement_classification import ProcurementClassification, classify_procurement_lot
 from app.services.procurement_notifications import enqueue_procurement_telegram_notifications
 from app.services.procurement_scoring import apply_procurement_score
+from app.services.procurement_grid_state import bump_procurement_lot_dataset_version
 from app.services.procurement_sources import (
     get_procurement_source_provider,
     list_enabled_procurement_source_providers,
@@ -162,6 +163,12 @@ async def sync_procurement_source_provider(
                 apply_procurement_score(record, current_time=now)
                 session.add(record)
                 await session.flush()
+                await bump_procurement_lot_dataset_version(
+                    session,
+                    record,
+                    event_type="row_inserted",
+                    payload={"source": "procurement_sync", "source_code": info.code},
+                )
                 await enqueue_procurement_telegram_notifications(session, record, now=now)
                 result.created += 1
                 continue
@@ -206,6 +213,16 @@ async def sync_procurement_source_provider(
             if content_changed:
                 record.content_hash = prepared.content_hash
                 result.updated += 1
+                await bump_procurement_lot_dataset_version(
+                    session,
+                    record,
+                    event_type="row_updated",
+                    payload={
+                        "source": "procurement_sync",
+                        "source_code": info.code,
+                        "status_changed": status_changed,
+                    },
+                )
             else:
                 result.unchanged += 1
     except Exception as error:

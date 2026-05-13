@@ -2501,6 +2501,10 @@ async function postProcurementServerGridJson<TResponse>(path: string, payload: u
   })
 }
 
+async function getProcurementServerJson<TResponse>(path: string, signal?: AbortSignal) {
+  return fetchJson<TResponse>(path, { signal })
+}
+
 function createAuctionServerCatalogDataSource(): CatalogAuctionServerDataSource {
   return createAuctionServerDatasource<ApiLotRow, GridLotRow>({
     postJson: postAuctionServerGridJson,
@@ -5619,6 +5623,7 @@ onUnmounted(() => {
       <ProcurementTenderGrid
         v-else
         :post-json="postProcurementServerGridJson"
+        :get-json="getProcurementServerJson"
         :mobile-rail-open="mobileRailOpen"
         @toggle-mobile-rail="toggleMobileRail"
       />

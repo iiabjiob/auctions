@@ -32,8 +32,11 @@ async def run_worker(*, run_once: bool = False) -> None:
         while True:
             if settings.procurement_sync_enabled:
                 limit = settings.procurement_sync_limit if settings.procurement_sync_limit > 0 else None
-                async with AsyncSessionLocal() as session:
-                    await sync_enabled_procurement_sources(session, limit=limit)
+                try:
+                    async with AsyncSessionLocal() as session:
+                        await sync_enabled_procurement_sources(session, limit=limit)
+                except Exception:
+                    logger.exception("Procurement sync cycle failed")
             else:
                 logger.info("Procurement sync worker disabled")
             if run_once:

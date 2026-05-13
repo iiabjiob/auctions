@@ -29,9 +29,11 @@ import {
 import { workspaceDataGridTheme } from '@/theme/dataGridTheme'
 
 type PostJson = <TResponse>(path: string, payload: unknown, signal?: AbortSignal) => Promise<TResponse>
+type GetJson = <TResponse>(path: string, signal?: AbortSignal) => Promise<TResponse>
 
 const props = defineProps<{
   postJson: PostJson
+  getJson: GetJson
   mobileRailOpen?: boolean
 }>()
 
@@ -126,6 +128,48 @@ type ProcurementCommitEditsResult = {
   rejected?: Array<{ rowId: string | number; reason?: string }>
 }
 
+type GridChangeFeedResponse = {
+  datasetVersion: number
+  changes: Array<{
+    type: 'row_updated' | 'row_inserted' | 'row_deleted' | 'invalidation'
+    rowId: string | null
+    payload: Record<string, unknown>
+  }>
+  hasMore: boolean
+}
+
+type ProcurementPipelineHealthResponse = {
+  counters: {
+    total_lots: number
+    priority_lots: number
+    decision_pending_lots: number
+    missing_documents: number
+    missing_critical_fields: number
+    scoring_stale_or_incomplete: number
+    scored_current: number
+  }
+  sources: Array<{
+    code: string
+    title: string
+    enabled: boolean
+    website: string
+    parser_version: string | null
+    last_sync_started_at: string | null
+    last_sync_completed_at: string | null
+    last_successful_sync_at: string | null
+    last_sync_result: string | null
+    last_sync_error: string | null
+    last_sync_error_code: string | null
+    last_sync_fetched: number | null
+    last_sync_created: number | null
+    last_sync_updated: number | null
+    last_sync_unchanged: number | null
+    last_sync_status_changed: number | null
+    last_sync_parser_failures: number | null
+    last_sync_missing_critical_fields: Record<string, number>
+  }>
+}
+
 type ProcurementDataSource = DataGridDataSource<ProcurementGridRow> & {
   commitEdits?(request: ProcurementCommitEditsRequest): Promise<ProcurementCommitEditsResult>
 }
@@ -136,13 +180,17 @@ type ProcurementRowModel = DataSourceBackedRowModel<ProcurementGridRow> & {
 type ProcurementServerGridDataSource = ProcurementServerDatasource<ProcurementApiRow, ProcurementGridRow>
 
 const GRID_COLUMN_WIDTHS_STORAGE_KEY = 'procurement-grid-column-widths-v1'
+const PROCUREMENT_LOTS_TABLE_ID = 'procurement-lots'
 const SERVER_ROW_MODEL_INITIAL_FETCH_SIZE = 160
 const ROW_CACHE_LIMIT = 8_000
+const GRID_CHANGES_POLL_INTERVAL_MS = 5_000
+const GRID_CHANGES_REFRESH_DEBOUNCE_MS = 650
 
 const gridRef = ref<DataGridExposed<ProcurementGridRow> | null>(null)
 const rowModel = shallowRef<ProcurementRowModel | null>(null)
 const rowRevision = ref(0)
 const latestDatasetVersion = ref<number | null>(null)
+const pipelineHealth = ref<ProcurementPipelineHealthResponse | null>(null)
 const loadedOnce = ref(false)
 const loading = ref(false)
 const errorMessage = ref('')
@@ -161,10 +209,18 @@ const filters = reactive({
   minScore: 0,
   onlyNew: false,
 })
+let gridChangesPollTimer: ReturnType<typeof window.setTimeout> | null = null
+let gridChangesRefreshTimer: ReturnType<typeof window.setTimeout> | null = null
+let gridChangesPolling = false
+let gridChangesRefreshInFlight = false
+let pipelineHealthAbortController: AbortController | null = null
 
 const gridStatus = computed(() => {
   if (errorMessage.value) return errorMessage.value
   if (loading.value && !loadedOnce.value) return 'Загружаем закупки'
+  const source = pipelineHealth.value?.sources.find((item) => item.code === filters.source)
+  if (source?.last_sync_result === 'failed') return `Ошибка синка: ${source.last_sync_error_code ?? source.last_sync_error ?? 'source'}`
+  if (source?.last_successful_sync_at) return `Синк ${formatDateTime(source.last_successful_sync_at)}`
   if (loadedOnce.value) return `Загружено ${total.value}`
   return 'Ожидаем загрузку'
 })
@@ -386,6 +442,7 @@ function createDatasource(): ProcurementServerGridDataSource {
       loadedOnce.value = true
       loading.value = false
       errorMessage.value = ''
+      startGridChangePolling()
     },
   })
 }
@@ -502,6 +559,110 @@ function refreshGrid() {
   return rowModel.value?.refresh('manual') ?? Promise.resolve()
 }
 
+async function loadPipelineHealth() {
+  pipelineHealthAbortController?.abort()
+  const controller = new AbortController()
+  pipelineHealthAbortController = controller
+  try {
+    pipelineHealth.value = await props.getJson<ProcurementPipelineHealthResponse>(
+      '/api/v1/health/procurement-pipeline',
+      controller.signal,
+    )
+  } catch (error) {
+    if (!isAbortLikeError(error)) {
+      console.warn('[procurement-pipeline-health] failed to load', error)
+    }
+  } finally {
+    if (pipelineHealthAbortController === controller) {
+      pipelineHealthAbortController = null
+    }
+  }
+}
+
+function shouldPollGridChanges() {
+  return !document.hidden && latestDatasetVersion.value !== null
+}
+
+function startGridChangePolling(delay = GRID_CHANGES_POLL_INTERVAL_MS) {
+  if (!shouldPollGridChanges() || gridChangesPollTimer !== null) return
+
+  gridChangesPollTimer = window.setTimeout(() => {
+    gridChangesPollTimer = null
+    void pollGridChanges()
+  }, delay)
+}
+
+function stopGridChangePolling() {
+  if (gridChangesPollTimer !== null) {
+    window.clearTimeout(gridChangesPollTimer)
+    gridChangesPollTimer = null
+  }
+  if (gridChangesRefreshTimer !== null) {
+    window.clearTimeout(gridChangesRefreshTimer)
+    gridChangesRefreshTimer = null
+  }
+}
+
+async function pollGridChanges() {
+  if (!shouldPollGridChanges()) return
+  if (gridChangesPolling) {
+    startGridChangePolling()
+    return
+  }
+
+  const sinceVersion = latestDatasetVersion.value
+  if (sinceVersion === null) return
+
+  gridChangesPolling = true
+  try {
+    const params = new URLSearchParams({
+      tableId: PROCUREMENT_LOTS_TABLE_ID,
+      sinceVersion: String(sinceVersion),
+    })
+    const response = await props.getJson<GridChangeFeedResponse>(`/api/changes?${params.toString()}`)
+    const currentVersion = latestDatasetVersion.value ?? 0
+    if (response.changes.length > 0 || response.datasetVersion > currentVersion) {
+      scheduleGridChangeRefresh()
+    }
+  } catch (error) {
+    if (!document.hidden) {
+      console.warn('[procurement-grid] change polling failed', error)
+    }
+  } finally {
+    gridChangesPolling = false
+    startGridChangePolling()
+  }
+}
+
+function scheduleGridChangeRefresh() {
+  if (gridChangesRefreshInFlight || gridChangesRefreshTimer !== null) return
+
+  gridChangesRefreshTimer = window.setTimeout(() => {
+    gridChangesRefreshTimer = null
+    void refreshGridAfterChange()
+  }, GRID_CHANGES_REFRESH_DEBOUNCE_MS)
+}
+
+async function refreshGridAfterChange() {
+  if (!rowModel.value || document.hidden) return
+  gridChangesRefreshInFlight = true
+  try {
+    await refreshGrid()
+    await loadPipelineHealth()
+  } finally {
+    gridChangesRefreshInFlight = false
+  }
+}
+
+function handleGridVisibilityChange() {
+  if (document.hidden) {
+    stopGridChangePolling()
+    return
+  }
+  void loadPipelineHealth()
+  startGridChangePolling(0)
+}
+
 function persistColumnWidths(widths: Readonly<Record<string, number | null>> | null) {
   const normalized = Object.fromEntries(
     Object.entries(widths ?? {}).filter((entry): entry is [string, number] => typeof entry[1] === 'number'),
@@ -564,6 +725,10 @@ function formatCommitError(error: unknown) {
   return 'Не удалось сохранить изменения'
 }
 
+function isAbortLikeError(error: unknown) {
+  return error instanceof DOMException && error.name === 'AbortError'
+}
+
 function emptySummary(total: number): ProcurementServerGridSummary {
   return {
     total,
@@ -576,9 +741,15 @@ function emptySummary(total: number): ProcurementServerGridSummary {
 
 onMounted(() => {
   rowModel.value = createGridRowModel()
+  void loadPipelineHealth()
+  document.addEventListener('visibilitychange', handleGridVisibilityChange)
 })
 
 onUnmounted(() => {
+  document.removeEventListener('visibilitychange', handleGridVisibilityChange)
+  stopGridChangePolling()
+  pipelineHealthAbortController?.abort()
+  pipelineHealthAbortController = null
   rowModel.value?.dispose()
   rowModel.value = null
 })
