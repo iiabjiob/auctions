@@ -96,6 +96,9 @@ class Settings(BaseSettings):
     telegram_sender_request_timeout_seconds: float = 10.0
     grid_change_feed_limit: int = 1000
     grid_change_feed_max_limit: int = 1000
+    zakupki_fetch_gateway_url: str | None = None
+    zakupki_fetch_token: str | None = None
+    zakupki_fetch_timeout_seconds: float = 30.0
 
     @field_validator("debug", mode="before")
     @classmethod

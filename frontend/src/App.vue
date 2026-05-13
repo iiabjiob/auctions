@@ -2055,6 +2055,22 @@ watch(
   },
 )
 
+watch(activeModule, (module) => {
+    if (!isAuthenticated.value) return
+    if (module === 'auctions') {
+      void loadLots()
+      startAuctionEvents()
+      startAuctionGridChangePolling(0)
+      void nextTick(() => startGridSurfaceResizeObserver())
+      return
+    }
+    stopGridSurfaceResizeObserver()
+    stopAuctionEvents()
+    stopAuctionGridChangePolling()
+    catalogSoftRefreshAbortController?.abort()
+    catalogSoftRefreshAbortController = null
+})
+
 function makeFields(entries: Array<[string, unknown]>): DetailField[] {
   return entries
     .map(([label, value]) => ({ label, value: truncateDetailText(normalizeTextValue(value)) }))
@@ -2854,7 +2870,7 @@ async function softRefreshCatalogRows(options: {
   sortModel?: readonly DataGridSortState[]
   filterModel?: DataGridFilterSnapshot | null
 } = {}) {
-  if (!isAuthenticated.value || !catalogRowModel.value) return
+  if (!isAuctionsModule.value || !isAuthenticated.value || !catalogRowModel.value) return
 
   const reloadSeq = catalogSoftReloadSeq + 1
   catalogSoftReloadSeq = reloadSeq
@@ -2915,7 +2931,7 @@ function resetCatalogRowModel() {
 }
 
 async function loadLots() {
-  if (!isAuthenticated.value) return
+  if (!isAuctionsModule.value || !isAuthenticated.value) return
   resetCatalogRowModel()
   savedGridWorkSnapshots.clear()
   await nextTick()
@@ -3592,7 +3608,7 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 function shouldPollAuctionGridChanges() {
-  return isAuthenticated.value && !document.hidden && latestAuctionGridDatasetVersion.value !== null
+  return isAuctionsModule.value && isAuthenticated.value && !document.hidden && latestAuctionGridDatasetVersion.value !== null
 }
 
 function startAuctionGridChangePolling(delay = AUCTION_GRID_CHANGES_POLL_INTERVAL_MS) {
@@ -3663,7 +3679,7 @@ function scheduleAuctionGridChangeRefresh() {
 }
 
 async function refreshAuctionGridAfterChange() {
-  if (!isAuthenticated.value || document.hidden || !catalogRowModel.value) return
+  if (!isAuctionsModule.value || !isAuthenticated.value || document.hidden || !catalogRowModel.value) return
   auctionGridChangesRefreshInFlight = true
   try {
     await softRefreshCatalogRows({
@@ -3680,6 +3696,7 @@ function handleAuctionGridVisibilityChange() {
     stopAuctionGridChangePolling()
     return
   }
+  if (!isAuctionsModule.value) return
   startAuctionGridChangePolling(0)
 }
 
@@ -4868,7 +4885,7 @@ function subscribeToAuctionEvents() {
 let auctionEvents: EventSource | null = null
 
 function startAuctionEvents() {
-  if (auctionEvents || !isAuthenticated.value) return
+  if (auctionEvents || !isAuctionsModule.value || !isAuthenticated.value) return
   auctionEvents = subscribeToAuctionEvents()
 }
 
@@ -4878,6 +4895,7 @@ function stopAuctionEvents() {
 }
 
 watch(filters, () => {
+  if (!isAuctionsModule.value) return
   persistServerFilters()
   scheduleLotsReload(LOTS_RELOAD_DELAY_MS, true, { resetViewport: true })
   scheduleGridSummaryRefresh()
@@ -4885,12 +4903,14 @@ watch(filters, () => {
 
 watch(isAuthenticated, (authenticated) => {
   if (authenticated) {
-    void loadLots()
+    if (isAuctionsModule.value) {
+      void loadLots()
+      startAuctionEvents()
+      startAuctionGridChangePolling(0)
+      void nextTick(() => startGridSurfaceResizeObserver())
+    }
     void loadPresets()
     void loadUserInterestProfiles()
-    startAuctionEvents()
-    startAuctionGridChangePolling(0)
-    void nextTick(() => startGridSurfaceResizeObserver())
     return
   }
 
@@ -4901,12 +4921,14 @@ watch(isAuthenticated, (authenticated) => {
 
 onMounted(() => {
   if (isAuthenticated.value) {
-    void loadLots()
+    if (isAuctionsModule.value) {
+      void loadLots()
+      startAuctionEvents()
+      startAuctionGridChangePolling(0)
+      void nextTick(() => startGridSurfaceResizeObserver())
+    }
     void loadPresets()
     void loadUserInterestProfiles()
-    startAuctionEvents()
-    startAuctionGridChangePolling(0)
-    void nextTick(() => startGridSurfaceResizeObserver())
   }
   updateAppViewportHeight()
   updateMobileViewportState()

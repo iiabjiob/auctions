@@ -1,12 +1,28 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 from datetime import UTC, datetime
 from decimal import Decimal
+from unittest.mock import patch
 
 from app.services.procurement_scoring import score_procurement_lot
 from app.services.procurement_values import parse_money
-from app.services.zakupki_scraper import build_search_params, parse_search_results, parse_search_results_with_diagnostics
+from app.services.zakupki_scraper import build_search_params, fetch_search_page_via_gateway, parse_search_results, parse_search_results_with_diagnostics
+
+
+class FakeResponse:
+    def __init__(self, body: bytes) -> None:
+        self.body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:  # noqa: ANN001
+        return None
+
+    def read(self) -> bytes:
+        return self.body
 
 
 class ZakupkiScraperTests(unittest.TestCase):
@@ -62,6 +78,28 @@ class ZakupkiScraperTests(unittest.TestCase):
         self.assertEqual(params["searchString"], "спецодежда халат медицинский")
         self.assertEqual(params["fz44"], "on")
         self.assertEqual(params["fz223"], "on")
+
+    def test_fetch_search_page_via_gateway_posts_to_restricted_fetcher(self) -> None:
+        settings = SimpleNamespace(
+            zakupki_fetch_gateway_url="http://fetcher:8080",
+            zakupki_fetch_token="secret",
+            zakupki_fetch_timeout_seconds=30,
+        )
+        response = FakeResponse(
+            b'{"status": 200, "body": "<html>ok</html>", "body_base64": false}'
+        )
+
+        with (
+            patch("app.services.zakupki_scraper.get_settings", return_value=settings),
+            patch("app.services.zakupki_scraper.urlopen", return_value=response) as urlopen_mock,
+        ):
+            body = fetch_search_page_via_gateway(params={"pageNumber": 1}, timeout=15)
+
+        self.assertEqual(body, "<html>ok</html>")
+        request = urlopen_mock.call_args.args[0]
+        self.assertEqual(request.full_url, "http://fetcher:8080/fetch")
+        self.assertEqual(request.headers["Authorization"], "Bearer secret")
+        self.assertEqual(urlopen_mock.call_args.kwargs["timeout"], 15)
 
     def test_parse_44fz_fixture_extracts_source_fields(self) -> None:
         html = """

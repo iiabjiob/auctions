@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import html
+import json
 import logging
 import re
 from dataclasses import dataclass, field
 from collections.abc import Iterable
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urljoin
 from urllib.request import Request, urlopen
 
+from app.core.config import get_settings
 from app.schemas.procurements import ProcurementLotItem, ProcurementSourceInfo
 from app.services.procurement_values import parse_money
 
@@ -100,10 +102,53 @@ def fetch_search_page(
     search_keywords: tuple[str, ...] | list[str] | None = None,
     timeout: int = 30,
 ) -> str:
-    url = build_search_url(page=page, records_per_page=records_per_page, search_keywords=search_keywords)
+    params = build_search_params(page=page, records_per_page=records_per_page, search_keywords=search_keywords)
+    gateway_response = fetch_search_page_via_gateway(params=params, timeout=timeout)
+    if gateway_response is not None:
+        return gateway_response
+
+    url = f"{BASE_URL}{SEARCH_PATH}?{urlencode(params)}"
     request = Request(url, headers=DEFAULT_HEADERS)
     with urlopen(request, timeout=timeout) as response:
         return response.read().decode(_response_encoding(response.headers.get("Content-Type")), "replace")
+
+
+def fetch_search_page_via_gateway(*, params: dict[str, str | int], timeout: int = 30) -> str | None:
+    settings = get_settings()
+    gateway_url = (settings.zakupki_fetch_gateway_url or "").strip()
+    token = (settings.zakupki_fetch_token or "").strip()
+    if not gateway_url:
+        return None
+    if not token:
+        raise RuntimeError("ZAKUPKI_FETCH_TOKEN is required when ZAKUPKI_FETCH_GATEWAY_URL is configured")
+
+    payload = json.dumps(
+        {
+            "method": "GET",
+            "path": SEARCH_PATH,
+            "params": params,
+            "headers": DEFAULT_HEADERS,
+        }
+    ).encode("utf-8")
+    request = Request(
+        urljoin(f"{gateway_url.rstrip('/')}/", "fetch"),
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+    with urlopen(request, timeout=timeout or settings.zakupki_fetch_timeout_seconds) as response:
+        response_payload = json.loads(response.read().decode("utf-8"))
+
+    status = int(response_payload.get("status") or 0)
+    if status < 200 or status >= 300:
+        raise RuntimeError(f"Zakupki fetch gateway returned HTTP {status}")
+    if response_payload.get("body_base64"):
+        raise RuntimeError("Zakupki fetch gateway returned binary response")
+    return str(response_payload.get("body") or "")
 
 
 def build_search_url(
