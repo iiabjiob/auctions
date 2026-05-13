@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
+from urllib.parse import parse_qsl, quote, urlencode, urljoin, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request as FastAPIRequest
@@ -117,6 +117,10 @@ def _target_url(payload: FetchPayload, settings: FetchSettings) -> str:
         query_pairs.extend(payload.params.items())
         parsed = parsed._replace(query=urlencode(query_pairs, doseq=True))
 
+    parsed = parsed._replace(
+        path=quote(parsed.path, safe="/%:@"),
+        query=quote(parsed.query, safe="=&?/%:+,;@[]!$'()*~"),
+    )
     return urlunparse(parsed)
 
 
@@ -171,6 +175,8 @@ def _perform_fetch(payload: FetchPayload, settings: FetchSettings) -> FetchRespo
         data = exc.read(settings.max_response_bytes + 1)
     except URLError as exc:
         raise HTTPException(status_code=502, detail=f"Fetch failed: {exc.reason}") from exc
+    except OSError as exc:
+        raise HTTPException(status_code=502, detail=f"Fetch failed: {exc}") from exc
 
     truncated = len(data) > settings.max_response_bytes
     if truncated:
