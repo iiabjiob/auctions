@@ -39,6 +39,11 @@ from app.services.auction_search import update_record_search_text
 from app.services.auction_workspace import ensure_lot_detail_cache, ensure_work_item
 from app.services.lot_decision_report import generate_and_persist_lot_decision_report_snapshot
 from app.services.lot_actuality import LotActualityClassification, classify_lot_actuality
+from app.services.source_http_diagnostics import (
+    begin_source_http_diagnostics,
+    collect_source_http_diagnostics,
+    persist_source_http_diagnostics,
+)
 
 
 settings = get_settings()
@@ -184,6 +189,7 @@ async def sync_source_lots(
     else:
         items_iterable = await asyncio.to_thread(provider.list_lots, limit, page=sync_start_page)
 
+    diagnostics_token = begin_source_http_diagnostics()
     for source_position, item in enumerate(items_iterable, start=1):
         if not item.auction.external_id or not item.lot.external_id:
             continue
@@ -360,6 +366,8 @@ async def sync_source_lots(
             )
 
         if processed_items % commit_chunk_size == 0:
+            await persist_source_http_diagnostics(session, collect_source_http_diagnostics(diagnostics_token))
+            diagnostics_token = begin_source_http_diagnostics()
             await session.commit()
             logger.info(
                 "Sync chunk committed for %s: %s/%s processed",
@@ -395,6 +403,7 @@ async def sync_source_lots(
         result="success",
         fetched_count=result.fetched,
     )
+    await persist_source_http_diagnostics(session, collect_source_http_diagnostics(diagnostics_token))
     await _advance_source_sync_state(session, source_code=source_info.code, start_page=sync_start_page, fetched=result.fetched)
     await session.commit()
     await _backfill_publication_dates(session, source_code=source_info.code, observed_at=now)

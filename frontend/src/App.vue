@@ -49,6 +49,7 @@ import AuthLoginScreen from './components/AuthLoginScreen.vue'
 import AnalysisSignalTooltip from './components/AnalysisSignalTooltip.vue'
 import LotNameCell from './components/LotNameCell.vue'
 import RatingInfoTooltip from './components/RatingInfoTooltip.vue'
+import SourceDiagnosticsView from './components/SourceDiagnosticsView.vue'
 import {
   createAuctionServerDatasource,
   type AuctionServerDatasource,
@@ -1625,6 +1626,7 @@ const presetOptions = computed(() => [
   })),
 ])
 const activeModule = computed(() => {
+  if (route.name === 'diagnostics') return 'diagnostics'
   if (route.name === 'tenders') return 'tenders'
   if (route.name === 'help') return 'help'
   return 'auctions'
@@ -1632,6 +1634,7 @@ const activeModule = computed(() => {
 const isAuctionsModule = computed(() => activeModule.value === 'auctions')
 const isTendersModule = computed(() => activeModule.value === 'tenders')
 const isHelpModule = computed(() => activeModule.value === 'help')
+const isDiagnosticsModule = computed(() => activeModule.value === 'diagnostics')
 const helpDocumentHtml = computed(() => renderHelpMarkdown(howItWorksMarkdown))
 const currentUserInitials = computed(() => {
   const tokens = currentUser.value?.full_name
@@ -5519,6 +5522,8 @@ onUnmounted(() => {
 
         <article class="help-document" v-html="helpDocumentHtml"></article>
       </section>
+
+      <SourceDiagnosticsView v-else-if="isDiagnosticsModule" />
 
       <section v-else class="workspace-placeholder" aria-label="Тендерный модуль">
         <article class="workspace-placeholder__card">

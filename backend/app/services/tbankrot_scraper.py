@@ -6,6 +6,7 @@ import re
 import socket
 import threading
 import time
+from datetime import UTC, datetime
 from http.cookiejar import CookieJar
 from html import unescape
 from urllib.error import HTTPError, URLError
@@ -24,6 +25,7 @@ from app.schemas.auctions import (
     PriceScheduleStep,
     ScrapedField,
 )
+from app.services.source_http_diagnostics import record_source_http_exchange
 
 
 BASE_URL = "https://tbankrot.ru"
@@ -107,22 +109,89 @@ def _read_response_text(request: Request, *, timeout: int, opener=None) -> str:
     opener = opener or _OPENER
     last_error: Exception | None = None
     for attempt in range(1, REQUEST_RETRY_ATTEMPTS + 1):
+        started_at = datetime.now(UTC)
+        request_bytes = len(request.data or b"")
         try:
             _wait_for_polite_request_slot(request.full_url)
             with opener.open(request, timeout=timeout) as response:
                 encoding = response.headers.get_content_charset() or "utf-8"
-                return response.read().decode(encoding, errors="replace")
+                body = response.read()
+                record_source_http_exchange(
+                    source_code="tbankrot",
+                    operation=_diagnostic_operation(request.full_url, request.data),
+                    method=request.get_method(),
+                    url=request.full_url,
+                    started_at=started_at,
+                    completed_at=datetime.now(UTC),
+                    status_code=response.status,
+                    request_bytes=request_bytes,
+                    response_bytes=len(body),
+                )
+                return body.decode(encoding, errors="replace")
         except HTTPError as error:
+            response_bytes = 0
+            try:
+                response_bytes = len(error.read())
+            except Exception:
+                response_bytes = 0
+            record_source_http_exchange(
+                source_code="tbankrot",
+                operation=_diagnostic_operation(request.full_url, request.data),
+                method=request.get_method(),
+                url=request.full_url,
+                started_at=started_at,
+                completed_at=datetime.now(UTC),
+                status_code=error.code,
+                request_bytes=request_bytes,
+                response_bytes=response_bytes,
+                error=error,
+            )
             if error.code in {403, 429}:
                 _start_blocked_cooldown(error.code, request.full_url)
             raise
         except URLError as error:
+            record_source_http_exchange(
+                source_code="tbankrot",
+                operation=_diagnostic_operation(request.full_url, request.data),
+                method=request.get_method(),
+                url=request.full_url,
+                started_at=started_at,
+                completed_at=datetime.now(UTC),
+                status_code=None,
+                request_bytes=request_bytes,
+                response_bytes=0,
+                error=error,
+            )
             if not _is_timeout_error(error):
                 raise
             last_error = error
         except TimeoutError as error:
+            record_source_http_exchange(
+                source_code="tbankrot",
+                operation=_diagnostic_operation(request.full_url, request.data),
+                method=request.get_method(),
+                url=request.full_url,
+                started_at=started_at,
+                completed_at=datetime.now(UTC),
+                status_code=None,
+                request_bytes=request_bytes,
+                response_bytes=0,
+                error=error,
+            )
             last_error = error
         except socket.timeout as error:
+            record_source_http_exchange(
+                source_code="tbankrot",
+                operation=_diagnostic_operation(request.full_url, request.data),
+                method=request.get_method(),
+                url=request.full_url,
+                started_at=started_at,
+                completed_at=datetime.now(UTC),
+                status_code=None,
+                request_bytes=request_bytes,
+                response_bytes=0,
+                error=error,
+            )
             last_error = error
 
         if attempt < REQUEST_RETRY_ATTEMPTS:
@@ -155,6 +224,19 @@ def _start_blocked_cooldown(status_code: int, url: str) -> None:
 def _is_timeout_error(error: URLError) -> bool:
     reason = error.reason
     return isinstance(reason, TimeoutError | socket.timeout) or "timed out" in str(reason).lower()
+
+
+def _diagnostic_operation(url: str, data: bytes | None = None) -> str:
+    if "/script/ajax.php" in url:
+        payload = (data or b"").decode("utf-8", errors="ignore")
+        if "key=login" in payload:
+            return "login"
+        if "key=get_price_down" in payload:
+            return "price_schedule"
+        return "ajax"
+    if "/item" in url:
+        return "lot_detail"
+    return "list"
 
 
 def login_tbankrot(email: str | None = None, password: str | None = None) -> bool:

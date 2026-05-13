@@ -28,6 +28,11 @@ const router = createRouter({
       name: 'help',
       component: EmptyRouteView,
     },
+    {
+      path: '/diagnostics',
+      name: 'diagnostics',
+      component: EmptyRouteView,
+    },
   ],
 })
 

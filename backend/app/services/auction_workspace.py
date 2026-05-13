@@ -54,6 +54,11 @@ from app.services.lot_decision_report import generate_and_persist_lot_decision_r
 from app.services.auction_scoring_invalidation import DETAIL_CONTENT_CHANGED, MANUAL_ECONOMICS_CHANGED
 from app.services.auction_sources import get_source_provider
 from app.services.grid_state import record_grid_operation
+from app.services.source_http_diagnostics import (
+    begin_source_http_diagnostics,
+    collect_source_http_diagnostics,
+    persist_source_http_diagnostics,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -501,6 +506,7 @@ async def ensure_lot_detail_cache(
         return detail_cache
 
     provider = get_source_provider(record.source_code)
+    diagnostics_token = begin_source_http_diagnostics()
     try:
         lot_detail = await asyncio.to_thread(
             provider.get_lot,
@@ -508,8 +514,10 @@ async def ensure_lot_detail_cache(
             include_price_schedule=include_price_schedule,
         )
     except NotImplementedError:
+        collect_source_http_diagnostics(diagnostics_token)
         return detail_cache
     except (HTTPError, URLError, TimeoutError, OSError) as error:
+        await persist_source_http_diagnostics(session, collect_source_http_diagnostics(diagnostics_token))
         if raise_on_fetch_error:
             raise
         logger.warning(
@@ -540,6 +548,7 @@ async def ensure_lot_detail_cache(
             )
             auction_detail = None
 
+    await persist_source_http_diagnostics(session, collect_source_http_diagnostics(diagnostics_token))
     existing_schedule = _price_schedule_from_record_or_cache(record, detail_cache)
     lot_payload = _lot_detail_payload_with_price_schedule_state(
         lot_detail.model_dump(mode="json"),

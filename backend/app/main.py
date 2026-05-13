@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 
 from app.api.v1.health.router import router as health_router
 from app.api.v1.health.pipeline_router import router as health_pipeline_router
+from app.api.v1.health.source_diagnostics_router import router as source_diagnostics_router
 from app.api.v1.auth.router import router as auth_router
 from app.api.v1.auctions.router import router as auctions_router
 from app.api.v1.filter_presets.router import router as filter_presets_router
@@ -100,6 +101,7 @@ if allowed_origins:
 logger.info("Registering REST API routers")
 app.include_router(health_router)
 app.include_router(health_pipeline_router)
+app.include_router(source_diagnostics_router)
 app.include_router(auth_router)
 app.include_router(filter_presets_router)
 app.include_router(user_interest_profiles_router)

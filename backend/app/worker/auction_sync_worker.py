@@ -12,6 +12,7 @@ from app.infrastructure.db.database import AsyncSessionLocal
 from app.infrastructure.redis.streams import publish_auction_event
 from app.services.auction_sources import SOURCE_PROVIDERS
 from app.services.auction_sync import persist_all_source_sync_windows, persist_source_sync_error, sync_source_lots
+from app.services.source_http_diagnostics import drain_active_source_http_diagnostics, persist_source_http_diagnostics
 from app.worker.safety import safe_worker_jitter_delay
 
 
@@ -81,6 +82,7 @@ async def sync_all_sources() -> None:
         except Exception as error:
             payload = _source_sync_error_payload(source=source_code, error=error)
             async with AsyncSessionLocal() as error_session:
+                await persist_source_http_diagnostics(error_session, drain_active_source_http_diagnostics())
                 await persist_source_sync_error(
                     error_session,
                     source_code=source_code,

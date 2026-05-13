@@ -81,6 +81,29 @@ class AuctionSourceSyncRun(Base):
     source_state: Mapped[AuctionSourceState] = relationship()
 
 
+class AuctionSourceHttpExchange(Base):
+    __tablename__ = "auction_source_http_exchanges"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_code: Mapped[str] = mapped_column(ForeignKey("auction_source_states.code"), nullable=False, index=True)
+    operation: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    method: Mapped[str] = mapped_column(String(16), nullable=False)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    host: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    duration_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    status_code: Mapped[int | None] = mapped_column(Integer, index=True)
+    ok: Mapped[bool] = mapped_column(Boolean, nullable=False, index=True)
+    request_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    response_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_type: Mapped[str | None] = mapped_column(String(128), index=True)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    source_state: Mapped[AuctionSourceState] = relationship()
+
+
 class AuctionLotRecord(Base):
     __tablename__ = "auction_lot_records"
     __table_args__ = (
