@@ -24,6 +24,7 @@ import {
   type DataGridColumnHistogram,
   type DataGridDataSource,
   type DataGridFilterSnapshot,
+  type DataGridSetStateOptions,
   type DataGridSortState,
   type DataGridDataSourcePushListener,
   type DataSourceBackedRowModel,
@@ -831,7 +832,6 @@ let rowUpdateFrame: number | null = null
 let deferredLotsReloadTimer: ReturnType<typeof window.setTimeout> | null = null
 let deferredLotsReloadShouldResetViewport = false
 let lastLotsReloadStartedAt = 0
-let lastGridServerQuerySignature = ''
 let catalogPullRequestSeq = 0
 let catalogSoftReloadSeq = 0
 let catalogSoftRefreshAbortController: AbortController | null = null
@@ -1583,6 +1583,12 @@ const gridStatePersistence = {
   includeViewportPosition: true,
   restoreOnReady: true,
   debounceMs: 300,
+  setOptions: {
+    dataSource: {
+      atomic: true,
+      resetViewportRange: { start: 0, end: SERVER_ROW_MODEL_INITIAL_FETCH_SIZE - 1 },
+    },
+  } satisfies DataGridSetStateOptions,
 }
 
 const presetOptions = computed(() => [
@@ -2267,18 +2273,6 @@ function sanitizeGridSavedView<TRow extends Record<string, unknown>>(
   }
 }
 
-function buildGridServerQuerySignature<TRow extends Record<string, unknown>>(savedView: DataGridSavedViewSnapshot<TRow>) {
-  const rowSnapshot = savedView.state.rows.snapshot
-  return JSON.stringify({
-    sortModel: rowSnapshot.sortModel ?? [],
-    filterModel: rowSnapshot.filterModel ?? null,
-    groupBy: rowSnapshot.groupBy ?? null,
-    pivotModel: rowSnapshot.pivotModel ?? null,
-    aggregationModel: savedView.state.rows.aggregationModel ?? null,
-    groupExpansion: rowSnapshot.groupExpansion ?? null,
-  })
-}
-
 function resolveViewportRangeSize(range?: { start: number; end: number } | null) {
   return range && Number.isFinite(range.start) && Number.isFinite(range.end) ? Math.trunc(range.end - range.start + 1) : 0
 }
@@ -2316,63 +2310,15 @@ function expandCollapsedCatalogServerViewport() {
   return ensureCatalogServerViewport()
 }
 
-function resetCatalogServerViewportOnQueryChange<TRow extends Record<string, unknown>>(
-  savedView: DataGridSavedViewSnapshot<TRow>,
-  options: { force?: boolean; onlyWhenCollapsed?: boolean } = {},
-) {
-  const nextSignature = buildGridServerQuerySignature(savedView)
-  if (!options.force && nextSignature === lastGridServerQuerySignature) return
-
-  lastGridServerQuerySignature = nextSignature
-  if (options.onlyWhenCollapsed && resolveViewportRangeSize(catalogRowModel.value?.getSnapshot().viewportRange) > 1) return
-  const targetRange = buildCatalogServerViewportRange(savedView.state.rows.snapshot.viewportRange)
-  const viewportChanged = ensureCatalogServerViewport(savedView.state.rows.snapshot.viewportRange)
-  const appliedSize = resolveViewportRangeSize(catalogRowModel.value?.getSnapshot().viewportRange)
-  if (!viewportChanged || appliedSize < resolveViewportRangeSize(targetRange)) {
-    void softRefreshCatalogRows({
-      dimViewport: true,
-      range: targetRange,
-      expandViewportAfter: true,
-      sortModel: savedView.state.rows.snapshot.sortModel,
-      filterModel: savedView.state.rows.snapshot.filterModel ?? null,
-    })
-  }
-}
-
-function hasSavedViewServerQueryState<TRow extends Record<string, unknown>>(savedView: DataGridSavedViewSnapshot<TRow>) {
-  const rowSnapshot = savedView.state.rows.snapshot
-  return (
-    rowSnapshot.sortModel.length > 0 ||
-    hasGridFilterModel(rowSnapshot.filterModel) ||
-    Boolean(rowSnapshot.groupBy?.fields?.length) ||
-    Boolean(rowSnapshot.pivotModel?.rows?.length || rowSnapshot.pivotModel?.columns?.length || rowSnapshot.pivotModel?.values?.length) ||
-    Boolean(savedView.state.rows.aggregationModel) ||
-    Boolean(rowSnapshot.groupExpansion?.toggledGroupKeys?.length)
-  )
-}
-
-function applyGridSavedViewWithoutIntermediatePulls(
-  savedView: DataGridSavedViewSnapshot<GridLotRow & Record<string, unknown>>,
-  options: { forceViewportReset?: boolean } = {},
-) {
+function applyGridSavedView(savedView: DataGridSavedViewSnapshot<GridLotRow & Record<string, unknown>>) {
   if (!gridRef.value) return false
 
-  const rowModel = catalogRowModel.value
-  const paused = rowModel?.pauseBackpressure() ?? false
-  try {
-    const applied = gridRef.value.applySavedView(savedView, { applyViewport: false })
-    resetCatalogServerViewportOnQueryChange(savedView, { force: options.forceViewportReset })
-    return applied
-  } finally {
-    void nextTick().then(() => {
-      window.requestAnimationFrame(() => {
-        if (paused) {
-          rowModel?.resumeBackpressure()
-          void rowModel?.flushBackpressure()
-        }
-      })
-    })
-  }
+  return gridRef.value.applySavedView(savedView, {
+    dataSource: {
+      atomic: true,
+      resetViewportRange: buildCatalogServerViewportRange(savedView.state.rows.snapshot.viewportRange),
+    },
+  })
 }
 
 function persistGridColumnWidths(widths: Readonly<Record<string, number | null>> | null) {
@@ -2384,7 +2330,7 @@ function writeGridSavedView(view: unknown | null) {
   const migratedView = view as NonNullable<ReturnType<NonNullable<typeof gridRef.value>['getSavedView']>>
   const stableView = sanitizeGridSavedView(migratedView)
   setGridColumnWidths(stableView.state.columns.widths)
-  applyGridSavedViewWithoutIntermediatePulls(stableView, { forceViewportReset: true })
+  applyGridSavedView(stableView)
   scheduleGridSummaryRefresh()
 }
 
@@ -2945,7 +2891,6 @@ function resetCatalogRowModel() {
     highRatingCount: 0,
   }
   catalogGridHasLoadedOnce.value = false
-  lastGridServerQuerySignature = ''
   catalogRowModel.value = createCatalogRowModel()
 }
 
