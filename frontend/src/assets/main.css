@@ -702,7 +702,10 @@ h2 {
 .app-dialog {
   width: min(100%, 460px);
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 0;
+  max-height: min(calc(var(--app-viewport-height, 100dvh) - 40px), 860px);
+  overflow: hidden;
   border: 1px solid var(--color-border);
   border-radius: 16px;
   background: var(--color-surface);
@@ -729,6 +732,7 @@ h2 {
 .app-dialog__body {
   display: grid;
   gap: 14px;
+  min-height: 0;
   padding: 18px;
 }
 
@@ -2231,6 +2235,11 @@ input[type='range'] {
 
   .app-dialog-layer {
     padding: 12px;
+    align-items: stretch;
+  }
+
+  .app-dialog {
+    max-height: calc(var(--app-viewport-height, 100dvh) - 24px);
   }
 
   .app-dialog--wide {

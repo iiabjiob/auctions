@@ -5576,7 +5576,7 @@ onUnmounted(() => {
               </button>
             </header>
 
-            <div class="app-dialog__body">
+            <div class="app-dialog__body app-dialog__body--scroll">
               <p class="app-dialog__text">{{ presetDialogDescription }}</p>
 
               <label v-if="presetDialogMode !== 'delete'" class="app-dialog__field">
@@ -5643,7 +5643,7 @@ onUnmounted(() => {
               </button>
             </header>
 
-            <div class="app-dialog__body">
+            <div class="app-dialog__body app-dialog__body--scroll">
               <p class="app-dialog__text">
                 Профиль интересов управляет тем, какие рейтинговые лоты попадут в персональные Telegram-уведомления.
                 Срез таблицы остается только UI-фильтром.
