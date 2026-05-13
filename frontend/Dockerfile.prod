@@ -12,6 +12,7 @@ COPY frontend/.npmrc* ./
 RUN pnpm install --frozen-lockfile
 
 COPY frontend/ ./
+COPY docs/how-it-works.md /docs/how-it-works.md
 RUN pnpm build-only
 
 FROM nginx:1.27-alpine
