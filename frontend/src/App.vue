@@ -13,11 +13,11 @@ import {
 } from '@affino/menu-vue'
 import {
   DataGrid,
+  defineDataGridColumnMenu,
+  defineDataGridColumns,
   type DataGridAppColumnFilterOptions,
-  type DataGridAppColumnInput,
   type DataGridAppFilterValueNormalizationContext,
   type DataGridCellStyleResolver,
-  type DataGridColumnMenuProp,
   type DataGridExposed,
   type DataGridFocusAnchor,
   type DataGridSavedViewSnapshot,
@@ -1014,7 +1014,7 @@ const percentPredicateFilter = {
   normalizeValue: normalizePercentFilterValue,
 } satisfies DataGridAppColumnFilterOptions
 
-const typedColumns: DataGridAppColumnInput<GridLotRow>[] = [
+const columns = defineDataGridColumns<GridLotRow>()([
   {
     key: 'ratingScore',
     label: 'Рейтинг',
@@ -1483,10 +1483,9 @@ const typedColumns: DataGridAppColumnInput<GridLotRow>[] = [
           )
         : '',
   },
-]
+])
 
-const columns = typedColumns as unknown as DataGridAppColumnInput[]
-const columnMenuOptions = {
+const columnMenuOptions = defineDataGridColumnMenu({
   trigger: 'button+contextmenu',
   items: ['sort', 'group', 'pin', 'filter'],
   labels: {
@@ -1514,11 +1513,11 @@ const columnMenuOptions = {
     cancelFilter: { label: 'Отмена' },
   },
   columns: Object.fromEntries(
-    typedColumns
-      .filter((column) => column.filter?.valueSet === false)
+    columns
+      .filter((column) => 'filter' in column && column.filter?.valueSet === false)
       .map((column) => [String(column.key), { hide: ['filter'] }]),
   ),
-} as unknown as DataGridColumnMenuProp
+})
 
 function resolveClientGridRowId(row: Pick<GridLotRow, 'id'>) {
   return row.id
