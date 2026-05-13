@@ -23,6 +23,11 @@ const router = createRouter({
       name: 'tenders',
       component: EmptyRouteView,
     },
+    {
+      path: '/help',
+      name: 'help',
+      component: EmptyRouteView,
+    },
   ],
 })
 

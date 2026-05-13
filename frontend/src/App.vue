@@ -69,6 +69,7 @@ import { useAuthStore } from './stores/auth'
 import { workspaceDataGridTheme } from './theme/dataGridTheme'
 import type { ActionRecommendation, DecisionLevel, LotDecisionReport } from './types/decisionReport'
 import type { LotScoringProfilePayload, UserInterestProfile } from './types/userInterestProfiles'
+import howItWorksMarkdown from '../../docs/how-it-works.md?raw'
 
 type ApiColumn = {
   key: string
@@ -1623,8 +1624,15 @@ const presetOptions = computed(() => [
     value: preset.id,
   })),
 ])
-const activeModule = computed(() => (route.name === 'tenders' ? 'tenders' : 'auctions'))
+const activeModule = computed(() => {
+  if (route.name === 'tenders') return 'tenders'
+  if (route.name === 'help') return 'help'
+  return 'auctions'
+})
 const isAuctionsModule = computed(() => activeModule.value === 'auctions')
+const isTendersModule = computed(() => activeModule.value === 'tenders')
+const isHelpModule = computed(() => activeModule.value === 'help')
+const helpDocumentHtml = computed(() => renderHelpMarkdown(howItWorksMarkdown))
 const currentUserInitials = computed(() => {
   const tokens = currentUser.value?.full_name
     ?.split(/\s+/)
@@ -1638,6 +1646,86 @@ const currentUserInitials = computed(() => {
     .map((token) => token.charAt(0).toUpperCase())
     .join('')
 })
+
+function renderHelpMarkdown(markdown: string): string {
+  const html: string[] = []
+  let listOpen = false
+  let blockquoteOpen = false
+
+  const closeList = () => {
+    if (!listOpen) return
+    html.push('</ul>')
+    listOpen = false
+  }
+  const closeBlockquote = () => {
+    if (!blockquoteOpen) return
+    html.push('</blockquote>')
+    blockquoteOpen = false
+  }
+  const closeBlocks = () => {
+    closeList()
+    closeBlockquote()
+  }
+
+  for (const rawLine of markdown.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line) {
+      closeBlocks()
+      continue
+    }
+
+    const heading = /^(#{1,4})\s+(.+)$/.exec(line)
+    if (heading) {
+      closeBlocks()
+      const marker = heading[1] ?? ''
+      const title = heading[2] ?? ''
+      const level = marker.length
+      html.push(`<h${level}>${renderInlineMarkdown(title)}</h${level}>`)
+      continue
+    }
+
+    const listItem = /^-\s+(.+)$/.exec(line)
+    if (listItem) {
+      closeBlockquote()
+      if (!listOpen) {
+        html.push('<ul>')
+        listOpen = true
+      }
+      html.push(`<li>${renderInlineMarkdown(listItem[1] ?? '')}</li>`)
+      continue
+    }
+
+    const quote = /^>\s?(.+)$/.exec(line)
+    if (quote) {
+      closeList()
+      if (!blockquoteOpen) {
+        html.push('<blockquote>')
+        blockquoteOpen = true
+      }
+      html.push(`<p>${renderInlineMarkdown(quote[1] ?? '')}</p>`)
+      continue
+    }
+
+    closeBlocks()
+    html.push(`<p>${renderInlineMarkdown(line)}</p>`)
+  }
+
+  closeBlocks()
+  return html.join('')
+}
+
+function renderInlineMarkdown(value: string): string {
+  return escapeHtml(value).replace(/`([^`]+)`/g, '<code>$1</code>')
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
 const selectedPreset = computed(() => presets.value.find((preset) => preset.id === selectedPresetId.value) ?? null)
 const presetsMenuRef = ref<InstanceType<typeof UiMenu> | null>(null)
 const accountMenuRef = ref<InstanceType<typeof UiMenu> | null>(null)
@@ -4821,9 +4909,9 @@ onUnmounted(() => {
         </RouterLink>
         <RouterLink
           class="app-rail__item"
-          :class="{ 'app-rail__item--active': !isAuctionsModule }"
+          :class="{ 'app-rail__item--active': isTendersModule }"
           to="/tenders"
-          :aria-current="!isAuctionsModule ? 'page' : undefined"
+          :aria-current="isTendersModule ? 'page' : undefined"
         >
           <span class="app-rail__item-icon" aria-hidden="true">T</span>
           <span class="app-rail__item-label">Тендеры</span>
@@ -4880,6 +4968,16 @@ onUnmounted(() => {
       </div>
 
       <div class="app-rail__cluster app-rail__cluster--bottom">
+        <RouterLink
+          class="app-rail__item"
+          :class="{ 'app-rail__item--active': isHelpModule }"
+          to="/help"
+          :aria-current="isHelpModule ? 'page' : undefined"
+        >
+          <span class="app-rail__item-icon" aria-hidden="true">?</span>
+          <span class="app-rail__item-label">Помощь</span>
+        </RouterLink>
+
         <UiMenu ref="accountMenuRef" placement="right" align="end" :gutter="10">
           <UiMenuTrigger as-child>
             <button
@@ -5399,6 +5497,28 @@ onUnmounted(() => {
           </aside>
         </section>
       </template>
+
+      <section v-else-if="isHelpModule" class="help-workspace" aria-label="Помощь">
+        <header class="auction-toolbar help-toolbar">
+          <div class="toolbar-title">
+            <button
+              class="app-mobile-menu-button"
+              type="button"
+              aria-label="Открыть меню"
+              :aria-expanded="mobileRailOpen"
+              @click="toggleMobileRail"
+            >
+              <span></span>
+              <span></span>
+              <span></span>
+            </button>
+            <span class="eyebrow">Справка</span>
+            <h1>Как работает система</h1>
+          </div>
+        </header>
+
+        <article class="help-document" v-html="helpDocumentHtml"></article>
+      </section>
 
       <section v-else class="workspace-placeholder" aria-label="Тендерный модуль">
         <article class="workspace-placeholder__card">
