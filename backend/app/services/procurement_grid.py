@@ -238,6 +238,7 @@ def build_procurement_grid_row(record: ProcurementLotRecord) -> dict[str, Any]:
         "noticeUrl": record.notice_url,
         "documentsUrl": record.documents_url,
         "specificationUrl": record.specification_url,
+        "certificateRequirements": record.certificate_requirements,
         "documentationPresent": record.documentation_present,
         "isNew": record.is_new,
         "category": record.category,

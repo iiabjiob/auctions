@@ -92,3 +92,25 @@ class ProcurementLotsGridHistogramResponse(BaseModel):
 
     column_id: str = Field(alias="columnId")
     entries: list[LotDatagridHistogramEntry]
+
+
+class ProcurementLotsGridCellEdit(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    row_id: str = Field(alias="rowId")
+    column_id: str = Field(alias="columnId")
+    value: Any = None
+
+
+class ProcurementLotsGridEditRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    base_version: int = Field(alias="baseVersion", ge=0)
+    edits: list[ProcurementLotsGridCellEdit] = Field(min_length=1)
+
+
+class ProcurementLotsGridEditResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    dataset_version: int = Field(alias="datasetVersion")
+    updated_rows: list[ProcurementLotsGridPullRow] = Field(alias="updatedRows")
