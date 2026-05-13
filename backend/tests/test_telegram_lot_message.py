@@ -60,27 +60,28 @@ class TelegramLotMessageTests(unittest.TestCase):
     def test_message_contains_required_fields(self) -> None:
         message = render_telegram_lot_message(make_report(), link="https://app.test/lots/1")
 
-        self.assertIn("<b>Tracked excavator</b>", message.text)
+        self.assertEqual(message.parse_mode, "MarkdownV2")
+        self.assertIn("*Tracked excavator*", message.text)
         self.assertIn("Регион: Moscow Oblast", message.text)
         self.assertIn("Цена: 1000000 RUB", message.text)
-        self.assertIn("Рейтинг: 92 (high)", message.text)
+        self.assertIn("Рейтинг: 92 \\(high\\)", message.text)
         self.assertIn("Решение: Кандидат на торги / Готовить заявку", message.text)
-        self.assertIn("Макс. цена: 1680000", message.text)
-        self.assertIn("Дедлайн: 10.05.2026 18:00", message.text)
+        self.assertIn("Макс\\. цена: 1680000", message.text)
+        self.assertIn("Дедлайн: 10\\.05\\.2026 18:00", message.text)
         self.assertIn("Причины:", message.text)
-        self.assertIn("- High score", message.text)
+        self.assertIn("\\- High score", message.text)
         self.assertIn("Риски:", message.text)
-        self.assertIn("- Review documents", message.text)
-        self.assertIn("Ссылка: https://app.test/lots/1", message.text)
+        self.assertIn("\\- Review documents", message.text)
+        self.assertIn("Ссылка: https://app\\.test/lots/1", message.text)
         self.assertEqual(message.message_length, len(message.text))
 
-    def test_message_escapes_html(self) -> None:
+    def test_message_escapes_markdown_v2(self) -> None:
         message = render_telegram_lot_message(
             make_report(title="Loader <special>", reasons=(LotDecisionReason(code="x", message="A < B", source=None),))
         )
 
-        self.assertIn("<b>Loader &lt;special&gt;</b>", message.text)
-        self.assertIn("- A &lt; B", message.text)
+        self.assertIn("*Loader <special\\>*", message.text)
+        self.assertIn("\\- A < B", message.text)
 
     def test_message_length_is_bounded(self) -> None:
         long_reason = "Long reason " * 1000
@@ -90,7 +91,7 @@ class TelegramLotMessageTests(unittest.TestCase):
         )
 
         self.assertLessEqual(message.message_length, 500)
-        self.assertTrue(message.text.endswith("..."))
+        self.assertTrue(message.text.endswith("\\.\\.\\."))
 
     def test_default_length_limit_is_telegram_safe(self) -> None:
         long_reason = "Long reason " * 1000

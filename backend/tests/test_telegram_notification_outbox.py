@@ -195,6 +195,7 @@ class TelegramNotificationOutboxTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(entry.telegram_chat_id)
         self.assertIsNone(entry.interest_profile_id)
         self.assertEqual(entry.cooldown_until, GENERATED_AT + timedelta(hours=1))
+        self.assertEqual(entry.message_payload["parse_mode"], "MarkdownV2")
         self.assertIn("Tracked excavator", entry.message_payload["text"])
 
     def test_user_scoped_fields_are_optional_for_backward_compatibility(self) -> None:

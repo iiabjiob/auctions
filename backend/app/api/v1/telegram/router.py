@@ -61,20 +61,23 @@ async def delete_telegram_binding(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.post("/webhook", response_model=TelegramWebhookResult, include_in_schema=False)
+@router.post("/webhook", include_in_schema=False)
 async def handle_telegram_webhook(
     update: dict[str, Any],
     x_telegram_bot_api_secret_token: str | None = Header(default=None),
     session: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
-) -> TelegramWebhookResult:
+) -> dict[str, Any] | TelegramWebhookResult:
     if settings.telegram_webhook_secret is None:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="telegram_webhook_secret is not configured")
     if x_telegram_bot_api_secret_token != settings.telegram_webhook_secret:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Telegram webhook secret")
-    return await telegram_webhook_service.handle_update(
+    result = await telegram_webhook_service.handle_update(
         session,
         update,
         bot_token=settings.telegram_bot_token,
         channel_url=settings.telegram_channel_url,
     )
+    if result.response_payload is not None:
+        return result.response_payload
+    return result

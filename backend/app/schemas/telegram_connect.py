@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from datetime import datetime
 
 from pydantic import BaseModel
@@ -13,3 +15,4 @@ class TelegramConnectTokenResponse(BaseModel):
 class TelegramWebhookResult(BaseModel):
     ok: bool = True
     action: str
+    response_payload: dict[str, Any] | None = None

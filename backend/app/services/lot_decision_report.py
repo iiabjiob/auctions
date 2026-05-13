@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from html import escape
+import re
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -224,11 +224,11 @@ def render_telegram_lot_message(
 ) -> TelegramLotMessage:
     message_link = link or _default_lot_link(report)
     lines = [
-        f"<b>{_html(report.title or 'Отчет по лоту')}</b>",
+        f"*{_markdown_v2(report.title or 'Отчет по лоту')}*",
         _field_line("Регион", report.region),
         _field_line("Цена", report.current_price),
-        f"Рейтинг: {report.rating_score} ({_html(report.rating_level)})",
-        f"Решение: {_html(_decision_level_label(report.decision_level))} / {_html(_recommendation_label(report.recommendation))}",
+        f"Рейтинг: {_markdown_v2(report.rating_score)} \\({_markdown_v2(report.rating_level)}\\)",
+        f"Решение: {_markdown_v2(_decision_level_label(report.decision_level))} / {_markdown_v2(_recommendation_label(report.recommendation))}",
         _field_line("Макс. цена", _format_decimal(report.economics.max_buy_price) if report.economics else None),
         _field_line("Дедлайн", report.deadline),
     ]
@@ -239,7 +239,7 @@ def render_telegram_lot_message(
     if risk_lines:
         lines.extend(risk_lines)
     if message_link:
-        lines.append(f"Ссылка: {_html(message_link)}")
+        lines.append(f"Ссылка: {_markdown_v2(message_link)}")
 
     text = _trim_message("\n".join(line for line in lines if line), max_length=max_length)
     return TelegramLotMessage(
@@ -1157,15 +1157,15 @@ def _field_line(label: str, value: object | None) -> str | None:
     text = str(value).strip()
     if not text:
         return None
-    return f"{label}: {_html(text)}"
+    return f"{_markdown_v2(label)}: {_markdown_v2(text)}"
 
 
 def _message_items(label: str, values: list[str], limit: int) -> list[str]:
     items = [value.strip() for value in values if isinstance(value, str) and value.strip()]
     if not items:
         return []
-    lines = [f"{label}:"]
-    lines.extend(f"- {_html(value)}" for value in items[:limit])
+    lines = [f"{_markdown_v2(label)}:"]
+    lines.extend(f"\\- {_markdown_v2(value)}" for value in items[:limit])
     return lines
 
 
@@ -1183,9 +1183,10 @@ def _default_lot_link(report: LotDecisionReport) -> str:
 def _trim_message(text: str, *, max_length: int) -> str:
     if len(text) <= max_length:
         return text
-    marker = "\n..."
+    marker = "\n\\.\\.\\."
     return text[: max(0, max_length - len(marker))].rstrip() + marker
 
 
-def _html(value: object) -> str:
-    return escape(str(value), quote=False)
+def _markdown_v2(value: object) -> str:
+    text = str(value)
+    return re.sub(r"([_*\[\]()~`>#+\-=|{}.!\\])", r"\\\1", text)

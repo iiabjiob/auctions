@@ -167,7 +167,7 @@ async def send_pending_telegram_notifications(
                 bot_token=bot_token,
                 chat_id=target_chat_id,
                 text=str(message_payload.get("text") or ""),
-                parse_mode=str(message_payload.get("parse_mode") or "HTML"),
+                parse_mode=str(message_payload.get("parse_mode") or "MarkdownV2"),
             )
         except TelegramSenderError as error:
             retryable = error.retryable

@@ -86,7 +86,7 @@ class TelegramLotMessage(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     text: str
-    parse_mode: Literal["HTML"] = "HTML"
+    parse_mode: Literal["MarkdownV2"] = "MarkdownV2"
     lot_record_id: int
     source: str
     auction_id: str
