@@ -17,6 +17,7 @@ import {
   type DataGridCellStyleResolver,
   type DataGridColumnMenuProp,
   type DataGridExposed,
+  type DataGridFocusAnchor,
   type DataGridSavedViewSnapshot,
 } from '@affino/datagrid-vue-app'
 import {
@@ -568,17 +569,6 @@ type RatingBreakdown = {
 }
 type GridApi = NonNullable<ReturnType<DataGridExposed<GridLotRow>['getApi']>>
 type GridSelectionSnapshot = ReturnType<GridApi['selection']['getSnapshot']>
-type GridSelectionPoint = NonNullable<NonNullable<GridSelectionSnapshot>['activeCell']>
-
-type GridFocusAnchor = {
-  selectionSnapshot: GridSelectionSnapshot
-  activeCell: GridSelectionPoint | null
-  logicalRowId: string | null
-  rowId: string | number | null
-  columnIndex: number | null
-  columnKey: string | null
-  element: HTMLElement | null
-}
 
 type CatalogCommitEditsRequest = {
   edits: readonly {
@@ -823,7 +813,7 @@ let resizeStartWidth = 0
 let detailRequestId = 0
 let decisionReportRequestId = 0
 let detailAbortController: AbortController | null = null
-let detailGridFocusAnchor: GridFocusAnchor | null = null
+let detailGridFocusAnchor: DataGridFocusAnchor | null = null
 let detailLiveRefreshTimeout: ReturnType<typeof window.setTimeout> | null = null
 const queuedRowUpdates = new Map<string, ApiLotRow>()
 const catalogDataSourceListeners = new Set<DataGridDataSourcePushListener<GridLotRow>>()
@@ -4202,168 +4192,30 @@ function normalizeDraftNumber(value: string | number | null | undefined) {
   return parsed === null ? '' : String(parsed)
 }
 
-function getGridRootElement() {
-  return gridSurfaceRef.value?.querySelector<HTMLElement>('.affino-datagrid-app-root') ?? null
-}
-
-function escapeGridSelectorValue(value: string) {
-  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
-    return CSS.escape(value)
-  }
-  return value.replace(/["\\]/g, '\\$&')
-}
-
 function getActiveGridCellFromSnapshot(selectionSnapshot: GridSelectionSnapshot) {
   const activeRange = selectionSnapshot?.ranges[selectionSnapshot.activeRangeIndex] ?? selectionSnapshot?.ranges[0]
   return selectionSnapshot?.activeCell ?? activeRange?.focus ?? activeRange?.anchor ?? null
-}
-
-function resolveLogicalGridRowId(runtimeRowId: string | number | null) {
-  if (runtimeRowId === null) return null
-  const runtimeKey = String(runtimeRowId)
-  return gridRowsById.value.has(runtimeKey) ? runtimeKey : null
-}
-
-function resolveCurrentRuntimeGridRowId(logicalRowId: string | null) {
-  if (!logicalRowId) return null
-  const row = gridRowsById.value.get(logicalRowId)
-  return row ? resolveClientGridRowId(row) : null
-}
-
-function captureGridFocusAnchor(fallbackLogicalRowId: string | null = null, allowSelectionFallback = false) {
-  const api = gridRef.value?.getApi()
-  const selectionSnapshot = api?.selection.hasSupport() ? api.selection.getSnapshot() : null
-  const activeCell = getActiveGridCellFromSnapshot(selectionSnapshot)
-  const gridRoot = getGridRootElement()
-  const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : null
-  const gridElement = activeElement && gridRoot?.contains(activeElement) ? activeElement : null
-  const cellElement = gridElement?.closest<HTMLElement>('.grid-cell[data-row-id]') ?? null
-  const shouldUseSelectionFallback = allowSelectionFallback || activeElement === document.body
-
-  if (!gridElement && !cellElement && !shouldUseSelectionFallback) return null
-
-  const runtimeRowId = normalizeGridRowId(activeCell?.rowId ?? cellElement?.dataset.rowId ?? null)
-  const logicalRowId = fallbackLogicalRowId ?? resolveLogicalGridRowId(runtimeRowId)
-
-  return {
-    selectionSnapshot,
-    activeCell,
-    logicalRowId,
-    rowId: runtimeRowId ?? resolveCurrentRuntimeGridRowId(logicalRowId),
-    columnIndex: activeCell?.colIndex ?? parseOptionalInteger(cellElement?.dataset.columnIndex),
-    columnKey: cellElement?.dataset.columnKey ?? null,
-    element: cellElement ?? gridElement,
-  }
-}
-
-function captureDetailGridFocusAnchor(row: GridLotRow) {
-  detailGridFocusAnchor = captureGridFocusAnchor(row.id, true)
-}
-
-function normalizeGridRowId(value: unknown): string | number | null {
-  if (typeof value === 'string' || typeof value === 'number') return value
-  if (value === null || value === undefined) return null
-  return String(value)
-}
-
-function parseOptionalInteger(value: string | undefined) {
-  if (!value) return null
-  const parsed = Number.parseInt(value, 10)
-  return Number.isFinite(parsed) ? parsed : null
 }
 
 function updateMobileViewportState() {
   isMobileViewport.value = window.matchMedia('(max-width: 760px)').matches
 }
 
-function remapGridSelectionSnapshot(anchor: GridFocusAnchor) {
-  const snapshot = anchor.selectionSnapshot
-  const nextRowId = resolveCurrentRuntimeGridRowId(anchor.logicalRowId)
-  if (!snapshot || !nextRowId || nextRowId === anchor.rowId) return snapshot
-
-  const replacePoint = (point: GridSelectionPoint): GridSelectionPoint =>
-    point.rowId === anchor.rowId ? { ...point, rowId: nextRowId } : point
-
-  return {
-    ...snapshot,
-    activeCell: snapshot.activeCell ? replacePoint(snapshot.activeCell) : snapshot.activeCell,
-    ranges: snapshot.ranges.map((range) => ({
-      ...range,
-      anchor: replacePoint(range.anchor),
-      focus: replacePoint(range.focus),
-      startRowId: range.startRowId === anchor.rowId ? nextRowId : range.startRowId,
-      endRowId: range.endRowId === anchor.rowId ? nextRowId : range.endRowId,
-    })),
-  }
-}
-
-function findGridFocusTarget(anchor: GridFocusAnchor, gridRoot: HTMLElement) {
-  if (anchor.element?.isConnected && gridRoot.contains(anchor.element)) {
-    return anchor.element
-  }
-
-  const currentRuntimeRowId = resolveCurrentRuntimeGridRowId(anchor.logicalRowId)
-  const rowId = currentRuntimeRowId ?? (anchor.rowId === null ? null : String(anchor.rowId))
-  const rowSelector = rowId ? `[data-row-id="${escapeGridSelectorValue(rowId)}"]` : ''
-  const selectors: string[] = []
-
-  if (rowSelector && anchor.columnKey) {
-    selectors.push(`.grid-cell${rowSelector}[data-column-key="${escapeGridSelectorValue(anchor.columnKey)}"]`)
-  }
-  if (rowSelector && anchor.columnIndex !== null) {
-    selectors.push(`.grid-cell${rowSelector}[data-column-index="${anchor.columnIndex}"]`)
-  }
-  if (rowSelector) {
-    selectors.push(`.grid-cell${rowSelector}`)
-  }
-  selectors.push('.grid-cell[tabindex="0"]')
-
-  for (const selector of selectors) {
-    const element = gridRoot.querySelector<HTMLElement>(selector)
-    if (element) return element
-  }
-
-  return null
-}
-
-function focusGridElement(element: HTMLElement) {
-  if (!element.hasAttribute('tabindex')) {
-    element.tabIndex = -1
-  }
-  element.focus({ preventScroll: true })
-}
-
-async function restoreGridFocus(anchor: GridFocusAnchor | null) {
-  if (!anchor) return
-
-  await nextTick()
-  window.requestAnimationFrame(() => {
-    const api = gridRef.value?.getApi()
-    const selectionSnapshot = remapGridSelectionSnapshot(anchor)
-    if (selectionSnapshot && api?.selection.hasSupport()) {
-      try {
-        api.selection.setSnapshot(selectionSnapshot)
-      } catch {
-        // The row may have left the current filtered/sorted viewport before focus is restored.
-      }
-    }
-
-    window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(() => {
-        const gridRoot = getGridRootElement()
-        if (!gridRoot) return
-
-        const target = findGridFocusTarget(anchor, gridRoot) ?? gridRoot
-        focusGridElement(target)
-      })
-    })
-  })
-}
-
 async function restoreDetailGridFocus() {
   const anchor = detailGridFocusAnchor
   detailGridFocusAnchor = null
-  await restoreGridFocus(anchor)
+  if (!anchor) return
+
+  await nextTick()
+  try {
+    await gridRef.value?.restoreFocusAnchor(anchor, {
+      preventScroll: true,
+      scrollIntoView: false,
+      retries: 3,
+    })
+  } catch {
+    // The row may have left the current filtered/sorted viewport before focus is restored.
+  }
 }
 
 type MobileInlineEditTarget = {
@@ -4401,12 +4253,16 @@ function openMobileInlineEdit() {
   const target = mobileInlineEditTarget.value
   if (!target) return
 
-  const gridRoot = getGridRootElement()
+  const gridRoot = gridSurfaceRef.value?.querySelector<HTMLElement>('.affino-datagrid-app-root') ?? null
   if (!gridRoot) return
 
-  const rowSelector = `[data-row-id="${escapeGridSelectorValue(String(target.rowId))}"]`
+  const escapeSelectorValue = (value: string) =>
+    typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+      ? CSS.escape(value)
+      : value.replace(/["\\]/g, '\\$&')
+  const rowSelector = `[data-row-id="${escapeSelectorValue(String(target.rowId))}"]`
   const selectors = [
-    `.grid-cell${rowSelector}[data-column-key="${escapeGridSelectorValue(target.columnKey)}"]`,
+    `.grid-cell${rowSelector}[data-column-key="${escapeSelectorValue(target.columnKey)}"]`,
     `.grid-cell${rowSelector}[data-column-index="${target.columnIndex}"]`,
     `.grid-cell${rowSelector}`,
     '.grid-cell[tabindex="0"]',
@@ -4590,7 +4446,10 @@ function reanalyzeSelectedLotDetails() {
 async function openLotDetails(row: GridLotRow) {
   const trace = startUiPerfTrace('openLotDetails', { rowId: row.id, lotId: row.lotId })
   const requestId = ++detailRequestId
-  captureDetailGridFocusAnchor(row)
+  detailGridFocusAnchor = gridRef.value?.captureFocusAnchor({
+    includeSelection: true,
+    includeRowSelection: true,
+  }) ?? null
   selectedLot.value = row
   selectedLotDetails.value = null
   selectedAuctionDetails.value = null

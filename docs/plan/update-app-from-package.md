@@ -22,7 +22,7 @@
   - app type-check/build.
   - smoke: apply preset, reload page, apply another preset, verify backend pulls only final query.
 
-  ## [] Slice 2: External Row Updates
+  ## [x] Slice 2: External Row Updates
 
   Контекст:
   В package уже есть explicit API для external row updates:
