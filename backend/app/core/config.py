@@ -75,6 +75,11 @@ class Settings(BaseSettings):
     auction_actuality_sweep_enabled: bool = True
     auction_actuality_sweep_interval_seconds: int = 60 * 15
     auction_actuality_sweep_batch_size: int = 500
+    procurement_sync_enabled: bool = False
+    procurement_sync_run_on_start: bool = False
+    procurement_sync_interval_seconds: int = 60 * 60
+    procurement_sync_interval_jitter_seconds: int = 60 * 10
+    procurement_sync_limit: int = 100
     telegram_bot_token: str | None = None
     telegram_bot_username: str | None = None
     telegram_webhook_secret: str | None = None

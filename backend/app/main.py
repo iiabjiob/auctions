@@ -11,6 +11,7 @@ from app.api.v1.auctions.router import router as auctions_router
 from app.api.v1.filter_presets.router import router as filter_presets_router
 from app.api.v1.telegram.router import router as telegram_router
 from app.api.v1.user_interest_profiles.router import router as user_interest_profiles_router
+from app.api.v1.procurements.router import router as procurements_router
 from app.api.auction_lots_grid_router import router as auction_lots_grid_router
 from app.api.grid_changes_router import router as grid_changes_router
 from app.api.grid_history_router import router as grid_history_router
@@ -107,6 +108,7 @@ app.include_router(filter_presets_router)
 app.include_router(user_interest_profiles_router)
 app.include_router(telegram_router)
 app.include_router(auctions_router)
+app.include_router(procurements_router)
 app.include_router(auction_lots_grid_router)
 app.include_router(grid_changes_router)
 app.include_router(grid_history_router)

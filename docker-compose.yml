@@ -111,6 +111,24 @@ services:
     networks:
       - net
 
+  procurement-sync-worker:
+    build:
+      context: .
+      dockerfile: .devcontainer/Dockerfile
+      tags:
+        - auctions-dev:latest
+    container_name: auctions-procurement-sync-worker-dev
+    working_dir: /workspace/backend
+    command: uv run python -m app.worker.procurement_sync_worker
+    volumes:
+      - .:/workspace
+    env_file:
+      - ./backend/.env.dev
+    depends_on:
+      - db
+    networks:
+      - net
+
   telegram-sender-worker:
     build:
       context: .

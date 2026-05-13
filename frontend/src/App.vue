@@ -97,6 +97,36 @@ type AuctionPipelineSourceSyncStatus = {
   last_sync_error: string | null
 }
 
+type ProcurementAttractiveness = {
+  score: number
+  level: string
+  reasons: string[]
+}
+
+type ProcurementLot = {
+  id: number
+  source: string
+  registry_number: string
+  law: string | null
+  title: string | null
+  status: string | null
+  customer_name: string | null
+  procedure_type: string | null
+  initial_price_value: string | number | null
+  publication_at: string | null
+  application_deadline_at: string | null
+  notice_url: string | null
+  is_new: boolean
+  attractiveness: ProcurementAttractiveness
+}
+
+type ProcurementLotListResponse = {
+  items: ProcurementLot[]
+  total: number
+  page: number
+  page_size: number
+}
+
 type AuctionPipelineHealthResponse = {
   counters: {
     enrichment_requested: number
@@ -738,6 +768,10 @@ const analysisConfigLoading = ref(false)
 const analysisConfigSaving = ref(false)
 const analysisConfigError = ref('')
 const errorMessage = ref('')
+const procurementLots = ref<ProcurementLot[]>([])
+const procurementTotal = ref(0)
+const procurementLoading = ref(false)
+const procurementError = ref('')
 const lastLoadedAt = ref<string | null>(null)
 const backgroundStatus = ref('Ожидаем фоновое обновление')
 const selectedLot = ref<GridLotRow | null>(null)
@@ -3464,6 +3498,21 @@ async function loadAuctionPipelineHealth() {
   }
 }
 
+async function loadProcurementLots() {
+  if (!isAuthenticated.value || procurementLoading.value) return
+  procurementLoading.value = true
+  procurementError.value = ''
+  try {
+    const response = await fetchJson<ProcurementLotListResponse>('/api/v1/procurements/lots?page=1&page_size=100')
+    procurementLots.value = response.items
+    procurementTotal.value = response.total
+  } catch (error) {
+    procurementError.value = error instanceof Error ? error.message : 'Не удалось загрузить закупки'
+  } finally {
+    procurementLoading.value = false
+  }
+}
+
 function formatDecisionLevel(value: DecisionLevel) {
   return {
     ignore: 'Игнорировать',
@@ -4827,6 +4876,7 @@ watch(filters, () => {
 watch(isAuthenticated, (authenticated) => {
   if (authenticated) {
     void loadLots()
+    if (isTendersModule.value) void loadProcurementLots()
     void loadPresets()
     void loadUserInterestProfiles()
     startAuctionEvents()
@@ -4840,9 +4890,14 @@ watch(isAuthenticated, (authenticated) => {
   resetCatalogState()
 })
 
+watch(isTendersModule, (active) => {
+  if (active) void loadProcurementLots()
+})
+
 onMounted(() => {
   if (isAuthenticated.value) {
     void loadLots()
+    if (isTendersModule.value) void loadProcurementLots()
     void loadPresets()
     void loadUserInterestProfiles()
     startAuctionEvents()
@@ -5535,19 +5590,81 @@ onUnmounted(() => {
 
       <SourceDiagnosticsView v-else-if="isDiagnosticsModule" />
 
-      <section v-else class="workspace-placeholder" aria-label="Тендерный модуль">
-        <article class="workspace-placeholder__card">
-          <span class="eyebrow">Тендеры</span>
-          <h2>Следующий модуль приложения</h2>
-          <p>
-            Сейчас рабочая среда сфокусирована на аукционах. Здесь появится отдельный поток,
-            фильтры и карточки для тендеров.
-          </p>
-          <div class="workspace-placeholder__actions">
-            <RouterLink class="primary-button" to="/auctions">Открыть аукционы</RouterLink>
-            <button class="secondary-button" type="button" @click="openAnalysisConfigDialog">Общий конфиг</button>
+      <section v-else class="procurement-workspace" aria-label="Закупки">
+        <header class="auction-toolbar">
+          <div class="toolbar-title">
+            <button
+              class="app-mobile-menu-button"
+              type="button"
+              aria-label="Открыть меню"
+              :aria-expanded="mobileRailOpen"
+              @click="toggleMobileRail"
+            >
+              <span></span>
+              <span></span>
+              <span></span>
+            </button>
+            <span class="eyebrow">ЕИС Закупки</span>
+            <h1>Лоты закупок для отбора</h1>
           </div>
-        </article>
+          <button class="secondary-button" type="button" :disabled="procurementLoading" @click="loadProcurementLots">
+            Обновить
+          </button>
+        </header>
+
+        <section class="summary-strip" aria-label="Сводка закупок">
+          <div class="summary-strip__group">
+            <div>
+              <span>Найдено</span>
+              <strong>{{ procurementTotal }}</strong>
+            </div>
+            <div>
+              <span>На экране</span>
+              <strong>{{ procurementLots.length }}</strong>
+            </div>
+          </div>
+        </section>
+
+        <div v-if="procurementError" class="error-banner">{{ procurementError }}</div>
+        <div v-else-if="procurementLoading" class="detail-muted">Загрузка закупок</div>
+        <div v-else class="procurement-table-wrap">
+          <table class="procurement-table">
+            <thead>
+              <tr>
+                <th>Рейтинг</th>
+                <th>Номер</th>
+                <th>Предмет</th>
+                <th>Цена</th>
+                <th>Статус</th>
+                <th>Заказчик</th>
+                <th>Дедлайн</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="lot in procurementLots" :key="lot.id">
+                <td>
+                  <strong>{{ lot.attractiveness.score }}</strong>
+                  <small>{{ lot.attractiveness.level }}</small>
+                </td>
+                <td>
+                  <a v-if="lot.notice_url" :href="lot.notice_url" target="_blank" rel="noreferrer">
+                    {{ lot.registry_number }}
+                  </a>
+                  <span v-else>{{ lot.registry_number }}</span>
+                  <small>{{ lot.law }}</small>
+                </td>
+                <td>{{ lot.title || 'Без названия' }}</td>
+                <td>{{ formatApiMoney(lot.initial_price_value) || 'Не указана' }}</td>
+                <td>{{ lot.status || 'Неизвестно' }}</td>
+                <td>{{ lot.customer_name || 'Не указан' }}</td>
+                <td>{{ formatDateTime(lot.application_deadline_at) || 'Не указан' }}</td>
+              </tr>
+              <tr v-if="!procurementLots.length">
+                <td colspan="7">Закупки еще не загружены. Запустите sync или дождитесь worker.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </section>
     </section>
 
