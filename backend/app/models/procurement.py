@@ -89,6 +89,8 @@ class ProcurementLotRecord(Base):
     profitability: Mapped[Decimal | None] = mapped_column(Numeric(10, 6), index=True)
     roi: Mapped[Decimal | None] = mapped_column(Numeric(10, 6), index=True)
     cash_gap_peak: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    calculator_inputs: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    calculator_scenarios: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     search_text: Mapped[str | None] = mapped_column(Text)
     normalized_item: Mapped[dict] = mapped_column(JSONB, nullable=False)
     raw_item: Mapped[dict] = mapped_column(JSONB, nullable=False)

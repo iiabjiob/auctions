@@ -97,6 +97,8 @@ class ProcurementLotResponse(BaseModel):
     profitability: Decimal | None
     roi: Decimal | None
     cash_gap_peak: Decimal | None
+    calculator_inputs: dict[str, Any] = Field(default_factory=dict)
+    calculator_scenarios: dict[str, Any] = Field(default_factory=dict)
     first_seen_at: datetime
     last_seen_at: datetime
 

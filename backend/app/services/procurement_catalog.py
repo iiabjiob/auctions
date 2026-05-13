@@ -132,6 +132,8 @@ def procurement_lot_response(record: ProcurementLotRecord) -> ProcurementLotResp
         profitability=record.profitability,
         roi=record.roi,
         cash_gap_peak=record.cash_gap_peak,
+        calculator_inputs=dict(record.calculator_inputs or {}),
+        calculator_scenarios=dict(record.calculator_scenarios or {}),
         first_seen_at=record.first_seen_at,
         last_seen_at=record.last_seen_at,
     )

@@ -265,6 +265,8 @@ def build_procurement_grid_row(record: ProcurementLotRecord) -> dict[str, Any]:
         "profitability": _decimal_json(record.profitability),
         "roi": _decimal_json(record.roi),
         "cashGapPeak": _decimal_json(record.cash_gap_peak),
+        "calculatorInputs": dict(record.calculator_inputs or {}),
+        "calculatorScenarios": dict(record.calculator_scenarios or {}),
         "firstSeenAt": _datetime_json(record.first_seen_at),
         "lastSeenAt": _datetime_json(record.last_seen_at),
     }

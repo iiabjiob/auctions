@@ -18,6 +18,11 @@ from app.schemas.procurement_grid import (
     ProcurementLotsGridPullRow,
 )
 from app.services.grid_state import clear_redo_grid_operations, get_or_create_grid_revision, record_grid_operation
+from app.services.procurement_calculator import (
+    calculator_field_for_column,
+    coerce_calculator_input_value,
+    recalculate_procurement_lot,
+)
 from app.services.procurement_grid import build_procurement_grid_row
 from app.services.procurement_grid_state import (
     DEFAULT_GRID_WORKSPACE_ID,
@@ -40,22 +45,24 @@ class PreparedProcurementGridEdit:
     column_id: str
     field_name: str
     value: Any
+    target: str = "record"
 
 
 DECIMAL_EDIT_FIELDS = {
     "bid_security_amount",
-    "cash_gap_peak",
     "contract_security_amount",
-    "cost_cautious",
-    "cost_realistic",
-    "net_profit",
     "prepayment_percent",
-    "profitability",
     "quantity",
-    "roi",
     "unit_nmck",
 }
 BOOLEAN_EDIT_FIELDS = {"documentation_present"}
+CALCULATION_TRIGGER_RECORD_FIELDS = {
+    "bid_security_amount",
+    "contract_security_amount",
+    "prepayment_percent",
+    "quantity",
+    "unit_nmck",
+}
 TEXT_EDIT_FIELDS = {
     "assignee",
     "certificate_requirements",
@@ -101,18 +108,12 @@ PROCUREMENT_EDIT_COLUMNS = {
     "finalDecision": "final_decision",
     "rejectionReason": "rejection_reason",
     "bidSecurityAmount": "bid_security_amount",
-    "cashGapPeak": "cash_gap_peak",
     "certificateRequirements": "certificate_requirements",
     "contractSecurityAmount": "contract_security_amount",
-    "costCautious": "cost_cautious",
-    "costRealistic": "cost_realistic",
     "documentationPresent": "documentation_present",
-    "netProfit": "net_profit",
     "paymentTerms": "payment_terms",
     "prepaymentPercent": "prepayment_percent",
-    "profitability": "profitability",
     "quantity": "quantity",
-    "roi": "roi",
     "unitNmck": "unit_nmck",
 }
 PROCUREMENT_EDIT_COLUMNS.update({field_name: field_name for field_name in set(PROCUREMENT_EDIT_COLUMNS.values())})
@@ -151,25 +152,41 @@ async def commit_procurement_lot_grid_edits(
 
         stable_row_id = procurement_lot_grid_row_id(record)
         changed_fields_by_row.setdefault(stable_row_id, set())
+        should_recalculate = False
 
         for edit in edits_by_row[requested_row_id]:
             key = (stable_row_id, edit.field_name)
             if key not in undo_values:
+                old_value = (
+                    _calculator_input_value(record, edit.field_name)
+                    if edit.target == "calculator"
+                    else getattr(record, edit.field_name)
+                )
                 undo_values[key] = {
                     "rowId": stable_row_id,
                     "columnId": edit.column_id,
                     "field": edit.field_name,
-                    "value": _json_value(getattr(record, edit.field_name)),
+                    "target": edit.target,
+                    "value": _json_value(old_value),
                 }
-            setattr(record, edit.field_name, edit.value)
+            if edit.target == "calculator":
+                _set_calculator_input_value(record, edit.field_name, edit.value)
+            else:
+                setattr(record, edit.field_name, edit.value)
+            should_recalculate = should_recalculate or (
+                edit.target == "calculator" or edit.field_name in CALCULATION_TRIGGER_RECORD_FIELDS
+            )
             redo_values[key] = {
                 "rowId": stable_row_id,
                 "columnId": edit.column_id,
                 "field": edit.field_name,
+                "target": edit.target,
                 "value": _json_value(edit.value),
             }
             changed_fields_by_row[stable_row_id].add(edit.field_name)
 
+        if should_recalculate:
+            recalculate_procurement_lot(record)
         _sync_procurement_lot_search_text(None, None, record)
         updated_records[stable_row_id] = record
 
@@ -239,6 +256,15 @@ def _parse_row_id(row_id: str) -> tuple[str, str]:
 
 
 def _prepare_edit(edit: ProcurementLotsGridCellEdit) -> PreparedProcurementGridEdit:
+    calculator_field = calculator_field_for_column(edit.column_id)
+    if calculator_field is not None:
+        return PreparedProcurementGridEdit(
+            row_id=edit.row_id,
+            column_id=edit.column_id,
+            field_name=calculator_field,
+            value=coerce_calculator_input_value(calculator_field, edit.value),
+            target="calculator",
+        )
     field_name = _procurement_field_for_column(edit.column_id)
     return PreparedProcurementGridEdit(
         row_id=edit.row_id,
@@ -246,6 +272,19 @@ def _prepare_edit(edit: ProcurementLotsGridCellEdit) -> PreparedProcurementGridE
         field_name=field_name,
         value=_coerce_value(field_name, edit.value),
     )
+
+
+def _calculator_input_value(record: ProcurementLotRecord, field_name: str) -> Any:
+    return dict(record.calculator_inputs or {}).get(field_name)
+
+
+def _set_calculator_input_value(record: ProcurementLotRecord, field_name: str, value: Any) -> None:
+    inputs = dict(record.calculator_inputs or {})
+    if value is None:
+        inputs.pop(field_name, None)
+    else:
+        inputs[field_name] = value
+    record.calculator_inputs = inputs
 
 
 def _procurement_field_for_column(column_id: str) -> str:

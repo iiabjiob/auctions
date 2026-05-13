@@ -203,6 +203,38 @@ class ProcurementGridEditsTests(unittest.IsolatedAsyncioTestCase):
             session_id="session-1",
         )
 
+    async def test_calculator_input_edit_recalculates_outputs(self) -> None:
+        record = make_record()
+        record.quantity = Decimal("100")
+        record.unit_nmck = Decimal("1000")
+        record.initial_price_value = Decimal("100000")
+        record.calculator_inputs = {
+            "fabric_consumption_per_unit": "2",
+            "accessories_cost": "50",
+            "sewing_cost": "100",
+        }
+        request = ProcurementLotsGridEditRequest.model_validate(
+            {"baseVersion": 5, "edits": [{"rowId": "zakupki:123", "columnId": "fabricPrice", "value": "100"}]}
+        )
+
+        with (
+            patch(
+                "app.services.procurement_grid_edits.get_or_create_grid_revision",
+                AsyncMock(return_value=SimpleNamespace(dataset_version=5)),
+            ),
+            patch("app.services.procurement_grid_edits._find_record_by_row_id", AsyncMock(return_value=record)),
+            patch("app.services.procurement_grid_edits.bump_procurement_lot_dataset_version", AsyncMock(return_value=6)),
+            patch("app.services.procurement_grid_edits.clear_redo_grid_operations", AsyncMock(return_value=1)),
+            patch("app.services.procurement_grid_edits.record_grid_operation", AsyncMock()),
+        ):
+            response = await commit_procurement_lot_grid_edits(FakeSession(), request)
+
+        self.assertEqual(record.calculator_inputs["fabric_price"], "100.00")
+        self.assertIsNotNone(record.net_profit)
+        self.assertEqual(response.updated_rows[0].row["calculatorInputs"]["fabric_price"], "100.00")
+        self.assertTrue(response.updated_rows[0].row["calculatorScenarios"]["cautious"]["complete"])
+        self.assertEqual(response.updated_rows[0].row["netProfit"], float(record.net_profit))
+
     def test_source_columns_are_not_editable(self) -> None:
         with self.assertRaisesRegex(ValueError, "not editable"):
             _procurement_field_for_column("registryNumber")
