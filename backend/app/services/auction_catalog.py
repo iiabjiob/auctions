@@ -607,7 +607,7 @@ def _grid_column_expression(key: str | None):
         "exclusionReason": (_json_text_value("exclusion_reason"), "text"),
         "firstSeenAt": (AuctionLotRecord.first_seen_at, "datetime"),
         "formulaMaxPurchasePrice": (_json_decimal_value("formula_max_purchase_price"), "number"),
-        "fullEntryCost": (_grid_full_entry_cost_value(), "number"),
+        "fullEntryCost": (_json_decimal_value("full_entry_cost"), "number"),
         "id": (_json_text_value("row_id"), "text"),
         "imageCount": (_json_integer_value("image_count"), "number"),
         "initialPrice": (_json_decimal_value("initial_price_value"), "number"),
@@ -632,21 +632,21 @@ def _grid_column_expression(key: str | None):
         "organizer": (_json_text_value("organizer_name"), "text"),
         "otherCosts": (_json_decimal_value("other_costs"), "number"),
         "platformFee": (_json_decimal_value("platform_fee"), "number"),
-        "potentialProfit": (_grid_potential_profit_value(), "number"),
+        "potentialProfit": (_json_decimal_value("potential_profit"), "number"),
         "price": (_json_decimal_value("current_price_value"), "number"),
         "primaryImageUrl": (_json_text_value("primary_image_url"), "text"),
         "publicationDate": (_json_text_value("publication_date"), "text"),
         "ratingLevel": (_json_nested_text_value("rating", "level"), "text"),
         "ratingScore": (AuctionLotRecord.rating_score, "number"),
         "repairCost": (_json_decimal_value("repair_cost"), "number"),
-        "roiValue": (_grid_roi_value(), "number"),
+        "roiValue": (_json_decimal_value("roi"), "number"),
         "source": (AuctionLotRecord.source_code, "text"),
         "sourcePosition": (_json_integer_value("source_position"), "number"),
         "sourceTitle": (func.coalesce(_json_text_value("source_title"), AuctionLotRecord.source_code), "text"),
         "status": (AuctionLotRecord.status, "text"),
         "storageCost": (_json_decimal_value("storage_cost"), "number"),
         "targetProfit": (_json_decimal_value("target_profit"), "number"),
-        "totalExpenses": (_grid_total_expenses_value(), "number"),
+        "totalExpenses": (_json_decimal_value("total_expenses"), "number"),
         "workDecisionStatus": (_work_item_text_value("decision_status"), "text"),
     }.get(normalized_key, (None, "text"))
 
@@ -1059,45 +1059,6 @@ def _json_integer_value(key: str):
 
 def _json_boolean_value(key: str):
     return AuctionLotRecord.datagrid_row[key].as_boolean()
-
-
-def _grid_total_expenses_value():
-    return (
-        func.coalesce(_json_decimal_value("platform_fee"), 0)
-        + func.coalesce(_json_decimal_value("delivery_cost"), 0)
-        + func.coalesce(_json_decimal_value("dismantling_cost"), 0)
-        + func.coalesce(_json_decimal_value("repair_cost"), 0)
-        + func.coalesce(_json_decimal_value("storage_cost"), 0)
-        + func.coalesce(_json_decimal_value("legal_cost"), 0)
-        + func.coalesce(_json_decimal_value("other_costs"), 0)
-    )
-
-
-def _grid_full_entry_cost_value():
-    price = _json_decimal_value("current_price_value")
-    return case(
-        (price.is_(None), None),
-        else_=price + _grid_total_expenses_value(),
-    )
-
-
-def _grid_potential_profit_value():
-    market_value = _json_decimal_value("market_value")
-    full_entry_cost = _grid_full_entry_cost_value()
-    return case(
-        (market_value.is_(None), None),
-        (full_entry_cost.is_(None), None),
-        else_=market_value - full_entry_cost,
-    )
-
-
-def _grid_roi_value():
-    full_entry_cost = _grid_full_entry_cost_value()
-    return case(
-        (full_entry_cost.is_(None), None),
-        (full_entry_cost == 0, None),
-        else_=_grid_potential_profit_value() / full_entry_cost,
-    )
 
 
 def _work_item_text_value(key: str):
