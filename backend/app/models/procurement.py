@@ -125,6 +125,15 @@ class ProcurementLotRecord(Base):
     scoring_version: Mapped[str | None] = mapped_column(String(32), index=True)
     scoring_input_hash: Mapped[str | None] = mapped_column(String(64))
     scored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    enrichment_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    enrichment_requested_reason: Mapped[str | None] = mapped_column(String(64), index=True)
+    last_enrichment_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    enrichment_attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_enrichment_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    last_enrichment_error: Mapped[str | None] = mapped_column(Text)
+    enrichment_claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    enrichment_claimed_by: Mapped[str | None] = mapped_column(String(255), index=True)
+    enrichment_claim_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     workflow_status: Mapped[str] = mapped_column(String(64), nullable=False, default="new", index=True)
     assignee: Mapped[str | None] = mapped_column(String(255), index=True)
     comment: Mapped[str | None] = mapped_column(Text)
@@ -153,7 +162,81 @@ class ProcurementLotRecord(Base):
     )
 
     source_state: Mapped[ProcurementSourceState] = relationship(back_populates="lots")
+    observations: Mapped[list["ProcurementLotObservation"]] = relationship(back_populates="lot")
+    detail_cache: Mapped["ProcurementLotDetailCache | None"] = relationship(back_populates="lot")
     telegram_notifications: Mapped[list["ProcurementTelegramNotificationOutbox"]] = relationship(back_populates="lot")
+
+
+class ProcurementLotObservation(Base):
+    __tablename__ = "procurement_lot_observations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    procurement_lot_record_id: Mapped[int] = mapped_column(
+        ForeignKey("procurement_lot_records.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    status: Mapped[str | None] = mapped_column(String(255), index=True)
+    normalized_item: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    raw_item: Mapped[dict] = mapped_column(JSONB, nullable=False)
+
+    lot: Mapped[ProcurementLotRecord] = relationship(back_populates="observations")
+
+
+class ProcurementLotDetailCache(Base):
+    __tablename__ = "procurement_lot_detail_caches"
+    __table_args__ = (UniqueConstraint("procurement_lot_record_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    procurement_lot_record_id: Mapped[int] = mapped_column(
+        ForeignKey("procurement_lot_records.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    detail_payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    documents: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    lot: Mapped[ProcurementLotRecord] = relationship(back_populates="detail_cache")
+
+
+class ProcurementLotDetailObservation(Base):
+    __tablename__ = "procurement_lot_detail_observations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    procurement_lot_record_id: Mapped[int] = mapped_column(
+        ForeignKey("procurement_lot_records.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    detail_payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    documents: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+
+
+class ProcurementSourceHttpExchange(Base):
+    __tablename__ = "procurement_source_http_exchanges"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_code: Mapped[str] = mapped_column(ForeignKey("procurement_source_states.code"), nullable=False, index=True)
+    operation: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    method: Mapped[str] = mapped_column(String(16), nullable=False)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    host: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    duration_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    status_code: Mapped[int | None] = mapped_column(Integer, index=True)
+    ok: Mapped[bool] = mapped_column(Boolean, nullable=False, index=True)
+    request_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    response_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_type: Mapped[str | None] = mapped_column(String(128), index=True)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    source_state: Mapped[ProcurementSourceState] = relationship()
 
 
 class ProcurementTelegramNotificationOutbox(Base):

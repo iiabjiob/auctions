@@ -6,12 +6,14 @@ import logging
 import re
 from dataclasses import dataclass, field
 from collections.abc import Iterable
-from urllib.parse import urlencode, urljoin
+from datetime import UTC, datetime
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse
 from urllib.request import Request, urlopen
 
 from app.core.config import get_settings
 from app.schemas.procurements import ProcurementLotItem, ProcurementSourceInfo
 from app.services.procurement_values import parse_money
+from app.services.source_http_diagnostics import record_source_http_exchange
 
 
 BASE_URL = "https://zakupki.gov.ru"
@@ -132,9 +134,118 @@ def fetch_search_page(
 
     url = f"{BASE_URL}{SEARCH_PATH}?{urlencode(params)}"
     logger.info("Fetching zakupki search page directly", extra={"url": url})
+    return fetch_html_url(url, operation="search_page", timeout=timeout)
+
+
+def fetch_lot_detail_page(url: str, *, timeout: int = 30) -> dict:
+    html_text = fetch_html_url(url, operation="lot_detail", timeout=timeout)
+    return parse_lot_detail_page(html_text, url=url)
+
+
+def fetch_documents_page(url: str, *, timeout: int = 30) -> list[dict]:
+    html_text = fetch_html_url(url, operation="documents", timeout=timeout)
+    return parse_documents_page(html_text, url=url)
+
+
+def fetch_html_url(url: str, *, operation: str, timeout: int = 30) -> str:
+    gateway_response = fetch_url_via_gateway(url, operation=operation, timeout=timeout)
+    if gateway_response is not None:
+        return gateway_response
+
+    started_at = datetime.now(UTC)
+    status_code: int | None = None
+    response_bytes = 0
+    error: BaseException | None = None
     request = Request(url, headers=DEFAULT_HEADERS)
-    with urlopen(request, timeout=timeout) as response:
-        return response.read().decode(_response_encoding(response.headers.get("Content-Type")), "replace")
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            status_code = getattr(response, "status", None)
+            body = response.read()
+            response_bytes = len(body)
+            return body.decode(_response_encoding(response.headers.get("Content-Type")), "replace")
+    except BaseException as exc:
+        error = exc
+        status_code = getattr(exc, "code", status_code)
+        raise
+    finally:
+        record_source_http_exchange(
+            source_code="zakupki",
+            operation=operation,
+            method="GET",
+            url=url,
+            started_at=started_at,
+            completed_at=datetime.now(UTC),
+            status_code=status_code,
+            request_bytes=0,
+            response_bytes=response_bytes,
+            error=error,
+        )
+
+
+def fetch_url_via_gateway(url: str, *, operation: str, timeout: int = 30) -> str | None:
+    settings = get_settings()
+    gateway_url = (settings.zakupki_fetch_gateway_url or "").strip()
+    token = (settings.zakupki_fetch_token or "").strip()
+    if not gateway_url:
+        return None
+    if not token:
+        raise RuntimeError("ZAKUPKI_FETCH_TOKEN is required when ZAKUPKI_FETCH_GATEWAY_URL is configured")
+
+    parsed = urlparse(url)
+    if parsed.netloc and parsed.netloc != "zakupki.gov.ru":
+        return None
+    payload = json.dumps(
+        {
+            "method": "GET",
+            "path": parsed.path or url,
+            "params": dict(parse_qsl(parsed.query, keep_blank_values=True)),
+            "headers": DEFAULT_HEADERS,
+        }
+    ).encode("utf-8")
+    gateway_endpoint = urljoin(f"{gateway_url.rstrip('/')}/", "fetch")
+    request = Request(
+        gateway_endpoint,
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+    started_at = datetime.now(UTC)
+    gateway_status_code: int | None = None
+    response_bytes = 0
+    error: BaseException | None = None
+    try:
+        with urlopen(request, timeout=timeout or settings.zakupki_fetch_timeout_seconds) as response:
+            gateway_status_code = getattr(response, "status", None)
+            body = response.read()
+            response_bytes = len(body)
+            response_payload = json.loads(body.decode("utf-8"))
+    except BaseException as exc:
+        error = exc
+        gateway_status_code = getattr(exc, "code", gateway_status_code)
+        raise
+    finally:
+        record_source_http_exchange(
+            source_code="zakupki",
+            operation=f"{operation}_gateway",
+            method="POST",
+            url=gateway_endpoint,
+            started_at=started_at,
+            completed_at=datetime.now(UTC),
+            status_code=gateway_status_code,
+            request_bytes=len(payload),
+            response_bytes=response_bytes,
+            error=error,
+        )
+    status = int(response_payload.get("status") or 0)
+    if status < 200 or status >= 300:
+        raise RuntimeError(f"Zakupki fetch gateway returned HTTP {status}")
+    if response_payload.get("body_base64"):
+        raise RuntimeError("Zakupki fetch gateway returned binary response")
+    return str(response_payload.get("body") or "")
 
 
 def fetch_search_page_via_gateway(*, params: dict[str, str | int], timeout: int = 30) -> str | None:
@@ -164,8 +275,34 @@ def fetch_search_page_via_gateway(*, params: dict[str, str | int], timeout: int 
         },
         method="POST",
     )
-    with urlopen(request, timeout=timeout or settings.zakupki_fetch_timeout_seconds) as response:
-        response_payload = json.loads(response.read().decode("utf-8"))
+    started_at = datetime.now(UTC)
+    gateway_status_code: int | None = None
+    response_bytes = 0
+    error: BaseException | None = None
+    gateway_endpoint = urljoin(f"{gateway_url.rstrip('/')}/", "fetch")
+    try:
+        with urlopen(request, timeout=timeout or settings.zakupki_fetch_timeout_seconds) as response:
+            gateway_status_code = getattr(response, "status", None)
+            body = response.read()
+            response_bytes = len(body)
+            response_payload = json.loads(body.decode("utf-8"))
+    except BaseException as exc:
+        error = exc
+        gateway_status_code = getattr(exc, "code", gateway_status_code)
+        raise
+    finally:
+        record_source_http_exchange(
+            source_code="zakupki",
+            operation="search_page_gateway",
+            method="POST",
+            url=gateway_endpoint,
+            started_at=started_at,
+            completed_at=datetime.now(UTC),
+            status_code=gateway_status_code,
+            request_bytes=len(payload),
+            response_bytes=response_bytes,
+            error=error,
+        )
 
     status = int(response_payload.get("status") or 0)
     logger.info(
@@ -184,6 +321,46 @@ def fetch_search_page_via_gateway(*, params: dict[str, str | int], timeout: int 
     if response_payload.get("body_base64"):
         raise RuntimeError("Zakupki fetch gateway returned binary response")
     return str(response_payload.get("body") or "")
+
+
+def parse_lot_detail_page(html_text: str, *, url: str) -> dict:
+    title = _first_match_text(html_text, r"<h1[^>]*>(.*?)</h1>") or _first_match_text(html_text, r"<title[^>]*>(.*?)</title>")
+    fields = _extract_detail_fields(html_text)
+    text = _clean_html(html_text)
+    return {
+        "url": url,
+        "title": title,
+        "fields": fields,
+        "text_excerpt": text[:8000],
+        "html_length": len(html_text),
+    }
+
+
+def parse_documents_page(html_text: str, *, url: str) -> list[dict]:
+    documents: list[dict] = []
+    for href, label in re.findall(r'<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', html_text, re.S | re.I):
+        clean_label = _clean_html(label)
+        absolute_href = _absolute_url(html.unescape(href))
+        if not clean_label and not re.search(r"\.(?:docx?|xlsx?|pdf|zip|rar)(?:\?|$)", absolute_href, re.I):
+            continue
+        if not _looks_like_document_link(absolute_href, clean_label):
+            continue
+        documents.append(
+            {
+                "title": clean_label or absolute_href.rsplit("/", 1)[-1],
+                "url": absolute_href,
+                "source_url": url,
+            }
+        )
+    seen: set[str] = set()
+    unique_documents: list[dict] = []
+    for document in documents:
+        document_url = str(document.get("url") or "")
+        if document_url in seen:
+            continue
+        seen.add(document_url)
+        unique_documents.append(document)
+    return unique_documents[:200]
 
 
 def build_search_url(
@@ -342,6 +519,28 @@ def _extract_body_fields(chunk: str) -> dict[str, str]:
     return fields
 
 
+def _extract_detail_fields(html_text: str) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for match in re.finditer(
+        r'<span[^>]*class="[^"]*(?:section__title|blockInfo__title|cardMainInfo__title)[^"]*"[^>]*>(.*?)</span>'
+        r'.{0,1200}?<span[^>]*class="[^"]*(?:section__info|blockInfo__info|cardMainInfo__content)[^"]*"[^>]*>(.*?)</span>',
+        html_text,
+        re.S | re.I,
+    ):
+        key = _clean_html(match.group(1)).rstrip(":")
+        value = _clean_html(match.group(2))
+        if key and value:
+            fields[key] = value
+    for row in re.findall(r"<tr[^>]*>(.*?)</tr>", html_text, re.S | re.I):
+        cells = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row, re.S | re.I)
+        if len(cells) >= 2:
+            key = _clean_html(cells[0]).rstrip(":")
+            value = _clean_html(cells[1])
+            if key and value and len(key) < 180:
+                fields.setdefault(key, value)
+    return fields
+
+
 def _first_body_value(fields: dict[str, str], *labels: str) -> str | None:
     for label in labels:
         for key, value in fields.items():
@@ -406,6 +605,11 @@ def _absolute_url(url: str) -> str:
     if url.startswith("/"):
         return f"{BASE_URL}{url}"
     return f"{BASE_URL}/{url}"
+
+
+def _looks_like_document_link(url: str, label: str) -> bool:
+    haystack = f"{url} {label}".lower()
+    return any(marker in haystack for marker in ("document", "download", "file", "doc", "pdf", "xlsx", "zip", "прикреп", "документ"))
 
 
 def _detect_law(url: str) -> str | None:

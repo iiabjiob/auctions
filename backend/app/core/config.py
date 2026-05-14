@@ -82,6 +82,11 @@ class Settings(BaseSettings):
     procurement_sync_limit: int = 100
     procurement_sync_page_batch_size: int = 5
     procurement_sync_max_pages_per_keyword: int = 0
+    procurement_enrichment_enabled: bool = False
+    procurement_enrichment_interval_seconds: int = 60 * 10
+    procurement_enrichment_batch_size: int = 25
+    procurement_enrichment_item_pause_seconds: float = 0.0
+    procurement_enrichment_empty_pause_seconds: int = 60 * 30
     telegram_bot_token: str | None = None
     telegram_bot_username: str | None = None
     telegram_webhook_secret: str | None = None

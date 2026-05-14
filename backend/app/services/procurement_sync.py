@@ -12,10 +12,17 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.models.procurement import ProcurementLotRecord, ProcurementSourceState, ProcurementSourceSyncRun, ProcurementSourceSyncState
+from app.models.procurement import (
+    ProcurementLotObservation,
+    ProcurementLotRecord,
+    ProcurementSourceState,
+    ProcurementSourceSyncRun,
+    ProcurementSourceSyncState,
+)
 from app.schemas.procurements import ProcurementLotItem, ProcurementSourceInfo, ProcurementSyncResult
 from app.services.procurement_classification import ProcurementClassification, classify_procurement_lot
 from app.services.procurement_notifications import enqueue_procurement_telegram_notifications
+from app.services.procurement_enrichment import classify_procurement_enrichment, schedule_procurement_lot_enrichment
 from app.services.procurement_scoring import apply_procurement_score
 from app.services.procurement_grid_state import bump_procurement_lot_dataset_version
 from app.services.procurement_sources import (
@@ -24,6 +31,11 @@ from app.services.procurement_sources import (
     ProcurementSourceProvider,
 )
 from app.services.procurement_values import parse_scraped_datetime
+from app.services.source_http_diagnostics import (
+    begin_source_http_diagnostics,
+    collect_source_http_diagnostics,
+    persist_procurement_source_http_diagnostics,
+)
 from app.services.zakupki_scraper import DEFAULT_SEARCH_KEYWORDS
 
 
@@ -124,6 +136,7 @@ async def sync_procurement_source_provider(
         page_batch_size,
     )
 
+    diagnostics_token = begin_source_http_diagnostics()
     try:
         pages_processed = 0
         while pages_processed < page_batch_size and (remaining_limit is None or remaining_limit > 0):
@@ -145,6 +158,8 @@ async def sync_procurement_source_provider(
                     exhausted=True,
                 )
                 await _store_procurement_cursor(session, info.code, keyword=keywords[keyword_index], page=page, exhausted=False)
+                await persist_procurement_source_http_diagnostics(session, collect_source_http_diagnostics(diagnostics_token))
+                diagnostics_token = begin_source_http_diagnostics()
                 await session.commit()
                 pages_processed += 1
                 if max_pages_per_keyword > 0 and page > max_pages_per_keyword:
@@ -171,8 +186,11 @@ async def sync_procurement_source_provider(
                     exhausted=True,
                 )
             await _store_procurement_cursor(session, info.code, keyword=keywords[keyword_index], page=page, exhausted=False)
+            await persist_procurement_source_http_diagnostics(session, collect_source_http_diagnostics(diagnostics_token))
+            diagnostics_token = begin_source_http_diagnostics()
             await session.commit()
     except Exception as error:
+        diagnostics_events = collect_source_http_diagnostics(diagnostics_token)
         completed_at = datetime.now(UTC)
         parser_failure_count = max(parser_failure_count, 1)
         await session.rollback()
@@ -207,10 +225,12 @@ async def sync_procurement_source_provider(
             error_code=type(error).__name__,
             error_message=str(error)[:2000],
         )
+        await persist_procurement_source_http_diagnostics(session, diagnostics_events)
         await session.commit()
         logger.exception("Procurement sync failed: source=%s url=%s parser=%s", info.code, info.website, parser_version)
         raise
 
+    await persist_procurement_source_http_diagnostics(session, collect_source_http_diagnostics(diagnostics_token))
     completed_at = datetime.now(UTC)
     source_state.last_synced_at = completed_at
     await _upsert_source_sync_state(
@@ -336,8 +356,15 @@ async def _sync_procurement_items(
                 raw_item=item.model_dump(mode="json"),
             )
             apply_procurement_score(record, current_time=observed_at)
+            schedule_procurement_lot_enrichment(
+                record,
+                classify_procurement_enrichment(record),
+                requested_at=observed_at,
+                force=True,
+            )
             session.add(record)
             await session.flush()
+            await _add_procurement_observation(session, record)
             await bump_procurement_lot_dataset_version(
                 session,
                 record,
@@ -381,6 +408,12 @@ async def _sync_procurement_items(
         record.normalized_item = prepared.normalized_item
         record.raw_item = item.model_dump(mode="json")
         apply_procurement_score(record, current_time=observed_at)
+        schedule_procurement_lot_enrichment(
+            record,
+            classify_procurement_enrichment(record),
+            requested_at=observed_at,
+            force=content_changed,
+        )
         await enqueue_procurement_telegram_notifications(session, record, now=observed_at)
         if status_changed:
             record.status_changed_at = observed_at
@@ -388,6 +421,7 @@ async def _sync_procurement_items(
         if content_changed:
             record.content_hash = prepared.content_hash
             result.updated += 1
+            await _add_procurement_observation(session, record)
             await bump_procurement_lot_dataset_version(
                 session,
                 record,
@@ -458,6 +492,18 @@ async def _store_procurement_cursor(
         "exhausted": exhausted,
     }
     sync_state.cursor_updated_at = datetime.now(UTC)
+
+
+async def _add_procurement_observation(session: AsyncSession, record: ProcurementLotRecord) -> None:
+    session.add(
+        ProcurementLotObservation(
+            procurement_lot_record_id=int(record.id),
+            content_hash=record.content_hash,
+            status=record.status,
+            normalized_item=record.normalized_item,
+            raw_item=record.raw_item,
+        )
+    )
 
 
 async def _ensure_source_state(

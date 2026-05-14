@@ -135,6 +135,29 @@ services:
     networks:
       - net
 
+  procurement-enrichment-worker:
+    build:
+      context: .
+      dockerfile: .devcontainer/Dockerfile
+      tags:
+        - auctions-dev:latest
+    container_name: auctions-procurement-enrichment-worker-dev
+    working_dir: /workspace/backend
+    command: uv run python -m app.worker.procurement_enrichment_worker
+    volumes:
+      - .:/workspace
+    env_file:
+      - ./backend/.env.dev
+    environment:
+      PROCUREMENT_ENRICHMENT_ENABLED: "true"
+      ZAKUPKI_FETCH_GATEWAY_URL: http://zakupki-fetcher:8080
+      ZAKUPKI_FETCH_TOKEN: ${ZAKUPKI_FETCH_TOKEN:-dev-zakupki-fetch-token}
+    depends_on:
+      - db
+      - zakupki-fetcher
+    networks:
+      - net
+
   telegram-sender-worker:
     build:
       context: .

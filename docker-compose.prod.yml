@@ -181,6 +181,28 @@ services:
     networks:
       - net
 
+  procurement-enrichment-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.prod
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env.prod
+      - ./backend/.env.db.prod
+    environment:
+      PROCUREMENT_ENRICHMENT_ENABLED: "true"
+      ZAKUPKI_FETCH_GATEWAY_URL: http://zakupki-fetcher:8080
+    command: ["python", "-m", "app.worker.procurement_enrichment_worker"]
+    depends_on:
+      db:
+        condition: service_healthy
+      zakupki-fetcher:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+    networks:
+      - net
+
   telegram-sender-worker:
     build:
       context: ./backend

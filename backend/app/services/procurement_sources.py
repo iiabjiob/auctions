@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Iterable, Protocol
 
 from app.schemas.procurements import ProcurementLotItem, ProcurementSourceInfo
-from app.services.zakupki_scraper import fetch_procurement_list, source_info as zakupki_source_info
+from app.services.zakupki_scraper import fetch_documents_page, fetch_lot_detail_page, fetch_procurement_list, source_info as zakupki_source_info
 
 
 class ProcurementSourceProvider(Protocol):
@@ -23,10 +23,10 @@ class ProcurementSourceProvider(Protocol):
     def list_lots_page(self, *, keyword: str, page: int = 1, limit: int | None = None) -> list[ProcurementLotItem]:
         ...
 
-    def get_lot_detail(self, external_id: str) -> dict | None:
+    def get_lot_detail(self, external_id: str, *, notice_url: str | None = None, documents_url: str | None = None) -> dict | None:
         ...
 
-    def get_documents(self, external_id: str) -> list[dict]:
+    def get_documents(self, external_id: str, *, documents_url: str | None = None, notice_url: str | None = None) -> list[dict]:
         ...
 
 
@@ -47,13 +47,17 @@ class EisZakupkiProvider:
     def list_lots_page(self, *, keyword: str, page: int = 1, limit: int | None = None) -> list[ProcurementLotItem]:
         return fetch_procurement_list(limit=limit, page=page, search_keywords=(keyword,))
 
-    def get_lot_detail(self, external_id: str) -> dict | None:
-        del external_id
-        return None
+    def get_lot_detail(self, external_id: str, *, notice_url: str | None = None, documents_url: str | None = None) -> dict | None:
+        del external_id, documents_url
+        if not notice_url:
+            return None
+        return fetch_lot_detail_page(notice_url)
 
-    def get_documents(self, external_id: str) -> list[dict]:
-        del external_id
-        return []
+    def get_documents(self, external_id: str, *, documents_url: str | None = None, notice_url: str | None = None) -> list[dict]:
+        del external_id, notice_url
+        if not documents_url:
+            return []
+        return fetch_documents_page(documents_url)
 
 
 @dataclass(frozen=True)
@@ -75,12 +79,12 @@ class DisabledProcurementSourceProvider:
         del keyword, page, limit
         raise NotImplementedError(f"Procurement provider '{self.code}' is disabled")
 
-    def get_lot_detail(self, external_id: str) -> dict | None:
-        del external_id
+    def get_lot_detail(self, external_id: str, *, notice_url: str | None = None, documents_url: str | None = None) -> dict | None:
+        del external_id, notice_url, documents_url
         return None
 
-    def get_documents(self, external_id: str) -> list[dict]:
-        del external_id
+    def get_documents(self, external_id: str, *, documents_url: str | None = None, notice_url: str | None = None) -> list[dict]:
+        del external_id, documents_url, notice_url
         return []
 
 

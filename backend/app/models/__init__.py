@@ -13,7 +13,11 @@ from app.models.auction_analysis_config import AuctionAnalysisConfigModel
 from app.models.filter_preset import FilterPresetModel
 from app.models.grid import GridChangeEventModel, GridOperationModel, GridRevisionModel
 from app.models.procurement import (
+    ProcurementLotDetailCache,
+    ProcurementLotDetailObservation,
+    ProcurementLotObservation,
     ProcurementLotRecord,
+    ProcurementSourceHttpExchange,
     ProcurementSourceState,
     ProcurementSourceSyncRun,
     ProcurementSourceSyncState,
@@ -36,6 +40,10 @@ __all__ = [
     "AuctionAnalysisConfigModel",
     "AuctionSourceState",
     "ProcurementLotRecord",
+    "ProcurementLotObservation",
+    "ProcurementLotDetailCache",
+    "ProcurementLotDetailObservation",
+    "ProcurementSourceHttpExchange",
     "ProcurementSourceState",
     "ProcurementSourceSyncRun",
     "ProcurementSourceSyncState",

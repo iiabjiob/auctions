@@ -13,6 +13,12 @@ class ProcurementPipelineCounters(BaseModel):
     decision_pending_lots: int
     missing_documents: int
     missing_critical_fields: int
+    enrichment_requested: int
+    enrichment_due_now: int
+    enrichment_claimed_active: int
+    enrichment_retry_waiting: int
+    enrichment_failed_with_error: int
+    enrichment_maxed_out: int
     scoring_stale_or_incomplete: int
     scored_current: int
 

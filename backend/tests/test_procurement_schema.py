@@ -8,7 +8,11 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import CreateTable
 
 from app.models.procurement import (
+    ProcurementLotDetailCache,
+    ProcurementLotDetailObservation,
+    ProcurementLotObservation,
     ProcurementLotRecord,
+    ProcurementSourceHttpExchange,
     ProcurementSourceSyncRun,
     ProcurementSourceSyncState,
     ProcurementTelegramNotificationOutbox,
@@ -53,6 +57,10 @@ class ProcurementSchemaTests(unittest.TestCase):
             "scoring_version",
             "scoring_input_hash",
             "scored_at",
+            "enrichment_requested_at",
+            "enrichment_attempt_count",
+            "next_enrichment_attempt_at",
+            "last_enrichment_error",
         ):
             self.assertIn(column_name, columns)
 
@@ -86,6 +94,20 @@ class ProcurementSchemaTests(unittest.TestCase):
         self.assertIn("procurement_source_sync_runs", run_ddl)
         self.assertIn("parser_failure_count INTEGER NOT NULL", run_ddl)
 
+    def test_procurement_enrichment_foundation_tables_compile_for_postgres(self) -> None:
+        observation_ddl = str(CreateTable(ProcurementLotObservation.__table__).compile(dialect=postgresql.dialect()))
+        cache_ddl = str(CreateTable(ProcurementLotDetailCache.__table__).compile(dialect=postgresql.dialect()))
+        detail_observation_ddl = str(CreateTable(ProcurementLotDetailObservation.__table__).compile(dialect=postgresql.dialect()))
+        http_ddl = str(CreateTable(ProcurementSourceHttpExchange.__table__).compile(dialect=postgresql.dialect()))
+
+        self.assertIn("procurement_lot_observations", observation_ddl)
+        self.assertIn("normalized_item JSONB NOT NULL", observation_ddl)
+        self.assertIn("procurement_lot_detail_caches", cache_ddl)
+        self.assertIn("detail_payload JSONB NOT NULL", cache_ddl)
+        self.assertIn("procurement_lot_detail_observations", detail_observation_ddl)
+        self.assertIn("procurement_source_http_exchanges", http_ddl)
+        self.assertIn("duration_ms INTEGER NOT NULL", http_ddl)
+
     def test_procurement_search_text_includes_v1_fields(self) -> None:
         record = ProcurementLotRecord(
             source_code="zakupki",
@@ -111,12 +133,12 @@ class ProcurementSchemaTests(unittest.TestCase):
         self.assertIn("review", record.search_text or "")
 
     def test_procurement_diagnostics_migration_follows_current_head(self) -> None:
-        migration_path = Path("alembic/versions/202605140001_add_procurement_sync_cursor.py")
-        spec = importlib.util.spec_from_file_location("procurement_sync_cursor_migration", migration_path)
+        migration_path = Path("alembic/versions/202605140002_add_procurement_enrichment_foundation.py")
+        spec = importlib.util.spec_from_file_location("procurement_enrichment_foundation_migration", migration_path)
         self.assertIsNotNone(spec)
         self.assertIsNotNone(spec.loader)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
 
-        self.assertEqual(module.revision, "202605140001")
-        self.assertEqual(module.down_revision, "202605130015")
+        self.assertEqual(module.revision, "202605140002")
+        self.assertEqual(module.down_revision, "202605140001")

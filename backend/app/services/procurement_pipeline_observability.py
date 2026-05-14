@@ -12,6 +12,7 @@ from app.schemas.procurement_pipeline_observability import (
     ProcurementSourceSyncStatus,
 )
 from app.services.procurement_scoring import PROCUREMENT_SCORING_VERSION
+from app.services.procurement_enrichment import PROCUREMENT_ENRICHMENT_MAX_ATTEMPTS
 from app.services.procurement_sources import SOURCE_PROVIDERS
 
 
@@ -28,6 +29,12 @@ async def get_procurement_pipeline_health(
         decision_pending_lots=int(row.decision_pending_lots or 0),
         missing_documents=int(row.missing_documents or 0),
         missing_critical_fields=int(row.missing_critical_fields or 0),
+        enrichment_requested=int(row.enrichment_requested or 0),
+        enrichment_due_now=int(row.enrichment_due_now or 0),
+        enrichment_claimed_active=int(row.enrichment_claimed_active or 0),
+        enrichment_retry_waiting=int(row.enrichment_retry_waiting or 0),
+        enrichment_failed_with_error=int(row.enrichment_failed_with_error or 0),
+        enrichment_maxed_out=int(row.enrichment_maxed_out or 0),
         scoring_stale_or_incomplete=int(row.scoring_stale_or_incomplete or 0),
         scored_current=int(row.scored_current or 0),
     )
@@ -72,7 +79,8 @@ def build_procurement_source_sync_status(info, *, sync_state: ProcurementSourceS
     )
 
 
-def build_procurement_pipeline_counters_statement(*, current_time: datetime | None = None):  # noqa: ARG001
+def build_procurement_pipeline_counters_statement(*, current_time: datetime | None = None):
+    current_time = current_time or datetime.now(UTC)
     missing_documents_clause = and_(
         ProcurementLotRecord.documentation_present.is_not(True),
         ProcurementLotRecord.documents_url.is_(None),
@@ -97,12 +105,49 @@ def build_procurement_pipeline_counters_statement(*, current_time: datetime | No
         ProcurementLotRecord.scoring_input_hash.is_not(None),
         ProcurementLotRecord.scored_at.is_not(None),
     )
+    active_claim_clause = and_(
+        ProcurementLotRecord.enrichment_claimed_at.is_not(None),
+        or_(
+            ProcurementLotRecord.enrichment_claim_expires_at.is_(None),
+            ProcurementLotRecord.enrichment_claim_expires_at > current_time,
+        ),
+    )
+    retry_waiting_clause = and_(
+        ProcurementLotRecord.enrichment_requested_at.is_not(None),
+        ProcurementLotRecord.next_enrichment_attempt_at.is_not(None),
+        ProcurementLotRecord.next_enrichment_attempt_at > current_time,
+    )
+    due_now_clause = and_(
+        ProcurementLotRecord.enrichment_requested_at.is_not(None),
+        or_(
+            ProcurementLotRecord.next_enrichment_attempt_at.is_(None),
+            ProcurementLotRecord.next_enrichment_attempt_at <= current_time,
+        ),
+        or_(
+            ProcurementLotRecord.enrichment_claimed_at.is_(None),
+            ProcurementLotRecord.enrichment_claim_expires_at.is_(None),
+            ProcurementLotRecord.enrichment_claim_expires_at <= current_time,
+        ),
+    )
     return select(
         func.count(ProcurementLotRecord.id).label("total_lots"),
         func.count().filter(ProcurementLotRecord.attractiveness_score >= 75).label("priority_lots"),
         func.count().filter(ProcurementLotRecord.workflow_status == "decision").label("decision_pending_lots"),
         func.count().filter(missing_documents_clause).label("missing_documents"),
         func.count().filter(missing_critical_clause).label("missing_critical_fields"),
+        func.count().filter(ProcurementLotRecord.enrichment_requested_at.is_not(None)).label("enrichment_requested"),
+        func.count().filter(due_now_clause).label("enrichment_due_now"),
+        func.count().filter(active_claim_clause).label("enrichment_claimed_active"),
+        func.count().filter(retry_waiting_clause).label("enrichment_retry_waiting"),
+        func.count().filter(
+            and_(ProcurementLotRecord.enrichment_requested_at.is_not(None), ProcurementLotRecord.last_enrichment_error.is_not(None))
+        ).label("enrichment_failed_with_error"),
+        func.count().filter(
+            and_(
+                ProcurementLotRecord.enrichment_requested_at.is_not(None),
+                ProcurementLotRecord.enrichment_attempt_count >= PROCUREMENT_ENRICHMENT_MAX_ATTEMPTS,
+            )
+        ).label("enrichment_maxed_out"),
         func.count().filter(scoring_stale_clause).label("scoring_stale_or_incomplete"),
         func.count().filter(scored_current_clause).label("scored_current"),
     )

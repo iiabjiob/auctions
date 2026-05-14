@@ -145,6 +145,12 @@ type ProcurementPipelineHealthResponse = {
     decision_pending_lots: number
     missing_documents: number
     missing_critical_fields: number
+    enrichment_requested: number
+    enrichment_due_now: number
+    enrichment_claimed_active: number
+    enrichment_retry_waiting: number
+    enrichment_failed_with_error: number
+    enrichment_maxed_out: number
     scoring_stale_or_incomplete: number
     scored_current: number
   }

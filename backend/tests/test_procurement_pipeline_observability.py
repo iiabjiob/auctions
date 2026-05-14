@@ -47,6 +47,12 @@ class FakeSession:
                     decision_pending_lots=2,
                     missing_documents=1,
                     missing_critical_fields=4,
+                    enrichment_requested=6,
+                    enrichment_due_now=4,
+                    enrichment_claimed_active=1,
+                    enrichment_retry_waiting=1,
+                    enrichment_failed_with_error=2,
+                    enrichment_maxed_out=1,
                     scoring_stale_or_incomplete=5,
                     scored_current=5,
                 )
@@ -76,6 +82,7 @@ class ProcurementPipelineObservabilityTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.counters.total_lots, 10)
         self.assertEqual(response.counters.priority_lots, 3)
+        self.assertEqual(response.counters.enrichment_due_now, 4)
         zakupki = next(source for source in response.sources if source.code == "zakupki")
         self.assertEqual(zakupki.last_sync_result, "success")
         self.assertEqual(zakupki.last_sync_missing_critical_fields, {"title": 2})
@@ -110,6 +117,7 @@ class ProcurementPipelineObservabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("procurement_lot_records.workflow_status = 'decision'", sql)
         self.assertIn(f"procurement_lot_records.scoring_version = '{PROCUREMENT_SCORING_VERSION}'", sql)
         self.assertIn("procurement_lot_records.application_deadline_at IS NULL", sql)
+        self.assertIn("procurement_lot_records.enrichment_requested_at IS NOT NULL", sql)
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ from sqlalchemy import and_, desc, func, literal_column, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.auction import AuctionSourceHttpExchange, AuctionSourceState
+from app.models.procurement import ProcurementSourceHttpExchange
 from app.schemas.source_diagnostics import (
     DiagnosticsRange,
     SourceDiagnosticsBucket,
@@ -104,6 +105,33 @@ async def persist_source_http_diagnostics(
         return
     session.add_all(
         AuctionSourceHttpExchange(
+            source_code=event.source_code,
+            operation=event.operation,
+            method=event.method,
+            url=event.url,
+            host=event.host,
+            started_at=event.started_at,
+            completed_at=event.completed_at,
+            duration_ms=event.duration_ms,
+            status_code=event.status_code,
+            ok=event.ok,
+            request_bytes=event.request_bytes,
+            response_bytes=event.response_bytes,
+            error_type=event.error_type,
+            error_message=event.error_message,
+        )
+        for event in events
+    )
+
+
+async def persist_procurement_source_http_diagnostics(
+    session: AsyncSession,
+    events: list[SourceHttpExchangeEvent],
+) -> None:
+    if not events:
+        return
+    session.add_all(
+        ProcurementSourceHttpExchange(
             source_code=event.source_code,
             operation=event.operation,
             method=event.method,

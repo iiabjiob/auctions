@@ -142,6 +142,25 @@
       }
     },
     {
+      "label": "backend: procurement enrichment worker",
+      "type": "shell",
+      "command": "uv run python -m app.worker.procurement_enrichment_worker",
+      "options": {
+        "cwd": "${workspaceFolder}/backend",
+        "env": {
+          "PROCUREMENT_ENRICHMENT_ENABLED": "true",
+          "ZAKUPKI_FETCH_GATEWAY_URL": "http://127.0.0.1:8080",
+          "ZAKUPKI_FETCH_TOKEN": "dev-zakupki-fetch-token"
+        }
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "group": "backend",
+        "panel": "dedicated",
+        "reveal": "always"
+      }
+    },
+    {
       "label": "backend: start all",
       "dependsOrder": "parallel",
       "dependsOn": [
@@ -152,6 +171,7 @@
         "backend: auction actuality worker",
         "backend: zakupki fetcher",
         "backend: procurement sync worker",
+        "backend: procurement enrichment worker",
         "backend: telegram sender worker"
       ],
       "problemMatcher": [],
