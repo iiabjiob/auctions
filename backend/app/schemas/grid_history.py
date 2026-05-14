@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Any
 
-from app.schemas.auction_grid import AuctionLotsGridPullRow
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class GridHistoryMutationRequest(BaseModel):
@@ -17,7 +17,7 @@ class GridHistoryMutationResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     dataset_version: int = Field(alias="datasetVersion")
-    updated_rows: list[AuctionLotsGridPullRow] = Field(alias="updatedRows")
+    updated_rows: list[Any] = Field(alias="updatedRows")
 
 
 class GridHistoryStatusResponse(BaseModel):

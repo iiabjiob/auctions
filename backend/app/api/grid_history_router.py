@@ -7,12 +7,10 @@ from app.api.deps import get_current_user
 from app.infrastructure.db.database import get_db, get_read_db
 from app.models import UserModel
 from app.schemas.grid_history import GridHistoryMutationRequest, GridHistoryMutationResponse, GridHistoryStatusResponse
-from app.services.auction_grid_history import (
-    get_auction_lot_grid_history_status,
-    redo_auction_lot_grid_history,
-    undo_auction_lot_grid_history,
-)
 from app.services.auction_grid_state import DEFAULT_GRID_WORKSPACE_ID
+from app.services.grid_backend_history import get_grid_history_status as get_grid_history_status_service
+from app.services.grid_backend_history import redo_grid_history as redo_grid_history_service
+from app.services.grid_backend_history import undo_grid_history as undo_grid_history_service
 
 
 router = APIRouter(prefix="/api/history", tags=["Grid History"])
@@ -26,7 +24,7 @@ async def undo_grid_history(
     current_user: UserModel = Depends(get_current_user),
 ) -> GridHistoryMutationResponse:
     try:
-        response = await undo_auction_lot_grid_history(
+        response = await undo_grid_history_service(
             session,
             workspace_id=workspace_id or DEFAULT_GRID_WORKSPACE_ID,
             table_id=payload.table_id,
@@ -54,7 +52,7 @@ async def redo_grid_history(
     current_user: UserModel = Depends(get_current_user),
 ) -> GridHistoryMutationResponse:
     try:
-        response = await redo_auction_lot_grid_history(
+        response = await redo_grid_history_service(
             session,
             workspace_id=workspace_id or DEFAULT_GRID_WORKSPACE_ID,
             table_id=payload.table_id,
@@ -84,7 +82,7 @@ async def get_grid_history_status(
     current_user: UserModel = Depends(get_current_user),
 ) -> GridHistoryStatusResponse:
     try:
-        return await get_auction_lot_grid_history_status(
+        return await get_grid_history_status_service(
             session,
             workspace_id=workspace_id or DEFAULT_GRID_WORKSPACE_ID,
             table_id=table_id,
