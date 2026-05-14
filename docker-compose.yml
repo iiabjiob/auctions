@@ -127,11 +127,8 @@ services:
     environment:
       PROCUREMENT_SYNC_ENABLED: "true"
       PROCUREMENT_SYNC_RUN_ON_START: "true"
-      ZAKUPKI_FETCH_GATEWAY_URL: http://zakupki-fetcher:8080
-      ZAKUPKI_FETCH_TOKEN: ${ZAKUPKI_FETCH_TOKEN:-dev-zakupki-fetch-token}
     depends_on:
       - db
-      - zakupki-fetcher
     networks:
       - net
 
@@ -150,11 +147,8 @@ services:
       - ./backend/.env.dev
     environment:
       PROCUREMENT_ENRICHMENT_ENABLED: "true"
-      ZAKUPKI_FETCH_GATEWAY_URL: http://zakupki-fetcher:8080
-      ZAKUPKI_FETCH_TOKEN: ${ZAKUPKI_FETCH_TOKEN:-dev-zakupki-fetch-token}
     depends_on:
       - db
-      - zakupki-fetcher
     networks:
       - net
 
@@ -198,6 +192,8 @@ services:
       - net
 
   zakupki-fetcher:
+    profiles:
+      - zakupki-fetch
     build:
       context: .
       dockerfile: .devcontainer/Dockerfile

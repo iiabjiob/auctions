@@ -232,6 +232,8 @@ services:
       - net
 
   zakupki-fetcher:
+    profiles:
+      - zakupki-fetch
     build:
       context: ./backend
       dockerfile: Dockerfile.prod
