@@ -11,8 +11,16 @@ export type AffinoGridUpdatedRow<TApiRow> = {
 }
 
 export type AffinoGridEditResponse<TApiRow> = {
+  operationId?: string | null
   datasetVersion: number
   updatedRows: AffinoGridUpdatedRow<TApiRow>[]
+  rows?: AffinoGridUpdatedRow<TApiRow>[]
+  affectedRows?: number
+  affectedCells?: number
+  canUndo?: boolean
+  canRedo?: boolean
+  latestUndoOperationId?: string | null
+  latestRedoOperationId?: string | null
 }
 
 export type AffinoGridHistoryMutationResponse<TApiRow> = {

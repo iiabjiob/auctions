@@ -7,6 +7,7 @@ import {
   type DataGridAppColumnFilterOptions,
   type DataGridCellStyleResolver,
   type DataGridExposed,
+  type DataGridTableStageHistoryAdapter,
 } from '@affino/datagrid-vue-app'
 import {
   createDataSourceBackedRowModel,
@@ -229,6 +230,13 @@ type ProcurementWorkspaceRefreshResponse = {
 type ProcurementDataSource = DataGridDataSource<ProcurementGridRow> & {
   commitEdits?(request: ProcurementCommitEditsRequest): Promise<ProcurementCommitEditsResult>
 }
+type ProcurementHistoryMutationResponse = {
+  operationId?: string | null
+  datasetVersion: number
+  updatedRows?: unknown[]
+  canUndo?: boolean
+  canRedo?: boolean
+}
 type ProcurementRowModel = DataSourceBackedRowModel<ProcurementGridRow> & {
   patchRows?: (updates: readonly { rowId: string | number; data: Partial<ProcurementGridRow> }[]) => void | Promise<void>
   dataSource: ProcurementDataSource
@@ -248,6 +256,10 @@ const rowModel = shallowRef<ProcurementRowModel | null>(null)
 const datasourceRef = shallowRef<ProcurementServerGridDataSource | null>(null)
 const rowRevision = ref(0)
 const latestDatasetVersion = ref<number | null>(null)
+const gridHistoryState = reactive({
+  canUndo: false,
+  canRedo: false,
+})
 const pipelineHealth = ref<ProcurementPipelineHealthResponse | null>(null)
 const loadedOnce = ref(false)
 const loading = ref(false)
@@ -576,6 +588,41 @@ function createGridDataSource(): ProcurementDataSource {
   }
 }
 
+const procurementGridHistoryAdapter: DataGridTableStageHistoryAdapter = {
+  captureSnapshot: () => null,
+  captureSnapshotForRowIds: () => null,
+  recordIntentTransaction: () => {},
+  recordServerFillTransaction: () => {
+    gridHistoryState.canUndo = true
+    gridHistoryState.canRedo = false
+  },
+  canUndo: () => gridHistoryState.canUndo,
+  canRedo: () => gridHistoryState.canRedo,
+  async runHistoryAction(direction) {
+    const datasource = datasourceRef.value
+    if (!datasource) {
+      throw new Error('Procurement grid datasource is not initialized')
+    }
+    const response = await enqueueGridMutation(() =>
+      direction === 'undo'
+        ? datasource.undoHistory()
+        : datasource.redoHistory(),
+    )
+    await applyProcurementHistoryMutation(response)
+    return response.operationId ?? null
+  },
+  async runServerFillAction(direction) {
+    return procurementGridHistoryAdapter.runHistoryAction(direction)
+  },
+}
+
+const procurementGridHistoryOptions = {
+  enabled: true,
+  shortcuts: false,
+  controls: true,
+  adapter: procurementGridHistoryAdapter,
+}
+
 function enqueueGridMutation<T>(task: () => Promise<T>): Promise<T> {
   const queued = gridMutationQueue.catch(() => undefined).then(task)
   gridMutationQueue = queued.then(
@@ -612,6 +659,10 @@ async function commitGridEdits(request: ProcurementCommitEditsRequest): Promise<
       signal: request.signal,
     })
     latestDatasetVersion.value = response.datasetVersion
+    applyProcurementHistoryState(response)
+    if (typeof response.canUndo !== 'boolean') {
+      markProcurementHistoryCommitted()
+    }
     errorMessage.value = ''
     await rowModel.value?.refresh('manual')
     return { committed: request.edits.map((edit) => ({ rowId: edit.rowId, revision: response.datasetVersion })) }
@@ -657,8 +708,23 @@ function isRedoShortcut(event: KeyboardEvent) {
   return key === 'y' || (key === 'z' && event.shiftKey)
 }
 
-async function applyProcurementHistoryMutation(response: { datasetVersion: number }) {
+function applyProcurementHistoryState(response: { canUndo?: boolean; canRedo?: boolean }) {
+  if (typeof response.canUndo === 'boolean') {
+    gridHistoryState.canUndo = response.canUndo
+  }
+  if (typeof response.canRedo === 'boolean') {
+    gridHistoryState.canRedo = response.canRedo
+  }
+}
+
+function markProcurementHistoryCommitted() {
+  gridHistoryState.canUndo = true
+  gridHistoryState.canRedo = false
+}
+
+async function applyProcurementHistoryMutation(response: ProcurementHistoryMutationResponse) {
   latestDatasetVersion.value = response.datasetVersion
+  applyProcurementHistoryState(response)
   await refreshGrid()
 }
 
@@ -968,6 +1034,8 @@ function emptySummary(total: number): ProcurementServerGridSummary {
 }
 
 onMounted(() => {
+  gridHistoryState.canUndo = false
+  gridHistoryState.canRedo = false
   rowModel.value = createGridRowModel()
   void loadPipelineHealth()
   document.addEventListener('visibilitychange', handleGridVisibilityChange)
@@ -1041,7 +1109,7 @@ onUnmounted(() => {
           :row-selection="false"
           :cell-menu="true"
           :chrome="{ toolbarPlacement: 'integrated', density: 'compact', toolbarGap: 0, workspaceGap: 8 }"
-          :history="{ enabled: true, shortcuts: 'grid', controls: true }"
+          :history="procurementGridHistoryOptions"
           @update:column-widths="persistColumnWidths"
         />
       </section>

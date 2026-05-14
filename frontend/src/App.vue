@@ -20,6 +20,7 @@ import {
   type DataGridCellStyleResolver,
   type DataGridExposed,
   type DataGridFocusAnchor,
+  type DataGridTableStageHistoryAdapter,
   type DataGridSavedViewSnapshot,
 } from '@affino/datagrid-vue-app'
 import {
@@ -841,6 +842,10 @@ const catalogGridHasLoadedOnce = ref(false)
 const catalogQueryPlaceholderVisible = ref(false)
 const gridRowRevision = ref(0)
 const latestAuctionGridDatasetVersion = ref<number | null>(null)
+const auctionGridHistoryState = reactive({
+  canUndo: false,
+  canRedo: false,
+})
 const loadingSkeletonVisibleRows = ref(LOADING_SKELETON_MIN_ROWS)
 let resizeStartX = 0
 let resizeStartWidth = 0
@@ -2577,6 +2582,39 @@ function createAuctionServerCatalogDataSource(): CatalogAuctionServerDataSource 
 
 const auctionServerDataSource = createAuctionServerCatalogDataSource()
 
+const auctionGridHistoryAdapter: DataGridTableStageHistoryAdapter = {
+  captureSnapshot: () => null,
+  captureSnapshotForRowIds: () => null,
+  recordIntentTransaction: () => {},
+  recordServerFillTransaction: () => {
+    auctionGridHistoryState.canUndo = true
+    auctionGridHistoryState.canRedo = false
+  },
+  canUndo: () => auctionGridHistoryState.canUndo,
+  canRedo: () => auctionGridHistoryState.canRedo,
+  async runHistoryAction(direction) {
+    const response = await enqueueCatalogGridMutation(() =>
+      direction === 'undo'
+        ? auctionServerDataSource.undoHistory()
+        : auctionServerDataSource.redoHistory(),
+    )
+    if (!applyAuctionGridHistoryMutation(response)) {
+      await refreshAuctionGridAfterHistoryMutation(response.datasetVersion)
+    }
+    return response.operationId ?? null
+  },
+  async runServerFillAction(direction) {
+    return auctionGridHistoryAdapter.runHistoryAction(direction)
+  },
+}
+
+const auctionGridHistoryOptions = {
+  enabled: true,
+  shortcuts: false,
+  controls: true,
+  adapter: auctionGridHistoryAdapter,
+}
+
 function rememberLoadedRows(rows: GridLotRow[], options: { trackLoadedRows?: boolean } = {}) {
   const trackLoadedRows = options.trackLoadedRows !== false
   const byId = gridRowsById.value
@@ -2966,6 +3004,8 @@ function resetCatalogRowModel() {
   catalogRowModel.value?.dispose()
   catalogDataSourceListeners.clear()
   clearCatalogViewportDim()
+  auctionGridHistoryState.canUndo = false
+  auctionGridHistoryState.canRedo = false
   allRows.value = []
   loadedGridRowIds.clear()
   gridRowsById.value.clear()
@@ -3412,6 +3452,10 @@ async function commitCatalogServerGridEdits(request: CatalogCommitEditsRequest):
       signal: request.signal,
     })
     latestAuctionGridDatasetVersion.value = response.datasetVersion
+    applyAuctionGridHistoryState(response)
+    if (typeof response.canUndo !== 'boolean') {
+      markAuctionGridHistoryCommitted()
+    }
 
     const updatedRows = response.updatedRows.map((entry) => entry.row).filter(Boolean)
     if (updatedRows.length > 0) {
@@ -4774,8 +4818,28 @@ function isRedoShortcut(event: KeyboardEvent) {
   return false
 }
 
-function applyAuctionGridHistoryMutation(response: { datasetVersion: number; updatedRows: Array<{ row: ApiLotRow | null | undefined }> }) {
+function applyAuctionGridHistoryState(response: { canUndo?: boolean; canRedo?: boolean }) {
+  if (typeof response.canUndo === 'boolean') {
+    auctionGridHistoryState.canUndo = response.canUndo
+  }
+  if (typeof response.canRedo === 'boolean') {
+    auctionGridHistoryState.canRedo = response.canRedo
+  }
+}
+
+function markAuctionGridHistoryCommitted() {
+  auctionGridHistoryState.canUndo = true
+  auctionGridHistoryState.canRedo = false
+}
+
+function applyAuctionGridHistoryMutation(response: {
+  datasetVersion: number
+  updatedRows: Array<{ row: ApiLotRow | null | undefined }>
+  canUndo?: boolean
+  canRedo?: boolean
+}) {
   latestAuctionGridDatasetVersion.value = response.datasetVersion
+  applyAuctionGridHistoryState(response)
   const updatedRows = response.updatedRows.map((entry) => entry.row).filter(Boolean) as ApiLotRow[]
   if (updatedRows.length === 0) return false
 
@@ -5280,7 +5344,7 @@ onUnmounted(() => {
               :row-selection="false"
               :cell-menu="true"
               :chrome="{ toolbarPlacement: 'integrated', density: 'compact', toolbarGap: 0, workspaceGap: 8 }"
-              :history="{ enabled: true, shortcuts: 'grid', controls: true }"
+              :history="auctionGridHistoryOptions"
               @update:column-widths="persistGridColumnWidths"
             />
             <div
