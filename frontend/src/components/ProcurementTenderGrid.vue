@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, h, onMounted, onUnmounted, reactive, ref, shallowRef } from 'vue'
+import { computed, defineComponent, h, onMounted, onUnmounted, reactive, ref, shallowRef } from 'vue'
+import type { PropType } from 'vue'
 import {
   DataGrid,
   defineDataGridColumnMenu,
@@ -7,7 +8,7 @@ import {
   type DataGridAppColumnFilterOptions,
   type DataGridCellStyleResolver,
   type DataGridExposed,
-  type DataGridTableStageHistoryAdapter,
+  type DataGridAppToolbarModule,
 } from '@affino/datagrid-vue-app'
 import {
   createDataSourceBackedRowModel,
@@ -15,11 +16,7 @@ import {
   type DataGridFilterSnapshot,
   type DataSourceBackedRowModel,
 } from '@affino/datagrid-vue'
-import {
-  buildProcurementGridCellEditsFromPatch,
-  PROCUREMENT_GRID_EDITABLE_COLUMN_IDS,
-  type ProcurementGridCellEdit,
-} from '@/datagrid/procurementGridEdits'
+import { PROCUREMENT_GRID_EDITABLE_COLUMN_IDS } from '@/datagrid/procurementGridEdits'
 import {
   createProcurementServerDatasource,
   type ProcurementServerDatasource,
@@ -120,19 +117,6 @@ type ProcurementGridRow = ProcurementApiRow & {
   vatMode: string | null
 }
 
-type ProcurementCommitEditsRequest = {
-  edits: readonly {
-    rowId: string | number
-    data: Partial<ProcurementGridRow>
-  }[]
-  signal?: AbortSignal
-}
-
-type ProcurementCommitEditsResult = {
-  committed?: Array<{ rowId: string | number; revision?: string | number | null }>
-  rejected?: Array<{ rowId: string | number; reason?: string }>
-}
-
 type GridChangeFeedResponse = {
   datasetVersion: number
   changes: Array<{
@@ -227,9 +211,45 @@ type ProcurementWorkspaceRefreshResponse = {
   workspace: ProcurementWorkspaceResponse
 }
 
-type ProcurementDataSource = DataGridDataSource<ProcurementGridRow> & {
-  commitEdits?(request: ProcurementCommitEditsRequest): Promise<ProcurementCommitEditsResult>
-}
+type ProcurementDataSource = DataGridDataSource<ProcurementGridRow>
+
+const GridHistoryToolbarButton = defineComponent({
+  name: 'GridHistoryToolbarButton',
+  props: {
+    label: {
+      type: String,
+      required: true,
+    },
+    disabled: {
+      type: Boolean,
+      default: false,
+    },
+    action: {
+      type: String,
+      required: true,
+    },
+    onTrigger: {
+      type: Function as PropType<() => void>,
+      required: true,
+    },
+  },
+  setup(props) {
+    return () =>
+      h(
+        'button',
+        {
+          type: 'button',
+          class: 'datagrid-app-toolbar__button',
+          disabled: props.disabled,
+          title: props.label,
+          'data-datagrid-toolbar-action': `server-history-${props.action}`,
+          onClick: () => props.onTrigger(),
+        },
+        props.label,
+      )
+  },
+})
+
 type ProcurementHistoryMutationResponse = {
   operationId?: string | null
   datasetVersion: number
@@ -290,7 +310,7 @@ let gridChangesPolling = false
 let gridChangesRefreshInFlight = false
 let pipelineHealthAbortController: AbortController | null = null
 let workspaceAbortController: AbortController | null = null
-let gridMutationQueue: Promise<void> = Promise.resolve()
+let gridHistoryActionInFlight = false
 
 const gridStatus = computed(() => {
   if (errorMessage.value) return errorMessage.value
@@ -583,108 +603,86 @@ function createGridDataSource(): ProcurementDataSource {
       return datasource.getColumnHistogram?.(request) ?? Promise.resolve([])
     },
     async commitEdits(request) {
-      return enqueueGridMutation(() => commitGridEdits(request))
+      const commitEdits = datasource.commitEdits
+      if (typeof commitEdits !== 'function') {
+        throw new Error('Procurement grid datasource does not support edits')
+      }
+      const result = await commitEdits(request)
+      if (!result.rejected?.length) {
+        markProcurementHistoryCommitted()
+        errorMessage.value = ''
+      }
+      return result
+    },
+    async commitFillOperation(request) {
+      const commitFillOperation = datasource.commitFillOperation
+      if (typeof commitFillOperation !== 'function') {
+        throw new Error('Procurement grid datasource does not support fill operations')
+      }
+      const result = await commitFillOperation(request)
+      if (result) {
+        markProcurementHistoryCommitted()
+      }
+      return result
+    },
+    async undoFillOperation(request) {
+      const undoFillOperation = datasource.undoFillOperation
+      if (typeof undoFillOperation !== 'function') {
+        throw new Error('Procurement grid datasource does not support fill undo')
+      }
+      const result = await undoFillOperation(request)
+      if (result) {
+        gridHistoryState.canUndo = false
+        gridHistoryState.canRedo = true
+      }
+      return result
+    },
+    async redoFillOperation(request) {
+      const redoFillOperation = datasource.redoFillOperation
+      if (typeof redoFillOperation !== 'function') {
+        throw new Error('Procurement grid datasource does not support fill redo')
+      }
+      const result = await redoFillOperation(request)
+      if (result) {
+        markProcurementHistoryCommitted()
+      }
+      return result
     },
   }
-}
-
-const procurementGridHistoryAdapter: DataGridTableStageHistoryAdapter = {
-  captureSnapshot: () => null,
-  captureSnapshotForRowIds: () => null,
-  recordIntentTransaction: () => {
-    markProcurementHistoryCommitted()
-  },
-  recordServerFillTransaction: () => {
-    markProcurementHistoryCommitted()
-  },
-  canUndo: () => gridHistoryState.canUndo,
-  canRedo: () => gridHistoryState.canRedo,
-  async runHistoryAction(direction) {
-    const datasource = datasourceRef.value
-    if (!datasource) {
-      throw new Error('Procurement grid datasource is not initialized')
-    }
-    const response = await enqueueGridMutation(() =>
-      direction === 'undo'
-        ? datasource.undoHistory()
-        : datasource.redoHistory(),
-    )
-    await applyProcurementHistoryMutation(response)
-    return response.operationId ?? null
-  },
-  async runServerFillAction(direction) {
-    return procurementGridHistoryAdapter.runHistoryAction(direction)
-  },
 }
 
 const procurementGridHistoryOptions = {
   enabled: true,
   shortcuts: false,
-  controls: true,
-  adapter: procurementGridHistoryAdapter,
+  controls: false,
 }
 
-function enqueueGridMutation<T>(task: () => Promise<T>): Promise<T> {
-  const queued = gridMutationQueue.catch(() => undefined).then(task)
-  gridMutationQueue = queued.then(
-    () => undefined,
-    () => undefined,
-  )
-  return queued
-}
-
-async function commitGridEdits(request: ProcurementCommitEditsRequest): Promise<ProcurementCommitEditsResult> {
-  const baseVersion = latestDatasetVersion.value
-  if (baseVersion === null) {
-    await refreshGrid()
-    return { rejected: request.edits.map((edit) => ({ rowId: edit.rowId, reason: 'datasetVersion is not loaded yet' })) }
-  }
-
-  const cellEdits: ProcurementGridCellEdit[] = []
-  for (const edit of request.edits) {
-    cellEdits.push(...buildProcurementGridCellEditsFromPatch(String(edit.rowId), normalizeDataSourceEditPatch(edit.data)))
-  }
-  if (!cellEdits.length) {
-    console.warn('[procurement-grid] commitEdits rejected before server commit', request.edits)
-    return { rejected: request.edits.map((edit) => ({ rowId: edit.rowId, reason: 'no editable procurement columns' })) }
-  }
-
-  try {
-    const datasource = datasourceRef.value
-    if (!datasource) {
-      throw new Error('Procurement grid datasource is not initialized')
-    }
-    const response = await datasource.commitCellEdits({
-      baseVersion,
-      edits: cellEdits,
-      signal: request.signal,
-    })
-    latestDatasetVersion.value = response.datasetVersion
-    applyProcurementHistoryState(response)
-    if (typeof response.canUndo !== 'boolean') {
-      markProcurementHistoryCommitted()
-    }
-    errorMessage.value = ''
-    await rowModel.value?.refresh('manual')
-    return { committed: request.edits.map((edit) => ({ rowId: edit.rowId, revision: response.datasetVersion })) }
-  } catch (error) {
-    errorMessage.value = formatCommitError(error)
-    console.warn('[procurement-grid] commitEdits rejected after server commit failed', request.edits, error)
-    await rowModel.value?.refresh('manual')
-    return { rejected: request.edits.map((edit) => ({ rowId: edit.rowId, reason: errorMessage.value })) }
-  }
-}
-
-function normalizeDataSourceEditPatch(patch: Record<string, unknown> | null | undefined) {
-  if (!patch || typeof patch !== 'object') return {}
-  if ('data' in patch && patch.data && typeof patch.data === 'object' && !Array.isArray(patch.data)) {
-    return patch.data as Record<string, unknown>
-  }
-  if ('patch' in patch && patch.patch && typeof patch.patch === 'object' && !Array.isArray(patch.patch)) {
-    return patch.patch as Record<string, unknown>
-  }
-  return patch
-}
+const procurementGridToolbarModules = computed<readonly DataGridAppToolbarModule[]>(() => [
+  {
+    key: 'server-history-undo',
+    component: GridHistoryToolbarButton,
+    props: {
+      action: 'undo',
+      label: 'Undo',
+      disabled: !gridHistoryState.canUndo,
+      onTrigger: () => {
+        void runProcurementServerHistoryAction('undo')
+      },
+    },
+  },
+  {
+    key: 'server-history-redo',
+    component: GridHistoryToolbarButton,
+    props: {
+      action: 'redo',
+      label: 'Redo',
+      disabled: !gridHistoryState.canRedo,
+      onTrigger: () => {
+        void runProcurementServerHistoryAction('redo')
+      },
+    },
+  },
+])
 
 function isTextEditingTarget(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) return false
@@ -729,30 +727,38 @@ async function applyProcurementHistoryMutation(response: ProcurementHistoryMutat
   await refreshGrid()
 }
 
+async function runProcurementServerHistoryAction(direction: 'undo' | 'redo') {
+  if (direction === 'undo' && !gridHistoryState.canUndo) return
+  if (direction === 'redo' && !gridHistoryState.canRedo) return
+  if (gridHistoryActionInFlight) return
+  gridHistoryActionInFlight = true
+  try {
+    const datasource = datasourceRef.value
+    if (!datasource) {
+      throw new Error('Procurement grid datasource is not initialized')
+    }
+    const response = await (
+      direction === 'undo'
+        ? datasource.undoHistory()
+        : datasource.redoHistory()
+    )
+    await applyProcurementHistoryMutation(response)
+    errorMessage.value = ''
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : 'Не удалось выполнить undo/redo'
+    await refreshGrid()
+  } finally {
+    gridHistoryActionInFlight = false
+  }
+}
+
 function handleProcurementGridUndoRedo(event: KeyboardEvent) {
   if (!isProcurementGridShortcutTarget(event)) return
   if (!isUndoShortcut(event) && !isRedoShortcut(event)) return
 
   event.preventDefault()
   event.stopPropagation()
-  void (async () => {
-    try {
-      const datasource = datasourceRef.value
-      if (!datasource) {
-        throw new Error('Procurement grid datasource is not initialized')
-      }
-      const response = await enqueueGridMutation(() =>
-        isUndoShortcut(event)
-          ? datasource.undoHistory()
-          : datasource.redoHistory(),
-      )
-      await applyProcurementHistoryMutation(response)
-      errorMessage.value = ''
-    } catch (error) {
-      errorMessage.value = error instanceof Error ? error.message : 'Не удалось выполнить undo/redo'
-      await refreshGrid()
-    }
-  })()
+  void runProcurementServerHistoryAction(isUndoShortcut(event) ? 'undo' : 'redo')
 }
 
 function mapRow(row: ProcurementApiRow, revision: number): ProcurementGridRow {
@@ -1107,6 +1113,7 @@ onUnmounted(() => {
           fill-handle
           range-move
           layout-mode="fill"
+          :toolbar-modules="procurementGridToolbarModules"
           :row-selection="false"
           :cell-menu="true"
           :chrome="{ toolbarPlacement: 'integrated', density: 'compact', toolbarGap: 0, workspaceGap: 8 }"

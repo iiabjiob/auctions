@@ -31,7 +31,10 @@ async def undo_grid_history(
             user_id=_resolve_history_user_id(payload.user_id, current_user),
             session_id=payload.session_id,
         )
-        await session.commit()
+        if response.operation_id is None and not response.updated_rows:
+            await session.rollback()
+        else:
+            await session.commit()
         return response
     except ValueError as error:
         await session.rollback()
@@ -62,7 +65,10 @@ async def redo_grid_history(
             user_id=_resolve_history_user_id(payload.user_id, current_user),
             session_id=payload.session_id,
         )
-        await session.commit()
+        if response.operation_id is None and not response.updated_rows:
+            await session.rollback()
+        else:
+            await session.commit()
         return response
     except ValueError as error:
         await session.rollback()

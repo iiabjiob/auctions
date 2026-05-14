@@ -16,10 +16,7 @@ import {
   type DataGridServerQuery,
 } from '@affino/datagrid-server-adapters'
 import {
-  commitAffinoCellEdits,
   requestAffinoHistoryMutation,
-  type AffinoGridCellEdit,
-  type AffinoGridEditResponse,
   type AffinoGridHistoryMutationResponse,
 } from './affinoGridMutations'
 import { createAffinoPostJsonFetch } from './affinoPostJsonFetch'
@@ -59,11 +56,6 @@ export type AuctionServerPullWindowResult<TRow> = {
 
 export type AuctionServerDatasource<TApiRow, TRow> = DataGridDataSource<TRow> & {
   pullWindow(request: AuctionServerPullWindowRequest): Promise<AuctionServerPullWindowResult<TRow>>
-  commitCellEdits(options: {
-    baseVersion: number
-    edits: readonly AffinoGridCellEdit[]
-    signal?: AbortSignal
-  }): Promise<AffinoGridEditResponse<TApiRow>>
   undoHistory(): Promise<AffinoGridHistoryMutationResponse<TApiRow>>
   redoHistory(): Promise<AffinoGridHistoryMutationResponse<TApiRow>>
   getChangesSinceVersion(request: { sinceVersion: number; signal?: AbortSignal }): Promise<unknown>
@@ -226,13 +218,6 @@ export function createAuctionServerDatasource<TApiRow, TRow>(
     pull,
     pullWindow,
     getColumnHistogram,
-    commitCellEdits(request) {
-      return commitAffinoCellEdits<TApiRow>({
-        postJson: options.postJson,
-        tableId: 'auction-lots',
-        ...request,
-      })
-    },
     undoHistory() {
       return requestAffinoHistoryMutation<TApiRow>({
         postJson: options.postJson,

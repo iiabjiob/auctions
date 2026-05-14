@@ -86,9 +86,14 @@ async def commit_auction_lot_grid_edits(
     user_id: str | None = None,
     session_id: str | None = None,
 ) -> AuctionLotsGridEditResponse:
+    from app.services.grid_state import get_dataset_version
+
+    base_version = request.base_version
+    if base_version is None:
+        base_version = await get_dataset_version(session, workspace_id, AUCTION_LOTS_TABLE_ID)
     return await _commit_auction_lot_grid_operations(
         session,
-        base_version=request.base_version,
+        base_version=base_version,
         edits=request.edits,
         workspace_id=workspace_id,
         user_id=user_id,

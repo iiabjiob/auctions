@@ -132,8 +132,11 @@ async def commit_procurement_lot_grid_edits(
     )
     from app.services.grid_state import get_dataset_version
 
+    base_version = request.base_version
+    if base_version is None:
+        base_version = await get_dataset_version(session, workspace_id, PROCUREMENT_LOTS_TABLE_ID)
     backend_request = procurement_backend_edit_request(
-        base_version=request.base_version,
+        base_version=base_version,
         edits=request.edits,
         workspace_id=workspace_id,
         user_id=user_id,
@@ -147,7 +150,7 @@ async def commit_procurement_lot_grid_edits(
     except ApiException as error:
         if error.code == "stale-revision":
             current_version = await get_dataset_version(session, workspace_id, PROCUREMENT_LOTS_TABLE_ID)
-            raise ProcurementGridEditConflictError(base_version=request.base_version, current_version=current_version) from error
+            raise ProcurementGridEditConflictError(base_version=base_version, current_version=current_version) from error
         if error.status_code == 404:
             raise LookupError(error.message) from error
         raise ValueError(error.message) from error

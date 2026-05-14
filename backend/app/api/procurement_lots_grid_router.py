@@ -73,7 +73,7 @@ async def commit_procurement_lots_edits(
             user_id=current_user.id,
             session_id=grid_session_id,
         )
-        await session.commit()
+        await session.rollback()
         return response
     except ProcurementGridEditConflictError as error:
         await session.rollback()

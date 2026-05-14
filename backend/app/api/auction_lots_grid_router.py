@@ -73,7 +73,7 @@ async def commit_auction_lots_edits(
             user_id=current_user.id,
             session_id=grid_session_id,
         )
-        await session.commit()
+        await session.rollback()
         return response
     except AuctionGridEditConflictError as error:
         await session.rollback()

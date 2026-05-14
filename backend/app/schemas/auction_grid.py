@@ -117,8 +117,6 @@ class AuctionLotsGridEditRequest(BaseModel):
                 self.base_version = int(self.base_revision)
             except (TypeError, ValueError) as error:
                 raise ValueError("baseRevision must be an integer revision") from error
-        if self.base_version is None:
-            raise ValueError("baseVersion or baseRevision is required")
         return self
 
 
