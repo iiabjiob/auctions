@@ -112,7 +112,11 @@ async def _commit_auction_lot_grid_operations(
     from affino_grid_backend import ApiException
 
     from app.services.grid_backend_edits import AuctionGridEditService, auction_backend_edit_request
-    from app.services.grid_backend_transactions import prepare_session_for_package_transaction, run_package_grid_mutation
+    from app.services.grid_backend_transactions import (
+        prepare_session_for_package_transaction,
+        refresh_package_grid_row,
+        run_package_grid_mutation,
+    )
     from app.services.grid_state import get_dataset_version
 
     backend_request = auction_backend_edit_request(
@@ -142,14 +146,16 @@ async def _commit_auction_lot_grid_operations(
             raise LookupError(reason)
         raise ValueError(reason)
 
-    updated_rows = [
-        AuctionLotsGridPullRow(
+    updated_rows: list[AuctionLotsGridPullRow] = []
+    for row in result.rows:
+        await refresh_package_grid_row(session, row)
+        updated_rows.append(
+            AuctionLotsGridPullRow(
             id=auction_lot_grid_row_id(row.record),
             index=int(row.record.id),
             row=validate_datagrid_row_payload(row.record.datagrid_row),
         )
-        for row in result.rows
-    ]
+        )
     updated_row_ids = [row.id for row in updated_rows]
     return AuctionLotsGridEditResponse(
         dataset_version=int(result.revision),

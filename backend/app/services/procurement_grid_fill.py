@@ -186,7 +186,11 @@ async def commit_procurement_lot_grid_backend_fill(
     conflict_base_version: int | None,
 ) -> ProcurementLotsGridEditResponse:
     from app.services.grid_backend_fill import ProcurementGridFillService
-    from app.services.grid_backend_transactions import prepare_session_for_package_transaction, run_package_grid_mutation
+    from app.services.grid_backend_transactions import (
+        prepare_session_for_package_transaction,
+        refresh_package_grid_row,
+        run_package_grid_mutation,
+    )
     from app.services.grid_state import get_dataset_version
 
     service = ProcurementGridFillService(workspace_id=backend_request.workspace_id)
@@ -201,16 +205,20 @@ async def commit_procurement_lot_grid_backend_fill(
             raise LookupError(error.message) from error
         raise ValueError(error.message) from error
 
-    return ProcurementLotsGridEditResponse(
-        dataset_version=int(result.revision),
-        updated_rows=[
+    updated_rows: list[ProcurementLotsGridPullRow] = []
+    for record in result.rows:
+        await refresh_package_grid_row(session, record)
+        updated_rows.append(
             ProcurementLotsGridPullRow(
                 id=procurement_lot_grid_row_id(record),
                 index=int(record.id or 0),
                 row=build_procurement_grid_row(record),
             )
-            for record in result.rows
-        ],
+        )
+
+    return ProcurementLotsGridEditResponse(
+        dataset_version=int(result.revision),
+        updated_rows=updated_rows,
     )
 
 

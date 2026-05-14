@@ -125,7 +125,11 @@ async def commit_procurement_lot_grid_edits(
     from affino_grid_backend import ApiException
 
     from app.services.grid_backend_edits import ProcurementGridEditService, procurement_backend_edit_request
-    from app.services.grid_backend_transactions import prepare_session_for_package_transaction, run_package_grid_mutation
+    from app.services.grid_backend_transactions import (
+        prepare_session_for_package_transaction,
+        refresh_package_grid_row,
+        run_package_grid_mutation,
+    )
     from app.services.grid_state import get_dataset_version
 
     backend_request = procurement_backend_edit_request(
@@ -154,14 +158,16 @@ async def commit_procurement_lot_grid_edits(
             raise LookupError(reason)
         raise ValueError(reason)
 
-    updated_rows = [
-        ProcurementLotsGridPullRow(
+    updated_rows: list[ProcurementLotsGridPullRow] = []
+    for record in result.rows:
+        await refresh_package_grid_row(session, record)
+        updated_rows.append(
+            ProcurementLotsGridPullRow(
             id=procurement_lot_grid_row_id(record),
             index=int(record.id or 0),
             row=build_procurement_grid_row(record),
         )
-        for record in result.rows
-    ]
+        )
     updated_row_ids = [row.id for row in updated_rows]
     return ProcurementLotsGridEditResponse(
         dataset_version=int(result.revision),

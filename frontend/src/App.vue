@@ -869,6 +869,7 @@ let catalogQueryPlaceholderVisibleAt = 0
 let catalogNextViewportPullShouldDim = false
 let catalogViewportRecoveryTimer: ReturnType<typeof window.setTimeout> | null = null
 let keepCatalogEditErrorOnNextPull = false
+let catalogGridMutationQueue: Promise<void> = Promise.resolve()
 const catalogFetchRequests = new Map<string, Promise<LotsResponse>>()
 let auctionGridChangesPollTimer: ReturnType<typeof window.setTimeout> | null = null
 let auctionGridChangesRefreshTimer: ReturnType<typeof window.setTimeout> | null = null
@@ -3294,7 +3295,16 @@ function normalizeGridRowPatch(row: Partial<GridLotRow>) {
 }
 
 async function commitCatalogEdits(request: CatalogCommitEditsRequest): Promise<CatalogCommitEditsResult> {
-  return commitCatalogServerGridEdits(request)
+  return enqueueCatalogGridMutation(() => commitCatalogServerGridEdits(request))
+}
+
+function enqueueCatalogGridMutation<T>(task: () => Promise<T>): Promise<T> {
+  const queued = catalogGridMutationQueue.catch(() => undefined).then(task)
+  catalogGridMutationQueue = queued.then(
+    () => undefined,
+    () => undefined,
+  )
+  return queued
 }
 
 async function commitCatalogServerGridEdits(request: CatalogCommitEditsRequest): Promise<CatalogCommitEditsResult> {
@@ -3329,8 +3339,9 @@ async function commitCatalogServerGridEdits(request: CatalogCommitEditsRequest):
       continue
     }
 
+    const rawPatch = normalizeDataSourceEditPatch(edit.data)
     const existing = rowContexts.get(rowId)
-    const normalizedPatch = normalizeGridRowPatch(edit.data)
+    const normalizedPatch = normalizeGridRowPatch(rawPatch)
     const nextRow = recomputeGridEconomyFields({
       ...(existing?.nextRow ?? currentRow),
       ...normalizedPatch,
@@ -3375,6 +3386,7 @@ async function commitCatalogServerGridEdits(request: CatalogCommitEditsRequest):
 
   if (rowContexts.size === 0) {
     if (rejected.length > 0) {
+      console.warn('[auction-grid] commitEdits rejected before server commit', rejected)
       errorMessage.value = `Не удалось сохранить изменения из таблицы: ${rejectedMessages.join(', ')}`
       backgroundStatus.value = 'Ошибка сохранения экономики лотов'
       keepCatalogEditErrorOnNextPull = true
@@ -3431,6 +3443,7 @@ async function commitCatalogServerGridEdits(request: CatalogCommitEditsRequest):
         reason,
       })),
     )
+    console.warn('[auction-grid] commitEdits rejected after server commit failed', rejected, error)
 
     if (conflict) {
       const message = 'Данные изменились на сервере. Таблица обновлена, повторите правку.'
@@ -3449,6 +3462,18 @@ async function commitCatalogServerGridEdits(request: CatalogCommitEditsRequest):
     committed,
     rejected,
   }
+}
+
+function normalizeDataSourceEditPatch<T extends Record<string, unknown>>(patch: Partial<T> | Record<string, unknown> | null | undefined) {
+  if (!patch || typeof patch !== 'object') return {} as Partial<T>
+  const record = patch as Record<string, unknown>
+  if ('data' in record && record.data && typeof record.data === 'object' && !Array.isArray(record.data)) {
+    return record.data as Partial<T>
+  }
+  if ('patch' in record && record.patch && typeof record.patch === 'object' && !Array.isArray(record.patch)) {
+    return record.patch as Partial<T>
+  }
+  return record as Partial<T>
 }
 
 function restoreServerGridEditRows(rowContexts: Map<string, CatalogServerGridEditContext>) {
@@ -4772,7 +4797,7 @@ function handleAuctionGridUndoRedo(event: KeyboardEvent) {
     event.stopPropagation()
     void (async () => {
       try {
-        const response = await auctionServerDataSource.undoHistory()
+        const response = await enqueueCatalogGridMutation(() => auctionServerDataSource.undoHistory())
         if (!applyAuctionGridHistoryMutation(response)) {
           await refreshAuctionGridAfterHistoryMutation(response.datasetVersion)
         }
@@ -4788,7 +4813,7 @@ function handleAuctionGridUndoRedo(event: KeyboardEvent) {
     event.stopPropagation()
     void (async () => {
       try {
-        const response = await auctionServerDataSource.redoHistory()
+        const response = await enqueueCatalogGridMutation(() => auctionServerDataSource.redoHistory())
         if (!applyAuctionGridHistoryMutation(response)) {
           await refreshAuctionGridAfterHistoryMutation(response.datasetVersion)
         }

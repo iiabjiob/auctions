@@ -251,6 +251,7 @@ async def _apply_loaded_package_history_operation(
     table_id: str,
 ) -> GridHistoryMutationResponse:
     service = _history_service_for_table(table_id, workspace_id=workspace_id)
+    operation_id = operation.id
     try:
         from app.services.grid_backend_transactions import run_package_grid_mutation
 
@@ -261,7 +262,7 @@ async def _apply_loaded_package_history_operation(
         raise ValueError(error.message) from error
 
     dataset_version = int(result.revision)
-    changed_fields_by_row = await _operation_changed_fields(session, operation.id, workspace_id=workspace_id, table_id=table_id)
+    changed_fields_by_row = await _operation_changed_fields(session, operation_id, workspace_id=workspace_id, table_id=table_id)
     updated_rows: list[AuctionLotsGridPullRow | ProcurementLotsGridPullRow] = []
     for row in result.rows:
         await _refresh_history_result_row(session, row)
@@ -277,7 +278,7 @@ async def _apply_loaded_package_history_operation(
                 row_id=row_id,
                 payload={
                     "source": f"grid_history_{action}",
-                    "operation_id": str(operation.id),
+                    "operation_id": str(operation_id),
                     "changed_fields": sorted(changed_fields_by_row.get(row_id, set())),
                 },
             )
@@ -287,7 +288,7 @@ async def _apply_loaded_package_history_operation(
     updated_row_ids = [row.id for row in updated_rows]
     changed_cell_count = sum(len(fields) for fields in changed_fields_by_row.values())
     return GridHistoryMutationResponse(
-        operation_id=str(operation.id),
+        operation_id=str(operation_id),
         action=action,
         dataset_version=dataset_version,
         revision=str(dataset_version),
@@ -301,8 +302,8 @@ async def _apply_loaded_package_history_operation(
         can_undo=action == "redo",
         can_redo=action == "undo",
         invalidation={"type": "rows", "rowIds": updated_row_ids, "reason": f"history_{action}"},
-        latest_undo_operation_id=str(operation.id) if action == "redo" else None,
-        latest_redo_operation_id=str(operation.id) if action == "undo" else None,
+        latest_undo_operation_id=str(operation_id) if action == "redo" else None,
+        latest_redo_operation_id=str(operation_id) if action == "undo" else None,
     )
 
 
@@ -772,15 +773,9 @@ async def _persist_history_side_effects(
 
 
 async def _refresh_history_result_row(session: AsyncSession, row: Any) -> None:
-    refresh = getattr(session, "refresh", None)
-    if not callable(refresh):
-        return
-    if isinstance(row, AuctionGridHistoryRow):
-        await refresh(row.record)
-        await refresh(row.work_item)
-        return
-    if isinstance(row, ProcurementLotRecord):
-        await refresh(row)
+    from app.services.grid_backend_transactions import refresh_package_grid_row
+
+    await refresh_package_grid_row(session, row)
 
 
 def _history_result_item_payload(item: Any) -> dict[str, Any]:

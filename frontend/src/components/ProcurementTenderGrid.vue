@@ -278,6 +278,7 @@ let gridChangesPolling = false
 let gridChangesRefreshInFlight = false
 let pipelineHealthAbortController: AbortController | null = null
 let workspaceAbortController: AbortController | null = null
+let gridMutationQueue: Promise<void> = Promise.resolve()
 
 const gridStatus = computed(() => {
   if (errorMessage.value) return errorMessage.value
@@ -570,9 +571,18 @@ function createGridDataSource(): ProcurementDataSource {
       return datasource.getColumnHistogram?.(request) ?? Promise.resolve([])
     },
     async commitEdits(request) {
-      return commitGridEdits(request)
+      return enqueueGridMutation(() => commitGridEdits(request))
     },
   }
+}
+
+function enqueueGridMutation<T>(task: () => Promise<T>): Promise<T> {
+  const queued = gridMutationQueue.catch(() => undefined).then(task)
+  gridMutationQueue = queued.then(
+    () => undefined,
+    () => undefined,
+  )
+  return queued
 }
 
 async function commitGridEdits(request: ProcurementCommitEditsRequest): Promise<ProcurementCommitEditsResult> {
@@ -584,9 +594,10 @@ async function commitGridEdits(request: ProcurementCommitEditsRequest): Promise<
 
   const cellEdits: ProcurementGridCellEdit[] = []
   for (const edit of request.edits) {
-    cellEdits.push(...buildProcurementGridCellEditsFromPatch(String(edit.rowId), edit.data as Record<string, unknown>))
+    cellEdits.push(...buildProcurementGridCellEditsFromPatch(String(edit.rowId), normalizeDataSourceEditPatch(edit.data)))
   }
   if (!cellEdits.length) {
+    console.warn('[procurement-grid] commitEdits rejected before server commit', request.edits)
     return { rejected: request.edits.map((edit) => ({ rowId: edit.rowId, reason: 'no editable procurement columns' })) }
   }
 
@@ -606,9 +617,21 @@ async function commitGridEdits(request: ProcurementCommitEditsRequest): Promise<
     return { committed: request.edits.map((edit) => ({ rowId: edit.rowId, revision: response.datasetVersion })) }
   } catch (error) {
     errorMessage.value = formatCommitError(error)
+    console.warn('[procurement-grid] commitEdits rejected after server commit failed', request.edits, error)
     await rowModel.value?.refresh('manual')
     return { rejected: request.edits.map((edit) => ({ rowId: edit.rowId, reason: errorMessage.value })) }
   }
+}
+
+function normalizeDataSourceEditPatch(patch: Record<string, unknown> | null | undefined) {
+  if (!patch || typeof patch !== 'object') return {}
+  if ('data' in patch && patch.data && typeof patch.data === 'object' && !Array.isArray(patch.data)) {
+    return patch.data as Record<string, unknown>
+  }
+  if ('patch' in patch && patch.patch && typeof patch.patch === 'object' && !Array.isArray(patch.patch)) {
+    return patch.patch as Record<string, unknown>
+  }
+  return patch
 }
 
 function isTextEditingTarget(target: EventTarget | null) {
@@ -651,9 +674,11 @@ function handleProcurementGridUndoRedo(event: KeyboardEvent) {
       if (!datasource) {
         throw new Error('Procurement grid datasource is not initialized')
       }
-      const response = isUndoShortcut(event)
-        ? await datasource.undoHistory()
-        : await datasource.redoHistory()
+      const response = await enqueueGridMutation(() =>
+        isUndoShortcut(event)
+          ? datasource.undoHistory()
+          : datasource.redoHistory(),
+      )
       await applyProcurementHistoryMutation(response)
       errorMessage.value = ''
     } catch (error) {
