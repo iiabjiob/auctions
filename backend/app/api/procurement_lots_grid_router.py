@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,6 +26,7 @@ from app.services.grid_backend_history import redo_grid_operation, undo_grid_ope
 
 
 router = APIRouter(prefix="/api/procurement-lots", tags=["Procurement Lots Grid"])
+GRID_MUTATION_ROUTE_TIMEOUT_SECONDS = 40.0
 
 
 @router.post("/pull", response_model=ProcurementLotsGridPullResponse)
@@ -66,12 +69,15 @@ async def commit_procurement_lots_edits(
     current_user: UserModel = Depends(get_current_user),
 ) -> ProcurementLotsGridEditResponse:
     try:
-        response = await commit_procurement_lot_grid_edits(
-            session,
-            payload,
-            workspace_id=workspace_id or DEFAULT_GRID_WORKSPACE_ID,
-            user_id=current_user.id,
-            session_id=grid_session_id,
+        response = await asyncio.wait_for(
+            commit_procurement_lot_grid_edits(
+                session,
+                payload,
+                workspace_id=workspace_id or DEFAULT_GRID_WORKSPACE_ID,
+                user_id=current_user.id,
+                session_id=grid_session_id,
+            ),
+            timeout=GRID_MUTATION_ROUTE_TIMEOUT_SECONDS,
         )
         await session.rollback()
         return response
@@ -104,12 +110,15 @@ async def commit_procurement_lots_fill(
     current_user: UserModel = Depends(get_current_user),
 ) -> ProcurementLotsGridEditResponse:
     try:
-        response = await commit_procurement_lot_grid_fill(
-            session,
-            payload,
-            workspace_id=workspace_id or DEFAULT_GRID_WORKSPACE_ID,
-            user_id=current_user.id,
-            session_id=grid_session_id,
+        response = await asyncio.wait_for(
+            commit_procurement_lot_grid_fill(
+                session,
+                payload,
+                workspace_id=workspace_id or DEFAULT_GRID_WORKSPACE_ID,
+                user_id=current_user.id,
+                session_id=grid_session_id,
+            ),
+            timeout=GRID_MUTATION_ROUTE_TIMEOUT_SECONDS,
         )
         await session.commit()
         return response
@@ -142,12 +151,15 @@ async def commit_procurement_lots_fill_commit(
     current_user: UserModel = Depends(get_current_user),
 ) -> dict[str, object]:
     try:
-        response = await commit_procurement_lot_grid_fill_commit(
-            session,
-            payload,
-            workspace_id=workspace_id or payload.workspace_id or DEFAULT_GRID_WORKSPACE_ID,
-            user_id=_resolve_grid_user_id(payload.user_id, current_user),
-            session_id=grid_session_id or payload.session_id,
+        response = await asyncio.wait_for(
+            commit_procurement_lot_grid_fill_commit(
+                session,
+                payload,
+                workspace_id=workspace_id or payload.workspace_id or DEFAULT_GRID_WORKSPACE_ID,
+                user_id=_resolve_grid_user_id(payload.user_id, current_user),
+                session_id=grid_session_id or payload.session_id,
+            ),
+            timeout=GRID_MUTATION_ROUTE_TIMEOUT_SECONDS,
         )
         await session.commit()
         row_ids = [row.id for row in response.updated_rows]
@@ -206,13 +218,16 @@ async def undo_procurement_lot_grid_operation(
     current_user: UserModel = Depends(get_current_user),
 ):
     try:
-        response = await undo_grid_operation(
-            session,
-            workspace_id=workspace_id or DEFAULT_GRID_WORKSPACE_ID,
-            table_id="procurement-lots",
-            operation_id=operation_id,
-            user_id=current_user.id,
-            session_id=grid_session_id,
+        response = await asyncio.wait_for(
+            undo_grid_operation(
+                session,
+                workspace_id=workspace_id or DEFAULT_GRID_WORKSPACE_ID,
+                table_id="procurement-lots",
+                operation_id=operation_id,
+                user_id=current_user.id,
+                session_id=grid_session_id,
+            ),
+            timeout=GRID_MUTATION_ROUTE_TIMEOUT_SECONDS,
         )
         await session.commit()
         return response
@@ -239,13 +254,16 @@ async def redo_procurement_lot_grid_operation(
     current_user: UserModel = Depends(get_current_user),
 ):
     try:
-        response = await redo_grid_operation(
-            session,
-            workspace_id=workspace_id or DEFAULT_GRID_WORKSPACE_ID,
-            table_id="procurement-lots",
-            operation_id=operation_id,
-            user_id=current_user.id,
-            session_id=grid_session_id,
+        response = await asyncio.wait_for(
+            redo_grid_operation(
+                session,
+                workspace_id=workspace_id or DEFAULT_GRID_WORKSPACE_ID,
+                table_id="procurement-lots",
+                operation_id=operation_id,
+                user_id=current_user.id,
+                session_id=grid_session_id,
+            ),
+            timeout=GRID_MUTATION_ROUTE_TIMEOUT_SECONDS,
         )
         await session.commit()
         return response

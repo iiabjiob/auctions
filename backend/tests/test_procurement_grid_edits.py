@@ -94,7 +94,19 @@ class ProcurementGridEditsTests(unittest.IsolatedAsyncioTestCase):
 
         with patch("app.services.grid_backend_edits.ProcurementGridEditService") as service_type:
             service = service_type.return_value
-            service.commit_edits = AsyncMock(return_value=SimpleNamespace(revision="6", rows=[record], rejected=[]))
+            service.commit_edits = AsyncMock(
+                return_value=SimpleNamespace(
+                    revision="6",
+                    rows=[record],
+                    rejected=[],
+                    committed=[
+                        SimpleNamespace(row_id="zakupki:123", column_id="workflowStatus", revision="row-revision"),
+                        SimpleNamespace(row_id="zakupki:123", column_id="quantity", revision="row-revision"),
+                        SimpleNamespace(row_id="zakupki:123", column_id="documentationPresent", revision="row-revision"),
+                        SimpleNamespace(row_id="zakupki:123", column_id="certificateRequirements", revision="row-revision"),
+                    ],
+                )
+            )
             response = await commit_procurement_lot_grid_edits(session, request, user_id="user-1", session_id="s-1")
 
         self.assertIn("decision", record.search_text or "")
@@ -105,7 +117,15 @@ class ProcurementGridEditsTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(response.updated_rows[0].row["documentationPresent"])
         self.assertEqual(response.updated_rows[0].row["certificateRequirements"], "ГОСТ 12.4")
         self.assertEqual(response.revision, "6")
-        self.assertEqual(response.committed, [{"rowId": "zakupki:123", "revision": "6"}])
+        self.assertEqual(
+            response.committed,
+            [
+                {"rowId": "zakupki:123", "columnId": "workflowStatus", "revision": "6"},
+                {"rowId": "zakupki:123", "columnId": "quantity", "revision": "6"},
+                {"rowId": "zakupki:123", "columnId": "documentationPresent", "revision": "6"},
+                {"rowId": "zakupki:123", "columnId": "certificateRequirements", "revision": "6"},
+            ],
+        )
         self.assertEqual(response.invalidation, {"type": "rows", "rowIds": ["zakupki:123"], "reason": "edit"})
         self.assertEqual(response.rows[0].id, "zakupki:123")
 

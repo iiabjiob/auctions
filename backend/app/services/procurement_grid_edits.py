@@ -175,7 +175,7 @@ async def commit_procurement_lot_grid_edits(
     history_status = getattr(result, "history_status", None)
     committed_cells = getattr(result, "committed", [])
     committed_payload = [
-        {"rowId": item.row_id, "columnId": item.column_id, "revision": item.revision}
+        {"rowId": item.row_id, "columnId": item.column_id, "revision": str(result.revision)}
         for item in committed_cells
     ]
     if not committed_payload:

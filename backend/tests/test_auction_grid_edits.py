@@ -113,7 +113,15 @@ class AuctionGridEditsTests(unittest.IsolatedAsyncioTestCase):
         with patch("app.services.grid_backend_edits.AuctionGridEditService") as service_type:
             service = service_type.return_value
             service.commit_edits = AsyncMock(
-                return_value=SimpleNamespace(revision="6", rows=[SimpleNamespace(record=record)], rejected=[])
+                return_value=SimpleNamespace(
+                    revision="6",
+                    rows=[SimpleNamespace(record=record)],
+                    rejected=[],
+                    committed=[
+                        SimpleNamespace(row_id="tbankrot:auction-1:lot-1", column_id="marketValue", revision="row-revision"),
+                        SimpleNamespace(row_id="tbankrot:auction-1:lot-1", column_id="excludeFromAnalysis", revision="row-revision"),
+                    ],
+                )
             )
             response = await commit_auction_lot_grid_edits(session, request, user_id="user-1", session_id="session-1")
 
@@ -121,7 +129,13 @@ class AuctionGridEditsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.updated_rows[0].id, "tbankrot:auction-1:lot-1")
         self.assertEqual(response.updated_rows[0].row.market_value, Decimal("123.45"))
         self.assertEqual(response.revision, "6")
-        self.assertEqual(response.committed, [{"rowId": "tbankrot:auction-1:lot-1", "revision": "6"}])
+        self.assertEqual(
+            response.committed,
+            [
+                {"rowId": "tbankrot:auction-1:lot-1", "columnId": "marketValue", "revision": "6"},
+                {"rowId": "tbankrot:auction-1:lot-1", "columnId": "excludeFromAnalysis", "revision": "6"},
+            ],
+        )
         self.assertEqual(
             response.invalidation,
             {"type": "rows", "rowIds": ["tbankrot:auction-1:lot-1"], "reason": "edit"},

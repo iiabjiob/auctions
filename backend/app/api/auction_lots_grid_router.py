@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,6 +26,7 @@ from app.services.grid_backend_history import redo_grid_operation, undo_grid_ope
 
 
 router = APIRouter(prefix="/api/auction-lots", tags=["Auction Lots Grid"])
+GRID_MUTATION_ROUTE_TIMEOUT_SECONDS = 40.0
 
 
 @router.post("/pull", response_model=AuctionLotsGridPullResponse)
@@ -66,12 +69,15 @@ async def commit_auction_lots_edits(
     current_user: UserModel = Depends(get_current_user),
 ) -> AuctionLotsGridEditResponse:
     try:
-        response = await commit_auction_lot_grid_edits(
-            session,
-            payload,
-            workspace_id=workspace_id or DEFAULT_GRID_WORKSPACE_ID,
-            user_id=current_user.id,
-            session_id=grid_session_id,
+        response = await asyncio.wait_for(
+            commit_auction_lot_grid_edits(
+                session,
+                payload,
+                workspace_id=workspace_id or DEFAULT_GRID_WORKSPACE_ID,
+                user_id=current_user.id,
+                session_id=grid_session_id,
+            ),
+            timeout=GRID_MUTATION_ROUTE_TIMEOUT_SECONDS,
         )
         await session.rollback()
         return response
@@ -105,22 +111,28 @@ async def commit_auction_lots_fill(
 ) -> dict[str, object]:
     try:
         if isinstance(payload, AuctionLotsGridFillCommitRequest):
-            response = await commit_auction_lot_grid_fill_commit(
-                session,
-                payload,
-                workspace_id=workspace_id or payload.workspace_id or DEFAULT_GRID_WORKSPACE_ID,
-                user_id=_resolve_grid_user_id(payload.user_id, current_user),
-                session_id=grid_session_id or payload.session_id,
+            response = await asyncio.wait_for(
+                commit_auction_lot_grid_fill_commit(
+                    session,
+                    payload,
+                    workspace_id=workspace_id or payload.workspace_id or DEFAULT_GRID_WORKSPACE_ID,
+                    user_id=_resolve_grid_user_id(payload.user_id, current_user),
+                    session_id=grid_session_id or payload.session_id,
+                ),
+                timeout=GRID_MUTATION_ROUTE_TIMEOUT_SECONDS,
             )
             operation_id = payload.operation_id
             affected_cell_count = len(response.updated_rows) * max(1, len(payload.fill_columns))
         else:
-            response = await commit_auction_lot_grid_fill(
-                session,
-                payload,
-                workspace_id=workspace_id or DEFAULT_GRID_WORKSPACE_ID,
-                user_id=current_user.id,
-                session_id=grid_session_id,
+            response = await asyncio.wait_for(
+                commit_auction_lot_grid_fill(
+                    session,
+                    payload,
+                    workspace_id=workspace_id or DEFAULT_GRID_WORKSPACE_ID,
+                    user_id=current_user.id,
+                    session_id=grid_session_id,
+                ),
+                timeout=GRID_MUTATION_ROUTE_TIMEOUT_SECONDS,
             )
             operation_id = None
             affected_cell_count = len(response.updated_rows)
@@ -181,13 +193,16 @@ async def undo_auction_lot_grid_operation(
     current_user: UserModel = Depends(get_current_user),
 ):
     try:
-        response = await undo_grid_operation(
-            session,
-            workspace_id=workspace_id or DEFAULT_GRID_WORKSPACE_ID,
-            table_id="auction-lots",
-            operation_id=operation_id,
-            user_id=current_user.id,
-            session_id=grid_session_id,
+        response = await asyncio.wait_for(
+            undo_grid_operation(
+                session,
+                workspace_id=workspace_id or DEFAULT_GRID_WORKSPACE_ID,
+                table_id="auction-lots",
+                operation_id=operation_id,
+                user_id=current_user.id,
+                session_id=grid_session_id,
+            ),
+            timeout=GRID_MUTATION_ROUTE_TIMEOUT_SECONDS,
         )
         await session.commit()
         return response
@@ -214,13 +229,16 @@ async def redo_auction_lot_grid_operation(
     current_user: UserModel = Depends(get_current_user),
 ):
     try:
-        response = await redo_grid_operation(
-            session,
-            workspace_id=workspace_id or DEFAULT_GRID_WORKSPACE_ID,
-            table_id="auction-lots",
-            operation_id=operation_id,
-            user_id=current_user.id,
-            session_id=grid_session_id,
+        response = await asyncio.wait_for(
+            redo_grid_operation(
+                session,
+                workspace_id=workspace_id or DEFAULT_GRID_WORKSPACE_ID,
+                table_id="auction-lots",
+                operation_id=operation_id,
+                user_id=current_user.id,
+                session_id=grid_session_id,
+            ),
+            timeout=GRID_MUTATION_ROUTE_TIMEOUT_SECONDS,
         )
         await session.commit()
         return response
