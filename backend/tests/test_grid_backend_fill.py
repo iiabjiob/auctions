@@ -8,7 +8,7 @@ from uuid import UUID
 
 from affino_grid_backend import ApiException
 
-from app.services.grid_backend_fill import ProcurementGridFillService
+from app.services.grid_backend_fill import AuctionGridFillService, ProcurementGridFillService
 from app.services.procurement_grid_fill import GridBackendFillRequest, GridBackendFillRange
 
 
@@ -116,6 +116,42 @@ class GridBackendFillTests(unittest.IsolatedAsyncioTestCase):
         service = ProcurementGridFillService()
 
         self.assertEqual(str(service.normalize_fill_value("quantity", "10,5")), "10.5")
+
+    async def test_auction_collect_history_status_delegates_as_fill_edit_request(self) -> None:
+        service = AuctionGridFillService()
+        service._edit_service.collect_history_status = AsyncMock(return_value=None)
+        request = GridBackendFillRequest(
+            mode="copy",
+            source_row_ids=["tbankrot:auction-1:lot-1"],
+            target_row_ids=["tbankrot:auction-1:lot-2"],
+            fill_columns=["marketValue"],
+            reference_columns=["marketValue"],
+            source_range=GridBackendFillRange(startRow=0, endRow=1),
+            target_range=GridBackendFillRange(startRow=1, endRow=2),
+            projection={},
+            metadata={"edits": [{"rowId": "tbankrot:auction-1:lot-2", "columnId": "marketValue"}]},
+            base_version=5,
+            user_id="u1",
+            session_id="s1",
+        )
+
+        await service.collect_history_status(
+            SimpleNamespace(),
+            request,
+            operation_id="2d5b96fa-4f0d-4ff6-8b4f-fc7b6c77b8ea",
+            affected_row_ids=["tbankrot:auction-1:lot-2"],
+            affected_indexes=[1],
+            affected_cell_count=1,
+            warnings=[],
+            revision="6",
+            rows=[],
+        )
+
+        service._edit_service.collect_history_status.assert_awaited_once()
+        delegated_request = service._edit_service.collect_history_status.await_args.args[1]
+        self.assertEqual(delegated_request.operation_type, "fill")
+        self.assertEqual(delegated_request.edits[0].row_id, "tbankrot:auction-1:lot-2")
+        self.assertEqual(delegated_request.edits[0].column_id, "marketValue")
 
 
 if __name__ == "__main__":

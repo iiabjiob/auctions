@@ -5,10 +5,11 @@ from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from app.api.auction_lots_grid_router import commit_auction_lots_fill, resolve_auction_lots_fill_boundary
 from app.models.auction import AuctionLotRecord
-from app.schemas.auction_grid import AuctionLotsGridFillRequest
+from app.schemas.auction_grid import AuctionLotsGridFillCommitRequest, AuctionLotsGridFillRequest
 from app.schemas.auctions import LotDatagridRow, LotFreshness, LotRating
-from app.services.auction_grid_fill import commit_auction_lot_grid_fill
+from app.services.auction_grid_fill import commit_auction_lot_grid_fill, commit_auction_lot_grid_fill_commit
 
 
 def make_record(row_id: str, market_value: Decimal | None) -> AuctionLotRecord:
@@ -107,6 +108,91 @@ class AuctionGridFillTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(backend_request.base_version, 5)
         self.assertEqual([edit.row_id for edit in backend_request.edits], ["tbankrot:auction-1:lot-2", "tbankrot:auction-1:lot-3"])
         self.assertEqual([edit.value for edit in backend_request.edits], [Decimal("10"), Decimal("10")])
+
+    async def test_package_fill_commit_service_uses_row_ids_without_projection_pull(self) -> None:
+        request = AuctionLotsGridFillCommitRequest.model_validate(
+            {
+                "operationId": "fill-1",
+                "baseRevision": "5",
+                "sourceRange": {"startRow": 0, "endRow": 1},
+                "targetRange": {"startRow": 1, "endRow": 2},
+                "sourceRowIds": ["tbankrot:auction-1:lot-1"],
+                "targetRowIds": ["tbankrot:auction-1:lot-2"],
+                "fillColumns": ["marketValue"],
+                "referenceColumns": ["marketValue"],
+                "mode": "copy",
+                "projection": {"tableId": "auction-lots"},
+            }
+        )
+
+        with patch("app.services.grid_backend_fill.AuctionGridFillService") as service_type:
+            service_type.return_value.commit_fill = AsyncMock(return_value=SimpleNamespace(revision="6", rows=[]))
+            response = await commit_auction_lot_grid_fill_commit(
+                FakeSession(),
+                request,
+                user_id="user-1",
+                session_id="session-1",
+            )
+
+        self.assertEqual(response.dataset_version, 6)
+        backend_request = service_type.return_value.commit_fill.await_args.args[1]
+        self.assertEqual(backend_request.operation_id, "fill-1")
+        self.assertEqual(backend_request.base_version, 5)
+        self.assertEqual(backend_request.source_row_ids, ["tbankrot:auction-1:lot-1"])
+        self.assertEqual(backend_request.target_row_ids, ["tbankrot:auction-1:lot-2"])
+        self.assertEqual(backend_request.metadata["edits"], [{"rowId": "tbankrot:auction-1:lot-2", "columnId": "marketValue"}])
+
+    async def test_package_fill_commit_router_returns_invalidation_payload(self) -> None:
+        session = SimpleNamespace(commit=AsyncMock(), rollback=AsyncMock())
+        request = AuctionLotsGridFillCommitRequest.model_validate(
+            {
+                "operationId": "fill-1",
+                "baseRevision": "5",
+                "sourceRange": {"startRow": 0, "endRow": 1, "startColumn": 0, "endColumn": 0},
+                "targetRange": {"startRow": 1, "endRow": 2, "startColumn": 0, "endColumn": 0},
+                "sourceRowIds": ["tbankrot:auction-1:lot-1"],
+                "targetRowIds": ["tbankrot:auction-1:lot-2"],
+                "fillColumns": ["marketValue"],
+                "referenceColumns": ["marketValue"],
+                "mode": "copy",
+                "projection": {},
+            }
+        )
+
+        with patch(
+            "app.api.auction_lots_grid_router.commit_auction_lot_grid_fill_commit",
+            AsyncMock(
+                return_value=SimpleNamespace(
+                    dataset_version=6,
+                    updated_rows=[
+                        SimpleNamespace(id="tbankrot:auction-1:lot-2", model_dump=lambda by_alias: {"id": "tbankrot:auction-1:lot-2"})
+                    ],
+                )
+            ),
+        ) as fill_commit:
+            response = await commit_auction_lots_fill(
+                request,
+                workspace_id=None,
+                grid_session_id=None,
+                session=session,
+                current_user=SimpleNamespace(id="user-1"),
+            )
+
+        fill_commit.assert_awaited_once()
+        session.commit.assert_awaited_once()
+        self.assertEqual(response["operationId"], "fill-1")
+        self.assertEqual(response["datasetVersion"], 6)
+        self.assertEqual(response["affectedRowCount"], 1)
+        self.assertEqual(response["affectedCellCount"], 1)
+        self.assertEqual(
+            response["invalidation"],
+            {"type": "rows", "rowIds": ["tbankrot:auction-1:lot-2"], "reason": "fill"},
+        )
+
+    async def test_package_fill_boundary_returns_unresolved(self) -> None:
+        response = await resolve_auction_lots_fill_boundary({}, current_user=SimpleNamespace(id="user-1"))
+
+        self.assertEqual(response, {"boundaryKind": "unresolved", "endRowIndex": None})
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ from app.api.deps import get_current_user
 from app.infrastructure.db.database import get_db, get_read_db
 from app.models import UserModel
 from app.schemas.auction_grid import (
+    AuctionLotsGridFillCommitRequest,
     AuctionLotsGridEditRequest,
     AuctionLotsGridEditResponse,
     AuctionLotsGridFillRequest,
@@ -17,7 +18,7 @@ from app.schemas.auction_grid import (
 )
 from app.services.auction_grid import get_auction_lots_grid_histogram, pull_auction_lots_grid
 from app.services.auction_grid_edits import AuctionGridEditConflictError, commit_auction_lot_grid_edits
-from app.services.auction_grid_fill import commit_auction_lot_grid_fill
+from app.services.auction_grid_fill import commit_auction_lot_grid_fill, commit_auction_lot_grid_fill_commit
 from app.services.auction_grid_state import DEFAULT_GRID_WORKSPACE_ID
 
 
@@ -90,24 +91,48 @@ async def commit_auction_lots_edits(
         raise
 
 
-@router.post("/fill/commit", response_model=AuctionLotsGridEditResponse)
+@router.post("/fill/commit")
 async def commit_auction_lots_fill(
-    payload: AuctionLotsGridFillRequest,
+    payload: AuctionLotsGridFillRequest | AuctionLotsGridFillCommitRequest,
     workspace_id: str | None = Header(default=None, alias="X-Workspace-Id"),
     grid_session_id: str | None = Header(default=None, alias="X-Grid-Session-Id"),
     session: AsyncSession = Depends(get_db),
     current_user: UserModel = Depends(get_current_user),
-) -> AuctionLotsGridEditResponse:
+) -> dict[str, object]:
     try:
-        response = await commit_auction_lot_grid_fill(
-            session,
-            payload,
-            workspace_id=workspace_id or DEFAULT_GRID_WORKSPACE_ID,
-            user_id=current_user.id,
-            session_id=grid_session_id,
-        )
+        if isinstance(payload, AuctionLotsGridFillCommitRequest):
+            response = await commit_auction_lot_grid_fill_commit(
+                session,
+                payload,
+                workspace_id=workspace_id or payload.workspace_id or DEFAULT_GRID_WORKSPACE_ID,
+                user_id=_resolve_grid_user_id(payload.user_id, current_user),
+                session_id=grid_session_id or payload.session_id,
+            )
+            operation_id = payload.operation_id
+            affected_cell_count = len(response.updated_rows) * max(1, len(payload.fill_columns))
+        else:
+            response = await commit_auction_lot_grid_fill(
+                session,
+                payload,
+                workspace_id=workspace_id or DEFAULT_GRID_WORKSPACE_ID,
+                user_id=current_user.id,
+                session_id=grid_session_id,
+            )
+            operation_id = None
+            affected_cell_count = len(response.updated_rows)
         await session.commit()
-        return response
+        row_ids = [row.id for row in response.updated_rows]
+        return {
+            "operationId": operation_id,
+            "revision": str(response.dataset_version),
+            "datasetVersion": response.dataset_version,
+            "updatedRows": [row.model_dump(by_alias=True) for row in response.updated_rows],
+            "rows": [row.model_dump(by_alias=True) for row in response.updated_rows],
+            "affectedRowCount": len(row_ids),
+            "affectedCellCount": affected_cell_count,
+            "invalidation": {"type": "rows", "rowIds": row_ids, "reason": "fill"},
+            "warnings": [],
+        }
     except AuctionGridEditConflictError as error:
         await session.rollback()
         raise HTTPException(
@@ -123,3 +148,18 @@ async def commit_auction_lots_fill(
     except Exception:
         await session.rollback()
         raise
+
+
+@router.post("/fill-boundary")
+async def resolve_auction_lots_fill_boundary(
+    payload: dict[str, object],
+    current_user: UserModel = Depends(get_current_user),
+) -> dict[str, object | None]:
+    del payload, current_user
+    return {"boundaryKind": "unresolved", "endRowIndex": None}
+
+
+def _resolve_grid_user_id(request_user_id: str | None, current_user: UserModel) -> str:
+    if request_user_id is not None and request_user_id.strip() and request_user_id.strip() != current_user.id:
+        raise HTTPException(status_code=403, detail="Cannot access another user's grid history")
+    return current_user.id
