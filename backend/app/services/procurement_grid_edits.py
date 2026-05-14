@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -9,34 +8,23 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.grid import GridChangeEventModel
-from app.models.procurement import ProcurementLotRecord, _sync_procurement_lot_search_text
+from app.models.procurement import ProcurementLotRecord
 from app.schemas.procurement_grid import (
     ProcurementLotsGridCellEdit,
     ProcurementLotsGridEditRequest,
     ProcurementLotsGridEditResponse,
     ProcurementLotsGridPullRow,
 )
-from app.services.grid_state import (
-    clear_redo_grid_operations,
-    get_or_create_grid_revision,
-    record_grid_cell_events_from_payloads,
-    record_grid_operation,
-)
 from app.services.procurement_calculator import (
     calculator_field_for_column,
     coerce_calculator_input_value,
-    recalculate_procurement_lot,
 )
 from app.services.procurement_grid import build_procurement_grid_row
 from app.services.procurement_grid_state import (
     DEFAULT_GRID_WORKSPACE_ID,
     PROCUREMENT_LOTS_TABLE_ID,
-    bump_procurement_lot_dataset_version,
     procurement_lot_grid_row_id,
 )
-from app.services.procurement_notifications import enqueue_procurement_telegram_notifications
-from app.services.procurement_scoring import apply_procurement_score
 
 
 class ProcurementGridEditConflictError(Exception):
@@ -134,125 +122,45 @@ async def commit_procurement_lot_grid_edits(
     user_id: str | None = None,
     session_id: str | None = None,
 ) -> ProcurementLotsGridEditResponse:
-    prepared_edits = [_prepare_edit(edit) for edit in request.edits]
-    edits_by_row: dict[str, list[PreparedProcurementGridEdit]] = defaultdict(list)
-    row_order: list[str] = []
-    for edit in prepared_edits:
-        if edit.row_id not in edits_by_row:
-            row_order.append(edit.row_id)
-        edits_by_row[edit.row_id].append(edit)
+    from affino_grid_backend import ApiException
 
-    revision = await get_or_create_grid_revision(session, workspace_id, PROCUREMENT_LOTS_TABLE_ID)
-    current_version = int(revision.dataset_version)
-    if current_version != request.base_version:
-        raise ProcurementGridEditConflictError(base_version=request.base_version, current_version=current_version)
+    from app.services.grid_backend_edits import ProcurementGridEditService, procurement_backend_edit_request
+    from app.services.grid_state import get_dataset_version
 
-    updated_records: dict[str, ProcurementLotRecord] = {}
-    changed_fields_by_row: dict[str, set[str]] = {}
-    undo_values: dict[tuple[str, str], dict[str, Any]] = {}
-    redo_values: dict[tuple[str, str], dict[str, Any]] = {}
-
-    for requested_row_id in row_order:
-        record = await _find_record_by_row_id(session, requested_row_id)
-        if record is None:
-            raise LookupError(f"Procurement lot row was not found for rowId={requested_row_id}")
-
-        stable_row_id = procurement_lot_grid_row_id(record)
-        changed_fields_by_row.setdefault(stable_row_id, set())
-        should_recalculate = False
-
-        for edit in edits_by_row[requested_row_id]:
-            key = (stable_row_id, edit.field_name)
-            if key not in undo_values:
-                old_value = (
-                    _calculator_input_value(record, edit.field_name)
-                    if edit.target == "calculator"
-                    else getattr(record, edit.field_name)
-                )
-                undo_values[key] = {
-                    "rowId": stable_row_id,
-                    "columnId": edit.column_id,
-                    "field": edit.field_name,
-                    "target": edit.target,
-                    "value": _json_value(old_value),
-                }
-            if edit.target == "calculator":
-                _set_calculator_input_value(record, edit.field_name, edit.value)
-            else:
-                setattr(record, edit.field_name, edit.value)
-            should_recalculate = should_recalculate or (
-                edit.target == "calculator" or edit.field_name in CALCULATION_TRIGGER_RECORD_FIELDS
-            )
-            redo_values[key] = {
-                "rowId": stable_row_id,
-                "columnId": edit.column_id,
-                "field": edit.field_name,
-                "target": edit.target,
-                "value": _json_value(edit.value),
-            }
-            changed_fields_by_row[stable_row_id].add(edit.field_name)
-
-        if should_recalculate:
-            recalculate_procurement_lot(record)
-        apply_procurement_score(record)
-        await enqueue_procurement_telegram_notifications(session, record)
-        _sync_procurement_lot_search_text(None, None, record)
-        updated_records[stable_row_id] = record
-
-    resulting_version = await bump_procurement_lot_dataset_version(session, workspace_id=workspace_id)
-    for row_id, changed_fields in changed_fields_by_row.items():
-        session.add(
-            GridChangeEventModel(
-                workspace_id=workspace_id,
-                table_id=PROCUREMENT_LOTS_TABLE_ID,
-                dataset_version=resulting_version,
-                event_type="row_updated",
-                row_id=row_id,
-                payload={"source": "grid_edit", "changed_fields": sorted(changed_fields)},
-            )
-        )
-
-    await clear_redo_grid_operations(
-        session,
-        workspace_id=workspace_id,
-        table_id=PROCUREMENT_LOTS_TABLE_ID,
-        user_id=user_id,
-        session_id=session_id,
-    )
-    undo_payload = {"edits": list(undo_values.values())}
-    redo_payload = {"edits": list(redo_values.values())}
-    operation = await record_grid_operation(
-        session,
-        workspace_id=workspace_id,
-        table_id=PROCUREMENT_LOTS_TABLE_ID,
-        operation_type="edit",
-        user_id=user_id,
-        session_id=session_id,
+    backend_request = procurement_backend_edit_request(
         base_version=request.base_version,
-        resulting_version=resulting_version,
-        payload={"edits": [edit.model_dump(by_alias=True, mode="json") for edit in request.edits]},
-        undo_payload=undo_payload,
-        redo_payload=redo_payload,
-    )
-    await record_grid_cell_events_from_payloads(
-        session,
-        operation_id=operation.id,
+        edits=request.edits,
         workspace_id=workspace_id,
-        table_id=PROCUREMENT_LOTS_TABLE_ID,
-        undo_payload=undo_payload,
-        redo_payload=redo_payload,
+        user_id=user_id,
+        session_id=session_id,
+        payload={"edits": [edit.model_dump(by_alias=True, mode="json") for edit in request.edits]},
     )
-    await session.flush()
+    service = ProcurementGridEditService(workspace_id=workspace_id)
+    try:
+        result = await service.commit_edits(session, backend_request)
+    except ApiException as error:
+        if error.code == "stale-revision":
+            current_version = await get_dataset_version(session, workspace_id, PROCUREMENT_LOTS_TABLE_ID)
+            raise ProcurementGridEditConflictError(base_version=request.base_version, current_version=current_version) from error
+        if error.status_code == 404:
+            raise LookupError(error.message) from error
+        raise ValueError(error.message) from error
+
+    if result.rejected:
+        reason = result.rejected[0].reason
+        if reason == "row-not-found":
+            raise LookupError(reason)
+        raise ValueError(reason)
 
     return ProcurementLotsGridEditResponse(
-        dataset_version=resulting_version,
+        dataset_version=int(result.revision),
         updated_rows=[
             ProcurementLotsGridPullRow(
-                id=row_id,
+                id=procurement_lot_grid_row_id(record),
                 index=int(record.id or 0),
                 row=build_procurement_grid_row(record),
             )
-            for row_id, record in updated_records.items()
+            for record in result.rows
         ],
     )
 

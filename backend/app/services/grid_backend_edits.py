@@ -70,6 +70,13 @@ class ProcurementGridEditService(GridEditServiceBase):
     def create_edit_operation_id(self) -> str:
         return str(uuid4())
 
+    def reject_reason_for_edit(self, row: Any | None, column_id: str) -> str | None:
+        reason = super().reject_reason_for_edit(row, column_id)
+        if reason is None:
+            return None
+        status_code = 404 if reason == "row-not-found" else 400
+        raise ApiException(status_code=status_code, code=reason, message=reason)
+
     async def fetch_rows_by_ids(
         self,
         session: AsyncSession,
