@@ -9,7 +9,7 @@ export function createAffinoPostJsonFetch(postJson: PostJson, getJson?: GetJson)
   const lastJsonByPath = new Map<string, unknown>()
 
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    const path = resolvePath(input)
+    const path = resolvePath(input, init?.headers)
     const method = String(init?.method ?? 'GET').toUpperCase()
     if (method === 'GET') {
       if (!getJson) {
@@ -42,9 +42,14 @@ export function createAffinoPostJsonFetch(postJson: PostJson, getJson?: GetJson)
   return fetchImpl
 }
 
-function resolvePath(input: RequestInfo | URL) {
+function resolvePath(input: RequestInfo | URL, headersInit?: HeadersInit) {
   const raw = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
   const url = new URL(raw, window.location.origin)
+  const headers = new Headers(headersInit)
+  const tableId = headers.get('X-Grid-Table-Id')
+  if (url.pathname === '/api/changes' && tableId && !url.searchParams.has('tableId')) {
+    url.searchParams.set('tableId', tableId)
+  }
   return `${url.pathname}${url.search}`
 }
 

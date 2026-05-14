@@ -49,6 +49,7 @@ class FakeSession:
         self.flush_count = 0
         self.commit_count = 0
         self.rollback_count = 0
+        self.active_transaction = False
 
     async def scalar(self, statement: object) -> None:
         return None
@@ -61,9 +62,13 @@ class FakeSession:
 
     async def commit(self) -> None:
         self.commit_count += 1
+        self.active_transaction = False
 
     async def rollback(self) -> None:
         self.rollback_count += 1
+
+    def in_transaction(self) -> bool:
+        return self.active_transaction
 
 
 class ProcurementGridEditsTests(unittest.IsolatedAsyncioTestCase):
@@ -189,6 +194,24 @@ class ProcurementGridEditsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(backend_request.workspace_id, "default")
         self.assertEqual(backend_request.user_id, "user-1")
         self.assertEqual(backend_request.session_id, "session-1")
+
+    async def test_commit_edits_closes_implicit_transaction_before_package_service(self) -> None:
+        record = make_record()
+        session = FakeSession()
+        session.active_transaction = True
+        request = ProcurementLotsGridEditRequest.model_validate(
+            {"baseVersion": 5, "edits": [{"rowId": "zakupki:123", "columnId": "quantity", "value": 1}]}
+        )
+
+        with patch("app.services.grid_backend_edits.ProcurementGridEditService") as service_type:
+            service_type.return_value.commit_edits = AsyncMock(
+                return_value=SimpleNamespace(revision="6", rows=[record], rejected=[])
+            )
+            await commit_procurement_lot_grid_edits(session, request)
+
+        self.assertEqual(session.commit_count, 1)
+        self.assertFalse(session.active_transaction)
+        service_type.return_value.commit_edits.assert_awaited_once()
 
     async def test_calculator_input_edit_recalculates_outputs(self) -> None:
         record = make_record()

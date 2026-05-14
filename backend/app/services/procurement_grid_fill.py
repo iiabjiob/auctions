@@ -186,10 +186,12 @@ async def commit_procurement_lot_grid_backend_fill(
     conflict_base_version: int | None,
 ) -> ProcurementLotsGridEditResponse:
     from app.services.grid_backend_fill import ProcurementGridFillService
+    from app.services.grid_backend_transactions import prepare_session_for_package_transaction
     from app.services.grid_state import get_dataset_version
 
     service = ProcurementGridFillService(workspace_id=backend_request.workspace_id)
     try:
+        await prepare_session_for_package_transaction(session)
         result = await service.commit_fill(session, backend_request)
     except ApiException as error:
         if error.code == "stale-revision":

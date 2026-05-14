@@ -142,8 +142,10 @@ export function createAuctionServerDatasource<TApiRow, TRow>(
       range: { start, end: inclusiveEnd },
       sortModel: request.sortModel ?? [],
       filterModel: options.hasFilterModel(request.filterModel) ? request.filterModel ?? null : null,
+      groupBy: null,
+      pagination: { snapshot: null },
       signal: request.signal,
-    } as DataGridDataSourcePullRequest)
+    } as unknown as DataGridDataSourcePullRequest)
 
     const data = fetchImpl.lastJsonByPath.get('/api/auction-lots/pull') as AuctionServerPullResponse<TApiRow> | undefined
     if (!data) {

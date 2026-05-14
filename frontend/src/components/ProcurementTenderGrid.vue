@@ -261,7 +261,7 @@ const workspaceLoading = ref(false)
 const workspaceRefreshing = ref(false)
 const workspaceError = ref('')
 const filters = reactive({
-  source: 'zakupki',
+  source: 'all',
   law: '',
   status: '',
   workflowStatus: '',
@@ -298,7 +298,7 @@ const filterNumber = (value: string) => {
 
 function buildServerFilters(): ProcurementServerGridFilters {
   return {
-    source: filters.source || null,
+    source: filters.source && filters.source !== 'all' ? filters.source : null,
     law: filters.law || null,
     status: filters.status || null,
     workflowStatus: filters.workflowStatus || null,

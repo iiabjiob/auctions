@@ -281,7 +281,12 @@ def build_procurement_grid_row(record: ProcurementLotRecord) -> dict[str, Any]:
 
 
 def _build_procurement_lots_statement(*, grid_filter: dict[str, Any] | None = None):
-    statement = select(ProcurementLotRecord).where(ProcurementLotRecord.lifecycle_status == "active")
+    statement = select(ProcurementLotRecord).where(
+        or_(
+            ProcurementLotRecord.lifecycle_status == "active",
+            ProcurementLotRecord.lifecycle_status.is_(None),
+        )
+    )
     predicate = _grid_filter_predicate(grid_filter)
     if predicate is not None:
         statement = statement.where(predicate)
