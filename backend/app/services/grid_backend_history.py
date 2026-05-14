@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from affino_grid_backend import ApiException, GridColumnDefinition, GridHistoryServiceBase, GridTableDefinition
+from affino_grid_backend import ApiException, GridHistoryServiceBase
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,7 +18,6 @@ from app.schemas.procurement_grid import ProcurementLotsGridPullRow
 from app.services.auction_analysis_config import auction_analysis_config_service
 from app.services.auction_datagrid_payload import validate_datagrid_row_payload
 from app.services.auction_grid_edits import (
-    WORKSPACE_EDIT_COLUMNS,
     _coerce_value as _coerce_auction_value,
     _parse_row_id as _parse_auction_row_id,
     _workspace_field_for_column,
@@ -28,9 +27,14 @@ from app.services.auction_scoring import recalculate_record_rating, sync_record_
 from app.services.auction_search import update_record_search_text
 from app.services.auction_workspace import ensure_work_item
 from app.services.grid_state import get_dataset_version
+from app.services.grid_table_registry import (
+    auction_field_for_column,
+    get_grid_table_definition,
+    is_supported_grid_table,
+    procurement_field_for_column,
+)
 from app.services.lot_decision_report import generate_and_persist_lot_decision_report_snapshot
 from app.services.procurement_calculator import (
-    CALCULATOR_INPUT_COLUMNS,
     calculator_field_for_column,
     coerce_calculator_input_value,
     recalculate_procurement_lot,
@@ -38,7 +42,6 @@ from app.services.procurement_calculator import (
 from app.services.procurement_grid import build_procurement_grid_row
 from app.services.procurement_grid_edits import (
     CALCULATION_TRIGGER_RECORD_FIELDS,
-    PROCUREMENT_EDIT_COLUMNS,
     _calculator_input_value,
     _coerce_value,
     _parse_row_id,
@@ -65,7 +68,7 @@ async def undo_grid_history(
     user_id: str | None = None,
     session_id: str | None = None,
 ) -> GridHistoryMutationResponse:
-    if table_id not in {AUCTION_LOTS_TABLE_ID, PROCUREMENT_LOTS_TABLE_ID}:
+    if not is_supported_grid_table(table_id):
         raise ValueError(f"Unsupported history tableId: {table_id}")
     return await _apply_package_history(
         session,
@@ -85,7 +88,7 @@ async def redo_grid_history(
     user_id: str | None = None,
     session_id: str | None = None,
 ) -> GridHistoryMutationResponse:
-    if table_id not in {AUCTION_LOTS_TABLE_ID, PROCUREMENT_LOTS_TABLE_ID}:
+    if not is_supported_grid_table(table_id):
         raise ValueError(f"Unsupported history tableId: {table_id}")
     return await _apply_package_history(
         session,
@@ -105,7 +108,7 @@ async def get_grid_history_status(
     user_id: str | None = None,
     session_id: str | None = None,
 ) -> GridHistoryStatusResponse:
-    if table_id not in {AUCTION_LOTS_TABLE_ID, PROCUREMENT_LOTS_TABLE_ID}:
+    if not is_supported_grid_table(table_id):
         raise ValueError(f"Unsupported history tableId: {table_id}")
 
     undo_operation = await _find_history_operation(
@@ -287,7 +290,7 @@ class AuctionGridHistoryRow:
 class ProcurementGridHistoryService(GridHistoryServiceBase):
     def __init__(self, *, workspace_id: str) -> None:
         super().__init__(
-            _procurement_table_definition(),
+            get_grid_table_definition(PROCUREMENT_LOTS_TABLE_ID),
             ProcurementGridRevisionService(workspace_id=workspace_id),  # type: ignore[arg-type]
         )
 
@@ -440,7 +443,7 @@ class ProcurementGridHistoryService(GridHistoryServiceBase):
 class AuctionGridHistoryService(GridHistoryServiceBase):
     def __init__(self, *, workspace_id: str) -> None:
         super().__init__(
-            _auction_table_definition(),
+            get_grid_table_definition(AUCTION_LOTS_TABLE_ID),
             AuctionGridRevisionService(workspace_id=workspace_id),  # type: ignore[arg-type]
         )
 
@@ -605,12 +608,9 @@ def _event_wrapped_value(payload: Any) -> Any:
 
 def _field_for_column(column_id: str, *, table_id: str) -> str:
     if table_id == AUCTION_LOTS_TABLE_ID:
-        return _workspace_field_for_column(column_id)
+        return auction_field_for_column(column_id)
     if table_id == PROCUREMENT_LOTS_TABLE_ID:
-        calculator_field = calculator_field_for_column(column_id)
-        if calculator_field is not None:
-            return calculator_field
-        return _procurement_field_for_column(column_id)
+        return procurement_field_for_column(column_id)
     raise ValueError(f"Unsupported history tableId: {table_id}")
 
 
@@ -664,50 +664,3 @@ def _history_result_pull_row(row: Any, *, table_id: str) -> AuctionLotsGridPullR
 
 def _auction_row_id(record: AuctionLotRecord) -> str:
     return f"{record.source_code}:{record.auction_external_id}:{record.lot_external_id}"
-
-
-def _procurement_table_definition() -> GridTableDefinition:
-    columns = {
-        column_id: GridColumnDefinition(
-            id=column_id,
-            model_attr=field_name,
-            editable=True,
-            value_type="string",
-        )
-        for column_id, field_name in PROCUREMENT_EDIT_COLUMNS.items()
-    }
-    for column_id, calculator_field in CALCULATOR_INPUT_COLUMNS.items():
-        columns[column_id] = GridColumnDefinition(
-            id=column_id,
-            model_attr=calculator_field,
-            editable=True,
-            value_type="string",
-        )
-    return GridTableDefinition(
-        table_id=PROCUREMENT_LOTS_TABLE_ID,
-        model=ProcurementLotRecord,
-        row_id_attr="external_id",
-        row_index_attr="id",
-        updated_at_attr="updated_at",
-        columns=columns,
-    )
-
-
-def _auction_table_definition() -> GridTableDefinition:
-    columns = {
-        column_id: GridColumnDefinition(
-            id=column_id,
-            model_attr=field_name,
-            editable=True,
-            value_type="string",
-        )
-        for column_id, field_name in WORKSPACE_EDIT_COLUMNS.items()
-    }
-    return GridTableDefinition(
-        table_id=AUCTION_LOTS_TABLE_ID,
-        model=AuctionLotRecord,
-        row_id_attr="id",
-        row_index_attr="id",
-        updated_at_attr="updated_at",
-        columns=columns,
-    )
