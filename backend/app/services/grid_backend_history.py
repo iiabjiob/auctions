@@ -100,6 +100,46 @@ async def redo_grid_history(
     )
 
 
+async def undo_grid_operation(
+    session: AsyncSession,
+    *,
+    workspace_id: str,
+    table_id: str,
+    operation_id: str,
+    user_id: str | None = None,
+    session_id: str | None = None,
+) -> GridHistoryMutationResponse:
+    return await _apply_package_history_by_operation_id(
+        session,
+        action="undo",
+        workspace_id=workspace_id,
+        table_id=table_id,
+        operation_id=operation_id,
+        user_id=user_id,
+        session_id=session_id,
+    )
+
+
+async def redo_grid_operation(
+    session: AsyncSession,
+    *,
+    workspace_id: str,
+    table_id: str,
+    operation_id: str,
+    user_id: str | None = None,
+    session_id: str | None = None,
+) -> GridHistoryMutationResponse:
+    return await _apply_package_history_by_operation_id(
+        session,
+        action="redo",
+        workspace_id=workspace_id,
+        table_id=table_id,
+        operation_id=operation_id,
+        user_id=user_id,
+        session_id=session_id,
+    )
+
+
 async def get_grid_history_status(
     session: AsyncSession,
     *,
@@ -152,11 +192,69 @@ async def _apply_package_history(
     )
     if operation is None:
         version = await get_dataset_version(session, workspace_id, table_id)
-        return GridHistoryMutationResponse(dataset_version=version, updated_rows=[])
+        return GridHistoryMutationResponse(
+            action=action,
+            dataset_version=version,
+            revision=str(version),
+            updated_rows=[],
+            rows=[],
+            invalidation={"type": "dataset", "reason": f"history_{action}_noop"},
+        )
 
+    return await _apply_loaded_package_history_operation(
+        session,
+        operation=operation,
+        action=action,
+        workspace_id=workspace_id,
+        table_id=table_id,
+    )
+
+
+async def _apply_package_history_by_operation_id(
+    session: AsyncSession,
+    *,
+    action: str,
+    workspace_id: str,
+    table_id: str,
+    operation_id: str,
+    user_id: str | None,
+    session_id: str | None,
+) -> GridHistoryMutationResponse:
+    if not is_supported_grid_table(table_id):
+        raise ValueError(f"Unsupported history tableId: {table_id}")
+    service = _history_service_for_table(table_id, workspace_id=workspace_id)
+    operation = await service.get_operation(session, operation_id, with_for_update=True)  # type: ignore[attr-defined]
+    if operation is None:
+        raise LookupError(f"Grid operation not found: {operation_id}")
+    _validate_history_operation_scope(
+        operation,
+        workspace_id=workspace_id,
+        table_id=table_id,
+        user_id=user_id,
+        session_id=session_id,
+    )
+    return await _apply_loaded_package_history_operation(
+        session,
+        operation=operation,
+        action=action,
+        workspace_id=workspace_id,
+        table_id=table_id,
+    )
+
+
+async def _apply_loaded_package_history_operation(
+    session: AsyncSession,
+    *,
+    operation: GridOperationModel,
+    action: str,
+    workspace_id: str,
+    table_id: str,
+) -> GridHistoryMutationResponse:
     service = _history_service_for_table(table_id, workspace_id=workspace_id)
     try:
-        result = await service.apply_loaded_operation(session, operation, action)  # type: ignore[arg-type]
+        from app.services.grid_backend_transactions import run_package_grid_mutation
+
+        result = await run_package_grid_mutation(service.apply_loaded_operation(session, operation, action))  # type: ignore[arg-type]
     except ApiException as error:
         if error.status_code == 404:
             raise LookupError(error.message) from error
@@ -164,8 +262,11 @@ async def _apply_package_history(
 
     dataset_version = int(result.revision)
     changed_fields_by_row = await _operation_changed_fields(session, operation.id, workspace_id=workspace_id, table_id=table_id)
+    updated_rows: list[AuctionLotsGridPullRow | ProcurementLotsGridPullRow] = []
     for row in result.rows:
+        await _refresh_history_result_row(session, row)
         row_id = _history_result_row_id(row, table_id=table_id)
+        updated_rows.append(_history_result_pull_row(row, table_id=table_id))
         await _persist_history_side_effects(session, row, action=action, operation=operation, dataset_version=dataset_version)
         session.add(
             GridChangeEventModel(
@@ -183,10 +284,42 @@ async def _apply_package_history(
         )
     await session.flush()
 
+    updated_row_ids = [row.id for row in updated_rows]
+    changed_cell_count = sum(len(fields) for fields in changed_fields_by_row.values())
     return GridHistoryMutationResponse(
+        operation_id=str(operation.id),
+        action=action,
         dataset_version=dataset_version,
-        updated_rows=[_history_result_pull_row(row, table_id=table_id) for row in result.rows],
+        revision=str(dataset_version),
+        updated_rows=updated_rows,
+        rows=updated_rows,
+        committed=[_history_result_item_payload(item) for item in getattr(result, "committed", [])],
+        committed_row_ids=[str(row_id) for row_id in getattr(result, "committed_row_ids", [])],
+        rejected=[_history_result_item_payload(item) for item in getattr(result, "rejected", [])],
+        affected_rows=len(updated_row_ids),
+        affected_cells=changed_cell_count,
+        can_undo=action == "redo",
+        can_redo=action == "undo",
+        invalidation={"type": "rows", "rowIds": updated_row_ids, "reason": f"history_{action}"},
+        latest_undo_operation_id=str(operation.id) if action == "redo" else None,
+        latest_redo_operation_id=str(operation.id) if action == "undo" else None,
     )
+
+
+def _validate_history_operation_scope(
+    operation: GridOperationModel,
+    *,
+    workspace_id: str,
+    table_id: str,
+    user_id: str | None,
+    session_id: str | None,
+) -> None:
+    if operation.workspace_id != workspace_id or operation.table_id != table_id:
+        raise LookupError(f"Grid operation not found: {operation.id}")
+    if user_id is not None and operation.user_id != user_id:
+        raise LookupError(f"Grid operation not found: {operation.id}")
+    if session_id is not None and operation.session_id != session_id:
+        raise LookupError(f"Grid operation not found: {operation.id}")
 
 
 async def _find_history_operation(
@@ -636,6 +769,34 @@ async def _persist_history_side_effects(
         return
     if isinstance(row, ProcurementLotRecord):
         await enqueue_procurement_telegram_notifications(session, row)
+
+
+async def _refresh_history_result_row(session: AsyncSession, row: Any) -> None:
+    refresh = getattr(session, "refresh", None)
+    if not callable(refresh):
+        return
+    if isinstance(row, AuctionGridHistoryRow):
+        await refresh(row.record)
+        await refresh(row.work_item)
+        return
+    if isinstance(row, ProcurementLotRecord):
+        await refresh(row)
+
+
+def _history_result_item_payload(item: Any) -> dict[str, Any]:
+    if hasattr(item, "model_dump"):
+        return item.model_dump(mode="json")
+    if isinstance(item, dict):
+        return dict(item)
+    payload: dict[str, Any] = {}
+    for name in ("row_id", "rowId", "column_id", "columnId", "revision", "reason"):
+        if hasattr(item, name):
+            payload[name] = getattr(item, name)
+    if "row_id" in payload and "rowId" not in payload:
+        payload["rowId"] = payload.pop("row_id")
+    if "column_id" in payload and "columnId" not in payload:
+        payload["columnId"] = payload.pop("column_id")
+    return payload
 
 
 def _history_result_row_id(row: Any, *, table_id: str) -> str:

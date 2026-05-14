@@ -205,13 +205,13 @@ async def commit_auction_lot_grid_backend_fill(
     from affino_grid_backend import ApiException
 
     from app.services.grid_backend_fill import AuctionGridFillService
-    from app.services.grid_backend_transactions import prepare_session_for_package_transaction
+    from app.services.grid_backend_transactions import prepare_session_for_package_transaction, run_package_grid_mutation
     from app.services.grid_state import get_dataset_version
 
     service = AuctionGridFillService(workspace_id=backend_request.workspace_id)
     try:
         await prepare_session_for_package_transaction(session)
-        result = await service.commit_fill(session, backend_request)
+        result = await run_package_grid_mutation(service.commit_fill(session, backend_request))
     except ApiException as error:
         if error.code == "stale-revision":
             current_version = await get_dataset_version(session, backend_request.workspace_id, AUCTION_LOTS_TABLE_ID)

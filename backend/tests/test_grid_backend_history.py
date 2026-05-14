@@ -21,12 +21,16 @@ class FakeSession:
     def __init__(self) -> None:
         self.added: list[object] = []
         self.flush_count = 0
+        self.refreshed: list[object] = []
 
     def add(self, value: object) -> None:
         self.added.append(value)
 
     async def flush(self) -> None:
         self.flush_count += 1
+
+    async def refresh(self, value: object) -> None:
+        self.refreshed.append(value)
 
 
 def make_procurement_record() -> ProcurementLotRecord:
@@ -119,6 +123,8 @@ class GridBackendHistoryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.dataset_version, 9)
         self.assertEqual(session.flush_count, 1)
+        self.assertEqual(session.refreshed, [record])
+        self.assertEqual(response.updated_rows[0].id, "zakupki:123")
         side_effects.assert_awaited_once()
         changes = [item for item in session.added if isinstance(item, GridChangeEventModel)]
         self.assertEqual(len(changes), 1)

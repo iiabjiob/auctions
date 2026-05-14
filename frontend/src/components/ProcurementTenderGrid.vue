@@ -557,6 +557,7 @@ function createGridDataSource(): ProcurementDataSource {
   const datasource = createDatasource()
   datasourceRef.value = datasource
   return {
+    ...datasource,
     pull(request) {
       loading.value = true
       return datasource.pull(request).catch((error: unknown) => {

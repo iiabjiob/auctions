@@ -819,6 +819,7 @@ const LOTS_RELOAD_DELAY_MS = 400
 const SYNC_PROGRESS_RELOAD_INTERVAL_MS = 30_000
 const SERVER_ROW_MODEL_INITIAL_FETCH_SIZE = 256
 const DETAIL_FETCH_TIMEOUT_MS = 15_000
+const GRID_MUTATION_TIMEOUT_MS = 30_000
 const DETAIL_RENDER_RAW_FIELDS_LIMIT = 120
 const DETAIL_RENDER_DOCUMENTS_LIMIT = 120
 const DETAIL_RENDER_IMAGES_LIMIT = 80
@@ -2478,21 +2479,69 @@ function buildAuctionServerGridFilters(): AuctionServerGridFilters {
 }
 
 async function postAuctionServerGridJson<TResponse>(path: string, payload: unknown, signal?: AbortSignal) {
-  return fetchJson<TResponse>(path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-    signal,
-  })
+  const mutationSignal = createGridMutationSignal(path, signal)
+  try {
+    return await fetchJson<TResponse>(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: mutationSignal.signal,
+    })
+  } finally {
+    mutationSignal.cleanup()
+  }
 }
 
 async function postProcurementServerGridJson<TResponse>(path: string, payload: unknown, signal?: AbortSignal) {
-  return fetchJson<TResponse>(path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-    signal,
-  })
+  const mutationSignal = createGridMutationSignal(path, signal)
+  try {
+    return await fetchJson<TResponse>(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: mutationSignal.signal,
+    })
+  } finally {
+    mutationSignal.cleanup()
+  }
+}
+
+function createGridMutationSignal(path: string, sourceSignal?: AbortSignal) {
+  if (!isGridMutationPath(path)) {
+    return {
+      signal: sourceSignal,
+      cleanup() {},
+    }
+  }
+
+  const controller = new AbortController()
+  const timeoutId = window.setTimeout(() => {
+    controller.abort(new DOMException('Grid mutation timed out', 'TimeoutError'))
+  }, GRID_MUTATION_TIMEOUT_MS)
+  const abortFromSource = () => controller.abort(sourceSignal?.reason)
+  if (sourceSignal?.aborted) {
+    abortFromSource()
+  } else {
+    sourceSignal?.addEventListener('abort', abortFromSource, { once: true })
+  }
+
+  return {
+    signal: controller.signal,
+    cleanup() {
+      window.clearTimeout(timeoutId)
+      sourceSignal?.removeEventListener('abort', abortFromSource)
+    },
+  }
+}
+
+function isGridMutationPath(path: string) {
+  return (
+    path.endsWith('/edits') ||
+    path.endsWith('/fill') ||
+    path.endsWith('/fill/commit') ||
+    path === '/api/history/undo' ||
+    path === '/api/history/redo'
+  )
 }
 
 async function getProcurementServerJson<TResponse>(path: string, signal?: AbortSignal) {
@@ -2739,6 +2788,7 @@ function scheduleCatalogViewportRecovery(range: { start: number; end: number }) 
 
 function createCatalogDataSource(): CatalogDataSource {
   return {
+    ...auctionServerDataSource,
     subscribe(listener) {
       catalogDataSourceListeners.add(listener)
       return () => {

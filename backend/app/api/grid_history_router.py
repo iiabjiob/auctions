@@ -39,6 +39,9 @@ async def undo_grid_history(
     except LookupError as error:
         await session.rollback()
         raise HTTPException(status_code=404, detail=str(error)) from error
+    except TimeoutError as error:
+        await session.rollback()
+        raise HTTPException(status_code=504, detail="Grid mutation timed out") from error
     except Exception:
         await session.rollback()
         raise
@@ -67,6 +70,9 @@ async def redo_grid_history(
     except LookupError as error:
         await session.rollback()
         raise HTTPException(status_code=404, detail=str(error)) from error
+    except TimeoutError as error:
+        await session.rollback()
+        raise HTTPException(status_code=504, detail="Grid mutation timed out") from error
     except Exception:
         await session.rollback()
         raise

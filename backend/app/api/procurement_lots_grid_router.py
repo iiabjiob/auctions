@@ -20,6 +20,7 @@ from app.services.procurement_grid import get_procurement_lots_grid_histogram, p
 from app.services.procurement_grid_edits import ProcurementGridEditConflictError, commit_procurement_lot_grid_edits
 from app.services.procurement_grid_fill import commit_procurement_lot_grid_fill, commit_procurement_lot_grid_fill_commit
 from app.services.procurement_grid_state import DEFAULT_GRID_WORKSPACE_ID
+from app.services.grid_backend_history import redo_grid_operation, undo_grid_operation
 
 
 router = APIRouter(prefix="/api/procurement-lots", tags=["Procurement Lots Grid"])
@@ -86,6 +87,9 @@ async def commit_procurement_lots_edits(
     except LookupError as error:
         await session.rollback()
         raise HTTPException(status_code=404, detail=str(error)) from error
+    except TimeoutError as error:
+        await session.rollback()
+        raise HTTPException(status_code=504, detail="Grid mutation timed out") from error
     except Exception:
         await session.rollback()
         raise
@@ -121,6 +125,9 @@ async def commit_procurement_lots_fill(
     except LookupError as error:
         await session.rollback()
         raise HTTPException(status_code=404, detail=str(error)) from error
+    except TimeoutError as error:
+        await session.rollback()
+        raise HTTPException(status_code=504, detail="Grid mutation timed out") from error
     except Exception:
         await session.rollback()
         raise
@@ -167,6 +174,9 @@ async def commit_procurement_lots_fill_commit(
     except LookupError as error:
         await session.rollback()
         raise HTTPException(status_code=404, detail=str(error)) from error
+    except TimeoutError as error:
+        await session.rollback()
+        raise HTTPException(status_code=504, detail="Grid mutation timed out") from error
     except Exception:
         await session.rollback()
         raise
@@ -185,3 +195,69 @@ def _resolve_grid_user_id(request_user_id: str | None, current_user: UserModel) 
     if request_user_id is not None and request_user_id.strip() and request_user_id.strip() != current_user.id:
         raise HTTPException(status_code=403, detail="Cannot access another user's grid history")
     return current_user.id
+
+
+@router.post("/operations/{operation_id}/undo")
+async def undo_procurement_lot_grid_operation(
+    operation_id: str,
+    workspace_id: str | None = Header(default=None, alias="X-Workspace-Id"),
+    grid_session_id: str | None = Header(default=None, alias="X-Grid-Session-Id"),
+    session: AsyncSession = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
+):
+    try:
+        response = await undo_grid_operation(
+            session,
+            workspace_id=workspace_id or DEFAULT_GRID_WORKSPACE_ID,
+            table_id="procurement-lots",
+            operation_id=operation_id,
+            user_id=current_user.id,
+            session_id=grid_session_id,
+        )
+        await session.commit()
+        return response
+    except ValueError as error:
+        await session.rollback()
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except LookupError as error:
+        await session.rollback()
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except TimeoutError as error:
+        await session.rollback()
+        raise HTTPException(status_code=504, detail="Grid mutation timed out") from error
+    except Exception:
+        await session.rollback()
+        raise
+
+
+@router.post("/operations/{operation_id}/redo")
+async def redo_procurement_lot_grid_operation(
+    operation_id: str,
+    workspace_id: str | None = Header(default=None, alias="X-Workspace-Id"),
+    grid_session_id: str | None = Header(default=None, alias="X-Grid-Session-Id"),
+    session: AsyncSession = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
+):
+    try:
+        response = await redo_grid_operation(
+            session,
+            workspace_id=workspace_id or DEFAULT_GRID_WORKSPACE_ID,
+            table_id="procurement-lots",
+            operation_id=operation_id,
+            user_id=current_user.id,
+            session_id=grid_session_id,
+        )
+        await session.commit()
+        return response
+    except ValueError as error:
+        await session.rollback()
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except LookupError as error:
+        await session.rollback()
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except TimeoutError as error:
+        await session.rollback()
+        raise HTTPException(status_code=504, detail="Grid mutation timed out") from error
+    except Exception:
+        await session.rollback()
+        raise

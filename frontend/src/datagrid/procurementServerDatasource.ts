@@ -223,25 +223,24 @@ export function createProcurementServerDatasource<TApiRow, TRow>(
     pull,
     pullWindow,
     getColumnHistogram,
-    commitCellEdits(options) {
-      return commitAffinoCellEdits<TApiRow, TRow>({
-        datasource: affinoDatasource,
-        fetchImpl,
+    commitCellEdits(request) {
+      return commitAffinoCellEdits<TApiRow>({
+        postJson: options.postJson,
         tableId: 'procurement-lots',
-        ...options,
+        ...request,
       })
     },
     undoHistory() {
-      return requestAffinoHistoryMutation<TApiRow, TRow>({
-        datasource: affinoDatasource,
-        fetchImpl,
+      return requestAffinoHistoryMutation<TApiRow>({
+        postJson: options.postJson,
+        tableId: 'procurement-lots',
         action: 'undo',
       })
     },
     redoHistory() {
-      return requestAffinoHistoryMutation<TApiRow, TRow>({
-        datasource: affinoDatasource,
-        fetchImpl,
+      return requestAffinoHistoryMutation<TApiRow>({
+        postJson: options.postJson,
+        tableId: 'procurement-lots',
         action: 'redo',
       })
     },
