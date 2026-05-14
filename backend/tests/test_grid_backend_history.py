@@ -34,21 +34,30 @@ class GridBackendHistoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(status.can_redo)
         self.assertEqual(finder.await_count, 2)
 
-    async def test_auction_history_is_delegated_to_existing_service(self) -> None:
+    async def test_auction_history_uses_package_history_scope(self) -> None:
         session = AsyncMock()
-        with patch("app.services.grid_backend_history.undo_auction_lot_grid_history", new_callable=AsyncMock) as undo:
-            undo.return_value = SimpleNamespace(dataset_version=10, updated_rows=[])
+        operation = SimpleNamespace(id="operation")
+        with patch("app.services.grid_backend_history._find_history_operation", new_callable=AsyncMock) as finder:
+            with patch("app.services.grid_backend_history.AuctionGridHistoryService") as service_type:
+                with patch("app.services.grid_backend_history._operation_changed_fields", new_callable=AsyncMock) as fields:
+                    service = service_type.return_value
+                    service.apply_loaded_operation = AsyncMock(
+                        return_value=SimpleNamespace(revision="10", rows=[], committed_row_ids=[])
+                    )
+                    finder.return_value = operation
+                    fields.return_value = {}
 
-            response = await undo_grid_history(
-                session,
-                workspace_id=DEFAULT_GRID_WORKSPACE_ID,
-                table_id="auction-lots",
-                user_id="u1",
-                session_id="s1",
-            )
+                    response = await undo_grid_history(
+                        session,
+                        workspace_id=DEFAULT_GRID_WORKSPACE_ID,
+                        table_id="auction-lots",
+                        user_id="u1",
+                        session_id="s1",
+                    )
 
         self.assertEqual(response.dataset_version, 10)
-        undo.assert_awaited_once()
+        finder.assert_awaited_once()
+        service.apply_loaded_operation.assert_awaited_once_with(session, operation, "undo")
 
     async def test_unsupported_table_rejected(self) -> None:
         with self.assertRaises(ValueError):
@@ -108,4 +117,3 @@ class GridBackendHistoryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(record.comment, "next")
         self.assertEqual(service.get_row_id(record), "zakupki:1")
-
