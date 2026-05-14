@@ -4,8 +4,9 @@ import unittest
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+from uuid import uuid4
 
-from app.models.grid import GridCellEventModel, GridOperationModel
+from app.models.grid import GridCellEventModel, GridChangeEventModel, GridOperationModel
 from app.models.procurement import ProcurementLotRecord
 from app.services.grid_backend_history import (
     ProcurementGridHistoryService,
@@ -14,6 +15,40 @@ from app.services.grid_backend_history import (
     undo_grid_history,
 )
 from app.services.procurement_grid_state import DEFAULT_GRID_WORKSPACE_ID, PROCUREMENT_LOTS_TABLE_ID
+
+
+class FakeSession:
+    def __init__(self) -> None:
+        self.added: list[object] = []
+        self.flush_count = 0
+
+    def add(self, value: object) -> None:
+        self.added.append(value)
+
+    async def flush(self) -> None:
+        self.flush_count += 1
+
+
+def make_procurement_record() -> ProcurementLotRecord:
+    return ProcurementLotRecord(
+        id=1,
+        source_code="zakupki",
+        external_id="123",
+        registry_number="0123456789",
+        title="Поставка спецодежды",
+        content_hash="hash",
+        workflow_status="new",
+        matched_keywords=[],
+        excluded_keywords=[],
+        attractiveness_score=0,
+        attractiveness_level="low",
+        attractiveness_reasons=[],
+        calculator_inputs={},
+        calculator_scenarios={},
+        normalized_item={},
+        raw_item={},
+        updated_at=datetime.now(UTC),
+    )
 
 
 class GridBackendHistoryTests(unittest.IsolatedAsyncioTestCase):
@@ -58,6 +93,46 @@ class GridBackendHistoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.dataset_version, 10)
         finder.assert_awaited_once()
         service.apply_loaded_operation.assert_awaited_once_with(session, operation, "undo")
+
+    async def test_procurement_history_writes_change_event(self) -> None:
+        session = FakeSession()
+        operation = SimpleNamespace(id=uuid4())
+        record = make_procurement_record()
+        with (
+            patch("app.services.grid_backend_history._find_history_operation", new_callable=AsyncMock) as finder,
+            patch("app.services.grid_backend_history.ProcurementGridHistoryService") as service_type,
+            patch("app.services.grid_backend_history._operation_changed_fields", new_callable=AsyncMock) as fields,
+            patch("app.services.grid_backend_history._persist_history_side_effects", new_callable=AsyncMock) as side_effects,
+        ):
+            service = service_type.return_value
+            service.apply_loaded_operation = AsyncMock(return_value=SimpleNamespace(revision="9", rows=[record]))
+            finder.return_value = operation
+            fields.return_value = {"zakupki:123": {"quantity"}}
+
+            response = await undo_grid_history(
+                session,
+                workspace_id=DEFAULT_GRID_WORKSPACE_ID,
+                table_id=PROCUREMENT_LOTS_TABLE_ID,
+                user_id="u1",
+                session_id="s1",
+            )
+
+        self.assertEqual(response.dataset_version, 9)
+        self.assertEqual(session.flush_count, 1)
+        side_effects.assert_awaited_once()
+        changes = [item for item in session.added if isinstance(item, GridChangeEventModel)]
+        self.assertEqual(len(changes), 1)
+        self.assertEqual(changes[0].table_id, PROCUREMENT_LOTS_TABLE_ID)
+        self.assertEqual(changes[0].dataset_version, 9)
+        self.assertEqual(changes[0].row_id, "zakupki:123")
+        self.assertEqual(
+            changes[0].payload,
+            {
+                "source": "grid_history_undo",
+                "operation_id": str(operation.id),
+                "changed_fields": ["quantity"],
+            },
+        )
 
     async def test_unsupported_table_rejected(self) -> None:
         with self.assertRaises(ValueError):

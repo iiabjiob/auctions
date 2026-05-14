@@ -74,6 +74,44 @@ class GridBackendFillTests(unittest.IsolatedAsyncioTestCase):
 
         service._edit_service.create_cell_events.assert_awaited_once()
 
+    async def test_collect_history_status_delegates_as_fill_edit_request(self) -> None:
+        service = ProcurementGridFillService()
+        service._edit_service.collect_history_status = AsyncMock(return_value=None)
+        request = GridBackendFillRequest(
+            mode="copy",
+            source_row_ids=["zakupki:source"],
+            target_row_ids=["zakupki:target"],
+            fill_columns=["quantity"],
+            reference_columns=["quantity"],
+            source_range=GridBackendFillRange(startRow=0, endRow=1),
+            target_range=GridBackendFillRange(startRow=1, endRow=2),
+            projection={},
+            metadata={"edits": [{"rowId": "zakupki:target", "columnId": "quantity"}]},
+            base_version=5,
+            user_id="u1",
+            session_id="s1",
+        )
+
+        await service.collect_history_status(
+            SimpleNamespace(),
+            request,
+            operation_id="2d5b96fa-4f0d-4ff6-8b4f-fc7b6c77b8ea",
+            affected_row_ids=["zakupki:target"],
+            affected_indexes=[1],
+            affected_cell_count=1,
+            warnings=[],
+            revision="6",
+            rows=[],
+        )
+
+        service._edit_service.collect_history_status.assert_awaited_once()
+        delegated_request = service._edit_service.collect_history_status.await_args.args[1]
+        delegated_kwargs = service._edit_service.collect_history_status.await_args.kwargs
+        self.assertEqual(delegated_request.operation_type, "fill")
+        self.assertEqual(delegated_request.edits[0].row_id, "zakupki:target")
+        self.assertEqual(delegated_request.edits[0].column_id, "quantity")
+        self.assertEqual(delegated_kwargs["revision"], "6")
+
     def test_fill_value_uses_procurement_edit_normalization(self) -> None:
         service = ProcurementGridFillService()
 

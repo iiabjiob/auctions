@@ -10,7 +10,7 @@ from uuid import UUID
 from affino_grid_backend import ApiException
 
 from app.models.auction import AuctionLotRecord, AuctionLotWorkItem
-from app.models.grid import GridCellEventModel, GridOperationModel
+from app.models.grid import GridCellEventModel, GridChangeEventModel, GridOperationModel
 from app.models.procurement import ProcurementLotRecord
 from app.services.grid_backend_edits import (
     AuctionGridEditRow,
@@ -177,6 +177,40 @@ class GridBackendEditsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(operation.undo_payload["edits"][0]["field"], "quantity")
         self.assertEqual(operation.redo_payload["edits"][0]["value"], "2")
 
+    async def test_procurement_collect_history_status_writes_change_event(self) -> None:
+        service = ProcurementGridEditService(workspace_id=DEFAULT_GRID_WORKSPACE_ID)
+        record = make_procurement_record()
+        request = GridBackendEditRequest(
+            base_revision="5",
+            base_version=5,
+            edits=[GridBackendCellEdit(row_id="zakupki:123", column_id="quantity", value="2")],
+            workspace_id=DEFAULT_GRID_WORKSPACE_ID,
+            user_id="u1",
+            session_id="s1",
+            payload={"edits": []},
+        )
+        session = FakeSession()
+
+        with patch("app.services.grid_backend_edits.enqueue_procurement_telegram_notifications", AsyncMock()):
+            await service.collect_history_status(
+                session,
+                request,
+                operation_id=None,
+                committed=[],
+                committed_row_ids=[],
+                rejected=[],
+                affected_indexes=[],
+                revision="6",
+                rows=[record],
+            )
+
+        changes = [item for item in session.added if isinstance(item, GridChangeEventModel)]
+        self.assertEqual(len(changes), 1)
+        self.assertEqual(changes[0].table_id, PROCUREMENT_LOTS_TABLE_ID)
+        self.assertEqual(changes[0].dataset_version, 6)
+        self.assertEqual(changes[0].row_id, "zakupki:123")
+        self.assertEqual(changes[0].payload, {"source": "grid_edit", "changed_fields": ["quantity"]})
+
     async def test_invalid_operation_id_is_rejected(self) -> None:
         service = ProcurementGridEditService()
 
@@ -284,6 +318,53 @@ class GridBackendEditsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cell_events[0].before_value, {"value": "1"})
         self.assertEqual(operation.undo_payload["edits"][0]["field"], "market_value")
         self.assertEqual(operation.redo_payload["edits"][0]["value"], "2")
+
+    async def test_auction_collect_history_status_writes_change_event(self) -> None:
+        service = AuctionGridEditService(workspace_id=DEFAULT_GRID_WORKSPACE_ID)
+        record = make_auction_record()
+        work_item = AuctionLotWorkItem(lot_record_id=record.id, analogs=[])
+        row = AuctionGridEditRow(
+            record=record,
+            work_item=work_item,
+            detail_cache=None,
+            runtime_config=SimpleNamespace(
+                category_keywords={},
+                exclusion_keywords=(),
+                legal_risk_rules=None,
+                owner_profile=None,
+                dimension_weights=None,
+            ),
+        )
+        request = GridBackendEditRequest(
+            base_revision="7",
+            base_version=7,
+            edits=[GridBackendCellEdit(row_id="tbankrot:auction-1:lot-1", column_id="marketValue", value="2")],
+            workspace_id=DEFAULT_GRID_WORKSPACE_ID,
+            user_id="u1",
+            session_id="s1",
+            payload={"edits": []},
+        )
+        session = FakeSession()
+
+        with patch("app.services.grid_backend_edits.generate_and_persist_lot_decision_report_snapshot", AsyncMock()):
+            await service.collect_history_status(
+                session,
+                request,
+                operation_id=None,
+                committed=[],
+                committed_row_ids=[],
+                rejected=[],
+                affected_indexes=[],
+                revision="8",
+                rows=[row],
+            )
+
+        changes = [item for item in session.added if isinstance(item, GridChangeEventModel)]
+        self.assertEqual(len(changes), 1)
+        self.assertEqual(changes[0].table_id, AUCTION_LOTS_TABLE_ID)
+        self.assertEqual(changes[0].dataset_version, 8)
+        self.assertEqual(changes[0].row_id, "tbankrot:auction-1:lot-1")
+        self.assertEqual(changes[0].payload, {"source": "grid_edit", "changed_fields": ["market_value"]})
 
 
 if __name__ == "__main__":
