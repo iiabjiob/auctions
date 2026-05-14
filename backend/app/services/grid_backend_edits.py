@@ -11,10 +11,22 @@ from affino_grid_backend.core.mutations import GridHistoryStatus, PendingGridCel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.auction import AuctionLotDetailCache, AuctionLotRecord, AuctionLotWorkItem
 from app.models.grid import GridCellEventModel, GridChangeEventModel, GridOperationModel
 from app.models.procurement import ProcurementLotRecord, _sync_procurement_lot_search_text
-from app.services.grid_backend_history import ProcurementGridRevisionService
+from app.services.auction_analysis_config import auction_analysis_config_service
+from app.services.auction_grid_edits import (
+    _coerce_value as _coerce_auction_value,
+    _parse_row_id as _parse_auction_row_id,
+    _workspace_field_for_column,
+)
+from app.services.auction_grid_state import AUCTION_LOTS_TABLE_ID, auction_lot_grid_row_id
+from app.services.auction_scoring import recalculate_record_rating, sync_record_from_detail_cache
+from app.services.auction_search import update_record_search_text
+from app.services.auction_workspace import ensure_work_item
+from app.services.grid_backend_history import AuctionGridRevisionService, ProcurementGridRevisionService
 from app.services.grid_state import clear_redo_grid_operations
+from app.services.lot_decision_report import generate_and_persist_lot_decision_report_snapshot
 from app.services.grid_table_registry import get_grid_table_definition
 from app.services.procurement_calculator import (
     calculator_field_for_column,
@@ -57,6 +69,14 @@ class GridBackendEditRequest:
     session_id: str | None = None
     operation_type: str = "edit"
     operation_id: str | None = None
+
+
+@dataclass
+class AuctionGridEditRow:
+    record: AuctionLotRecord
+    work_item: AuctionLotWorkItem
+    detail_cache: AuctionLotDetailCache | None
+    runtime_config: Any
 
 
 class ProcurementGridEditService(GridEditServiceBase):
@@ -263,7 +283,244 @@ class ProcurementGridEditService(GridEditServiceBase):
         return None
 
 
+class AuctionGridEditService(GridEditServiceBase):
+    def __init__(self, *, workspace_id: str = DEFAULT_GRID_WORKSPACE_ID) -> None:
+        self.workspace_id = workspace_id
+        super().__init__(
+            get_grid_table_definition(AUCTION_LOTS_TABLE_ID),
+            AuctionGridRevisionService(workspace_id=workspace_id),  # type: ignore[arg-type]
+        )
+
+    def create_edit_operation_id(self) -> str:
+        return str(uuid4())
+
+    def reject_reason_for_edit(self, row: Any | None, column_id: str) -> str | None:
+        reason = super().reject_reason_for_edit(row, column_id)
+        if reason is None:
+            return None
+        status_code = 404 if reason == "row-not-found" else 400
+        raise ApiException(status_code=status_code, code=reason, message=reason)
+
+    async def fetch_rows_by_ids(
+        self,
+        session: AsyncSession,
+        row_ids: list[str],
+        *,
+        with_for_update: bool = False,
+    ) -> dict[str, AuctionGridEditRow]:
+        runtime_config = await auction_analysis_config_service.get_runtime_config(session)
+        rows: dict[str, AuctionGridEditRow] = {}
+        for row_id in row_ids:
+            source_code, auction_external_id, lot_external_id = _parse_auction_row_id(row_id)
+            statement = select(AuctionLotRecord).where(
+                AuctionLotRecord.source_code == source_code,
+                AuctionLotRecord.auction_external_id == auction_external_id,
+                AuctionLotRecord.lot_external_id == lot_external_id,
+            )
+            if with_for_update:
+                statement = statement.with_for_update()
+            record = await session.scalar(statement)
+            if record is None:
+                continue
+            detail_cache = await session.scalar(
+                select(AuctionLotDetailCache).where(AuctionLotDetailCache.lot_record_id == record.id)
+            )
+            if detail_cache is not None:
+                sync_record_from_detail_cache(record, detail_cache)
+            rows[auction_lot_grid_row_id(record)] = AuctionGridEditRow(
+                record=record,
+                work_item=await ensure_work_item(session, record),
+                detail_cache=detail_cache,
+                runtime_config=runtime_config,
+            )
+        return rows
+
+    async def ensure_operation_id_available(self, session: AsyncSession, operation_id: str) -> None:
+        operation_uuid = _operation_uuid(operation_id)
+        existing_id = await session.scalar(select(GridOperationModel.id).where(GridOperationModel.id == operation_uuid))
+        if existing_id is not None:
+            raise ApiException(status_code=409, code="operation-id-conflict", message="Operation id already exists")
+
+    async def create_operation(
+        self,
+        session: AsyncSession,
+        operation_id: str,
+        changed_at: datetime,
+        request: GridBackendEditRequest,
+    ) -> None:
+        await clear_redo_grid_operations(
+            session,
+            workspace_id=request.workspace_id,
+            table_id=AUCTION_LOTS_TABLE_ID,
+            user_id=request.user_id,
+            session_id=request.session_id,
+        )
+        session.add(
+            GridOperationModel(
+                id=_operation_uuid(operation_id),
+                workspace_id=request.workspace_id,
+                table_id=AUCTION_LOTS_TABLE_ID,
+                user_id=request.user_id,
+                session_id=request.session_id,
+                operation_type=request.operation_type,
+                base_version=request.base_version,
+                payload=request.payload or {},
+                created_at=changed_at,
+            )
+        )
+
+    async def create_cell_events(
+        self,
+        session: AsyncSession,
+        operation_id: str,
+        cell_events: list[PendingGridCellEvent],
+        changed_at: datetime,
+    ) -> None:
+        del changed_at
+        operation_uuid = _operation_uuid(operation_id)
+        undo_edits: list[dict[str, Any]] = []
+        redo_edits: list[dict[str, Any]] = []
+        for event in cell_events:
+            field_name = _workspace_field_for_column(event.column_id)
+            session.add(
+                GridCellEventModel(
+                    operation_id=operation_uuid,
+                    workspace_id=self.workspace_id,
+                    table_id=AUCTION_LOTS_TABLE_ID,
+                    row_id=event.row_id,
+                    column_id=event.column_id,
+                    before_value={"value": _json_value(event.before_value)},
+                    after_value={"value": _json_value(event.after_value)},
+                )
+            )
+            undo_edits.append(
+                {
+                    "rowId": event.row_id,
+                    "columnId": event.column_id,
+                    "field": field_name,
+                    "value": _json_value(event.before_value),
+                }
+            )
+            redo_edits.append(
+                {
+                    "rowId": event.row_id,
+                    "columnId": event.column_id,
+                    "field": field_name,
+                    "value": _json_value(event.after_value),
+                }
+            )
+        operation = await session.scalar(select(GridOperationModel).where(GridOperationModel.id == operation_uuid).with_for_update())
+        if operation is not None:
+            operation.undo_payload = {"edits": undo_edits}
+            operation.redo_payload = {"edits": redo_edits}
+        await session.flush()
+
+    def get_row_value(self, row: AuctionGridEditRow, column_id: str) -> Any:
+        return getattr(row.work_item, _workspace_field_for_column(column_id))
+
+    def set_row_value(self, row: AuctionGridEditRow, column_id: str, value: Any) -> None:
+        setattr(row.work_item, _workspace_field_for_column(column_id), value)
+        recalculate_record_rating(
+            row.record,
+            row.detail_cache,
+            row.work_item,
+            category_keywords=row.runtime_config.category_keywords,
+            exclusion_keywords=row.runtime_config.exclusion_keywords,
+            legal_risk_rules=row.runtime_config.legal_risk_rules,
+            owner_profile=row.runtime_config.owner_profile,
+            dimension_weights=row.runtime_config.dimension_weights,
+        )
+        update_record_search_text(row.record)
+
+    def get_row_id(self, row: AuctionGridEditRow) -> str:
+        return auction_lot_grid_row_id(row.record)
+
+    def get_row_index(self, row: AuctionGridEditRow) -> int:
+        return int(row.record.id or 0)
+
+    def set_row_updated_at(self, row: AuctionGridEditRow, changed_at: datetime) -> None:
+        row.record.updated_at = changed_at
+        row.work_item.updated_at = changed_at
+
+    def get_row_revision(self, row: AuctionGridEditRow) -> str:
+        if row.record.updated_at is None:
+            return str(row.record.id or "")
+        return row.record.updated_at.isoformat()
+
+    def normalize_edit_value(self, column_id: str, value: Any) -> Any:
+        try:
+            field_name = _workspace_field_for_column(column_id)
+            return _coerce_auction_value(field_name, value)
+        except ValueError as error:
+            raise ApiException(status_code=400, code="invalid-value", message=str(error)) from error
+
+    async def collect_history_status(
+        self,
+        session: AsyncSession,
+        request: GridBackendEditRequest,
+        *,
+        operation_id: str | None,
+        committed: list[Any],
+        committed_row_ids: list[str],
+        rejected: list[Any],
+        affected_indexes: list[int],
+        revision: str,
+        rows: list[AuctionGridEditRow] | None = None,
+    ) -> GridHistoryStatus | None:
+        del committed, committed_row_ids, rejected, affected_indexes
+        dataset_version = int(revision)
+        if operation_id is not None:
+            operation = await session.scalar(
+                select(GridOperationModel).where(GridOperationModel.id == _operation_uuid(operation_id)).with_for_update()
+            )
+            if operation is not None:
+                operation.resulting_version = dataset_version
+        for row in rows or []:
+            row_id = auction_lot_grid_row_id(row.record)
+            await generate_and_persist_lot_decision_report_snapshot(session, row.record, row.detail_cache, row.work_item)
+            session.add(
+                GridChangeEventModel(
+                    workspace_id=request.workspace_id,
+                    table_id=AUCTION_LOTS_TABLE_ID,
+                    dataset_version=dataset_version,
+                    event_type="row_updated",
+                    row_id=row_id,
+                    payload={"source": "grid_edit", "changed_fields": _auction_changed_fields_for_row(row_id, request.edits)},
+                )
+            )
+        return None
+
+
 def procurement_backend_edit_request(
+    *,
+    base_version: int,
+    edits: list[Any],
+    workspace_id: str,
+    user_id: str | None,
+    session_id: str | None,
+    operation_type: str = "edit",
+    payload: dict[str, Any] | None = None,
+) -> GridBackendEditRequest:
+    return GridBackendEditRequest(
+        base_revision=str(base_version),
+        base_version=base_version,
+        workspace_id=workspace_id,
+        user_id=user_id,
+        session_id=session_id,
+        operation_type=operation_type,
+        payload=payload,
+        edits=[
+            GridBackendCellEdit(
+                row_id=edit.row_id,
+                column_id=edit.column_id,
+                value=edit.value,
+            )
+            for edit in edits
+        ],
+    )
+
+
+def auction_backend_edit_request(
     *,
     base_version: int,
     edits: list[Any],
@@ -309,6 +566,15 @@ def _procurement_history_field(column_id: str) -> str:
 def _changed_fields_for_row(row_id: str, edits: list[GridBackendCellEdit]) -> list[str]:
     fields = {
         _procurement_history_field(edit.column_id)
+        for edit in edits
+        if edit.row_id == row_id
+    }
+    return sorted(fields)
+
+
+def _auction_changed_fields_for_row(row_id: str, edits: list[GridBackendCellEdit]) -> list[str]:
+    fields = {
+        _workspace_field_for_column(edit.column_id)
         for edit in edits
         if edit.row_id == row_id
     }

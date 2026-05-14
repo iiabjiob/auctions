@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -9,31 +8,15 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.auction import AuctionLotDetailCache, AuctionLotRecord
-from app.models.grid import GridChangeEventModel
+from app.models.auction import AuctionLotRecord
 from app.schemas.auction_grid import (
     AuctionLotsGridCellEdit,
     AuctionLotsGridEditRequest,
     AuctionLotsGridEditResponse,
     AuctionLotsGridPullRow,
 )
-from app.services.auction_analysis_config import auction_analysis_config_service
 from app.services.auction_datagrid_payload import validate_datagrid_row_payload
 from app.services.auction_grid_state import AUCTION_LOTS_TABLE_ID, DEFAULT_GRID_WORKSPACE_ID, auction_lot_grid_row_id
-from app.services.auction_scoring import (
-    recalculate_record_rating,
-    sync_record_from_detail_cache,
-)
-from app.services.auction_search import update_record_search_text
-from app.services.auction_workspace import ensure_work_item
-from app.services.lot_decision_report import generate_and_persist_lot_decision_report_snapshot
-from app.services.grid_state import (
-    bump_dataset_version,
-    clear_redo_grid_operations,
-    get_or_create_grid_revision,
-    record_grid_cell_events_from_payloads,
-    record_grid_operation,
-)
 
 
 class AuctionGridEditConflictError(Exception):
@@ -126,125 +109,46 @@ async def _commit_auction_lot_grid_operations(
     operation_type: str,
     payload: dict[str, Any] | None,
 ) -> AuctionLotsGridEditResponse:
-    prepared_edits = [_prepare_edit(edit) for edit in edits]
-    edits_by_row: dict[str, list[PreparedGridEdit]] = defaultdict(list)
-    row_order: list[str] = []
-    for edit in prepared_edits:
-        if edit.row_id not in edits_by_row:
-            row_order.append(edit.row_id)
-        edits_by_row[edit.row_id].append(edit)
+    from affino_grid_backend import ApiException
 
-    revision = await get_or_create_grid_revision(session, workspace_id, AUCTION_LOTS_TABLE_ID)
-    current_version = int(revision.dataset_version)
-    if current_version != base_version:
-        raise AuctionGridEditConflictError(base_version=base_version, current_version=current_version)
+    from app.services.grid_backend_edits import AuctionGridEditService, auction_backend_edit_request
+    from app.services.grid_state import get_dataset_version
 
-    runtime_config = await auction_analysis_config_service.get_runtime_config(session)
-    updated_records: dict[str, AuctionLotRecord] = {}
-    changed_fields_by_row: dict[str, set[str]] = {}
-    undo_values: dict[tuple[str, str], dict[str, Any]] = {}
-    redo_values: dict[tuple[str, str], dict[str, Any]] = {}
-
-    for requested_row_id in row_order:
-        record = await _find_record_by_row_id(session, requested_row_id)
-        if record is None:
-            raise LookupError(f"Lot row was not found for rowId={requested_row_id}")
-
-        detail_cache = await session.scalar(
-            select(AuctionLotDetailCache).where(AuctionLotDetailCache.lot_record_id == record.id)
-        )
-        if detail_cache is not None:
-            sync_record_from_detail_cache(record, detail_cache)
-        work_item = await ensure_work_item(session, record)
-        stable_row_id = auction_lot_grid_row_id(record)
-        changed_fields_by_row.setdefault(stable_row_id, set())
-
-        for edit in edits_by_row[requested_row_id]:
-            key = (stable_row_id, edit.field_name)
-            if key not in undo_values:
-                undo_values[key] = {
-                    "rowId": stable_row_id,
-                    "columnId": edit.column_id,
-                    "field": edit.field_name,
-                    "value": _json_value(getattr(work_item, edit.field_name)),
-                }
-            setattr(work_item, edit.field_name, edit.value)
-            redo_values[key] = {
-                "rowId": stable_row_id,
-                "columnId": edit.column_id,
-                "field": edit.field_name,
-                "value": _json_value(edit.value),
-            }
-            changed_fields_by_row[stable_row_id].add(edit.field_name)
-
-        recalculate_record_rating(
-            record,
-            detail_cache,
-            work_item,
-            category_keywords=runtime_config.category_keywords,
-            exclusion_keywords=runtime_config.exclusion_keywords,
-            legal_risk_rules=runtime_config.legal_risk_rules,
-            owner_profile=runtime_config.owner_profile,
-            dimension_weights=runtime_config.dimension_weights,
-        )
-        update_record_search_text(record)
-        await generate_and_persist_lot_decision_report_snapshot(session, record, detail_cache, work_item)
-        updated_records[stable_row_id] = record
-
-    resulting_version = await bump_dataset_version(session, workspace_id, AUCTION_LOTS_TABLE_ID)
-    for row_id, changed_fields in changed_fields_by_row.items():
-        session.add(
-            GridChangeEventModel(
-                workspace_id=workspace_id,
-                table_id=AUCTION_LOTS_TABLE_ID,
-                dataset_version=resulting_version,
-                event_type="row_updated",
-                row_id=row_id,
-                payload={"source": "grid_edit", "changed_fields": sorted(changed_fields)},
-            )
-        )
-
-    await clear_redo_grid_operations(
-        session,
-        workspace_id=workspace_id,
-        table_id=AUCTION_LOTS_TABLE_ID,
-        user_id=user_id,
-        session_id=session_id,
-    )
-    undo_payload = {"edits": list(undo_values.values())}
-    redo_payload = {"edits": list(redo_values.values())}
-    operation = await record_grid_operation(
-        session,
-        workspace_id=workspace_id,
-        table_id=AUCTION_LOTS_TABLE_ID,
-        operation_type=operation_type,
-        user_id=user_id,
-        session_id=session_id,
+    backend_request = auction_backend_edit_request(
         base_version=base_version,
-        resulting_version=resulting_version,
-        payload=payload,
-        undo_payload=undo_payload,
-        redo_payload=redo_payload,
-    )
-    await record_grid_cell_events_from_payloads(
-        session,
-        operation_id=operation.id,
+        edits=edits,
         workspace_id=workspace_id,
-        table_id=AUCTION_LOTS_TABLE_ID,
-        undo_payload=undo_payload,
-        redo_payload=redo_payload,
+        user_id=user_id,
+        session_id=session_id,
+        operation_type=operation_type,
+        payload=payload,
     )
-    await session.flush()
+    service = AuctionGridEditService(workspace_id=workspace_id)
+    try:
+        result = await service.commit_edits(session, backend_request)
+    except ApiException as error:
+        if error.code == "stale-revision":
+            current_version = await get_dataset_version(session, workspace_id, AUCTION_LOTS_TABLE_ID)
+            raise AuctionGridEditConflictError(base_version=base_version, current_version=current_version) from error
+        if error.status_code == 404:
+            raise LookupError(error.message) from error
+        raise ValueError(error.message) from error
+
+    if result.rejected:
+        reason = result.rejected[0].reason
+        if reason == "row-not-found":
+            raise LookupError(reason)
+        raise ValueError(reason)
 
     return AuctionLotsGridEditResponse(
-        dataset_version=resulting_version,
+        dataset_version=int(result.revision),
         updated_rows=[
             AuctionLotsGridPullRow(
-                id=row_id,
-                index=int(record.id),
-                row=validate_datagrid_row_payload(record.datagrid_row),
+                id=auction_lot_grid_row_id(row.record),
+                index=int(row.record.id),
+                row=validate_datagrid_row_payload(row.record.datagrid_row),
             )
-            for row_id, record in updated_records.items()
+            for row in result.rows
         ],
     )
 
@@ -360,11 +264,3 @@ def _coerce_nullable_text(value: Any, field_name: str) -> str | None:
         raise ValueError(f"{field_name} must be text")
     normalized = str(value).strip()
     return normalized or None
-
-
-def _json_value(value: Any) -> Any:
-    if isinstance(value, Decimal):
-        return str(value)
-    if isinstance(value, datetime):
-        return value.isoformat()
-    return value

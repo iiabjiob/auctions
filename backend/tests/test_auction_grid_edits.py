@@ -3,13 +3,13 @@ from __future__ import annotations
 import unittest
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import ANY, AsyncMock, patch
+from unittest.mock import AsyncMock, patch
 
+from affino_grid_backend import ApiException
 from fastapi import HTTPException
 
 from app.api.auction_lots_grid_router import commit_auction_lots_edits
 from app.models.auction import AuctionLotRecord, AuctionLotWorkItem
-from app.models.grid import GridChangeEventModel
 from app.schemas.auction_grid import AuctionLotsGridEditRequest
 from app.schemas.auctions import LotDatagridRow, LotFreshness, LotRating
 from app.services.auction_grid_edits import (
@@ -90,7 +90,10 @@ def apply_recalculated_row(record: AuctionLotRecord, detail_cache, work_item: Au
 class AuctionGridEditsTests(unittest.IsolatedAsyncioTestCase):
     async def test_commit_edits_updates_work_item_revision_events_and_operation(self) -> None:
         record = make_record()
-        work_item = AuctionLotWorkItem(lot_record_id=record.id, analogs=[], market_value=Decimal("10"))
+        row = dict(record.datagrid_row)
+        row["market_value"] = "123.45"
+        row["exclude_from_analysis"] = True
+        record.datagrid_row = row
         session = FakeSession()
         request = AuctionLotsGridEditRequest.model_validate(
             {
@@ -101,70 +104,36 @@ class AuctionGridEditsTests(unittest.IsolatedAsyncioTestCase):
                 ],
             }
         )
-        record_operation = AsyncMock()
 
-        with (
-            patch(
-                "app.services.auction_grid_edits.get_or_create_grid_revision",
-                AsyncMock(return_value=SimpleNamespace(dataset_version=5)),
-            ),
-            patch("app.services.auction_grid_edits._find_record_by_row_id", AsyncMock(return_value=record)),
-            patch("app.services.auction_grid_edits.ensure_work_item", AsyncMock(return_value=work_item)),
-            patch(
-                "app.services.auction_grid_edits.auction_analysis_config_service.get_runtime_config",
-                AsyncMock(return_value=runtime_config()),
-            ),
-            patch("app.services.auction_grid_edits.recalculate_record_rating", side_effect=apply_recalculated_row),
-            patch("app.services.auction_grid_edits.bump_dataset_version", AsyncMock(return_value=6)),
-            patch("app.services.auction_grid_edits.clear_redo_grid_operations", AsyncMock(return_value=1)),
-            patch("app.services.auction_grid_edits.record_grid_operation", record_operation),
-        ):
+        with patch("app.services.grid_backend_edits.AuctionGridEditService") as service_type:
+            service = service_type.return_value
+            service.commit_edits = AsyncMock(
+                return_value=SimpleNamespace(revision="6", rows=[SimpleNamespace(record=record)], rejected=[])
+            )
             response = await commit_auction_lot_grid_edits(session, request, user_id="user-1", session_id="session-1")
 
-        self.assertEqual(work_item.market_value, Decimal("123.45"))
-        self.assertTrue(work_item.exclude_from_analysis)
         self.assertEqual(response.dataset_version, 6)
         self.assertEqual(response.updated_rows[0].id, "tbankrot:auction-1:lot-1")
         self.assertEqual(response.updated_rows[0].row.market_value, Decimal("123.45"))
-        change_events = [item for item in session.added if isinstance(item, GridChangeEventModel)]
-        self.assertEqual(len(change_events), 1)
-        self.assertEqual(change_events[0].event_type, "row_updated")
-        self.assertEqual(change_events[0].row_id, "tbankrot:auction-1:lot-1")
-        self.assertEqual(change_events[0].dataset_version, 6)
-        self.assertEqual(change_events[0].payload["changed_fields"], ["exclude_from_analysis", "market_value"])
-        record_operation.assert_awaited_once()
-        operation_kwargs = record_operation.await_args.kwargs
-        self.assertEqual(operation_kwargs["operation_type"], "edit")
-        self.assertEqual(operation_kwargs["base_version"], 5)
-        self.assertEqual(operation_kwargs["resulting_version"], 6)
-        self.assertEqual(operation_kwargs["user_id"], "user-1")
-        self.assertEqual(operation_kwargs["session_id"], "session-1")
-        self.assertEqual(operation_kwargs["undo_payload"]["edits"][0]["value"], "10")
+        service_type.assert_called_once_with(workspace_id="default")
+        service.commit_edits.assert_awaited_once()
+        backend_request = service.commit_edits.await_args.args[1]
+        self.assertEqual(backend_request.base_revision, "5")
+        self.assertEqual(backend_request.base_version, 5)
+        self.assertEqual(backend_request.user_id, "user-1")
+        self.assertEqual(backend_request.session_id, "session-1")
+        self.assertEqual(backend_request.payload["edits"][0]["rowId"], "tbankrot:auction-1:lot-1")
 
-    async def test_commit_edits_clears_redo_branch_for_scope(self) -> None:
+    async def test_commit_edits_passes_scope_to_backend_adapter(self) -> None:
         record = make_record()
-        work_item = AuctionLotWorkItem(lot_record_id=record.id, analogs=[])
         request = AuctionLotsGridEditRequest.model_validate(
             {"baseVersion": 5, "edits": [{"rowId": "tbankrot:auction-1:lot-1", "columnId": "marketValue", "value": 1}]}
         )
-        clear_redo = AsyncMock(return_value=2)
 
-        with (
-            patch(
-                "app.services.auction_grid_edits.get_or_create_grid_revision",
-                AsyncMock(return_value=SimpleNamespace(dataset_version=5)),
-            ),
-            patch("app.services.auction_grid_edits._find_record_by_row_id", AsyncMock(return_value=record)),
-            patch("app.services.auction_grid_edits.ensure_work_item", AsyncMock(return_value=work_item)),
-            patch(
-                "app.services.auction_grid_edits.auction_analysis_config_service.get_runtime_config",
-                AsyncMock(return_value=runtime_config()),
-            ),
-            patch("app.services.auction_grid_edits.recalculate_record_rating", side_effect=apply_recalculated_row),
-            patch("app.services.auction_grid_edits.bump_dataset_version", AsyncMock(return_value=6)),
-            patch("app.services.auction_grid_edits.clear_redo_grid_operations", clear_redo),
-            patch("app.services.auction_grid_edits.record_grid_operation", AsyncMock()),
-        ):
+        with patch("app.services.grid_backend_edits.AuctionGridEditService") as service_type:
+            service_type.return_value.commit_edits = AsyncMock(
+                return_value=SimpleNamespace(revision="6", rows=[SimpleNamespace(record=record)], rejected=[])
+            )
             await commit_auction_lot_grid_edits(
                 FakeSession(),
                 request,
@@ -173,32 +142,26 @@ class AuctionGridEditsTests(unittest.IsolatedAsyncioTestCase):
                 session_id="session-1",
             )
 
-        clear_redo.assert_awaited_once_with(
-            ANY,
-            workspace_id="default",
-            table_id="auction-lots",
-            user_id="user-1",
-            session_id="session-1",
-        )
+        backend_request = service_type.return_value.commit_edits.await_args.args[1]
+        self.assertEqual(backend_request.workspace_id, "default")
+        self.assertEqual(backend_request.user_id, "user-1")
+        self.assertEqual(backend_request.session_id, "session-1")
 
     async def test_conflict_stops_before_loading_rows(self) -> None:
         request = AuctionLotsGridEditRequest.model_validate(
             {"baseVersion": 4, "edits": [{"rowId": "tbankrot:auction-1:lot-1", "columnId": "marketValue", "value": 1}]}
         )
-        find_record = AsyncMock()
-
         with (
-            patch(
-                "app.services.auction_grid_edits.get_or_create_grid_revision",
-                AsyncMock(return_value=SimpleNamespace(dataset_version=5)),
-            ),
-            patch("app.services.auction_grid_edits._find_record_by_row_id", find_record),
+            patch("app.services.grid_backend_edits.AuctionGridEditService") as service_type,
+            patch("app.services.grid_state.get_dataset_version", AsyncMock(return_value=5)),
         ):
+            service_type.return_value.commit_edits = AsyncMock(
+                side_effect=ApiException(status_code=409, code="stale-revision", message="Edit commit revision is stale")
+            )
             with self.assertRaises(AuctionGridEditConflictError) as context:
                 await commit_auction_lot_grid_edits(FakeSession(), request)
 
         self.assertEqual(context.exception.current_version, 5)
-        find_record.assert_not_awaited()
 
     async def test_router_maps_conflict_to_409_and_rolls_back(self) -> None:
         session = FakeSession()

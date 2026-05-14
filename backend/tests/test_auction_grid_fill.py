@@ -5,8 +5,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from app.models.auction import AuctionLotRecord, AuctionLotWorkItem
-from app.models.grid import GridChangeEventModel, GridOperationModel
+from app.models.auction import AuctionLotRecord
 from app.schemas.auction_grid import AuctionLotsGridFillRequest
 from app.schemas.auctions import LotDatagridRow, LotFreshness, LotRating
 from app.services.auction_grid_fill import commit_auction_lot_grid_fill
@@ -59,22 +58,6 @@ class FakeSession:
         self.flush_count += 1
 
 
-def runtime_config() -> SimpleNamespace:
-    return SimpleNamespace(
-        category_keywords={},
-        exclusion_keywords=(),
-        legal_risk_rules=None,
-        owner_profile=None,
-        dimension_weights=None,
-    )
-
-
-def apply_recalculated_row(record: AuctionLotRecord, detail_cache, work_item: AuctionLotWorkItem, **kwargs) -> None:
-    row = dict(record.datagrid_row)
-    row["market_value"] = str(work_item.market_value) if work_item.market_value is not None else None
-    record.datagrid_row = row
-
-
 class AuctionGridFillTests(unittest.IsolatedAsyncioTestCase):
     async def test_copy_fill_applies_source_value_to_target_rows(self) -> None:
         source_record = make_record("tbankrot:auction-1:lot-1", Decimal("10"))
@@ -93,39 +76,23 @@ class AuctionGridFillTests(unittest.IsolatedAsyncioTestCase):
                 "mode": "copy",
             }
         )
-        target_one_work_item = AuctionLotWorkItem(lot_record_id=target_one_record.id, analogs=[], market_value=Decimal("1"))
-        target_two_work_item = AuctionLotWorkItem(lot_record_id=target_two_record.id, analogs=[], market_value=Decimal("2"))
-
-        def find_record_by_row_id(_: FakeSession, row_id: str):
-            mapping = {
-                "tbankrot:auction-1:lot-2": target_one_record,
-                "tbankrot:auction-1:lot-3": target_two_record,
-            }
-            return mapping.get(row_id)
-
-        def ensure_work_item(_: FakeSession, record: AuctionLotRecord):
-            if record.id == target_one_record.id:
-                return target_one_work_item
-            return target_two_work_item
+        target_one_record.datagrid_row = {**target_one_record.datagrid_row, "market_value": "10"}
+        target_two_record.datagrid_row = {**target_two_record.datagrid_row, "market_value": "10"}
 
         with (
             patch(
                 "app.services.auction_grid_fill.pull_persisted_lots_for_grid",
                 AsyncMock(return_value=([(source_record, source_row), (target_one_record, target_one_row), (target_two_record, target_two_row)], 3)),
             ),
-            patch(
-                "app.services.auction_grid_edits.get_or_create_grid_revision",
-                AsyncMock(return_value=SimpleNamespace(dataset_version=5)),
-            ),
-            patch("app.services.auction_grid_edits._find_record_by_row_id", side_effect=find_record_by_row_id),
-            patch("app.services.auction_grid_edits.ensure_work_item", side_effect=ensure_work_item),
-            patch(
-                "app.services.auction_grid_edits.auction_analysis_config_service.get_runtime_config",
-                AsyncMock(return_value=runtime_config()),
-            ),
-            patch("app.services.auction_grid_edits.recalculate_record_rating", side_effect=apply_recalculated_row),
-            patch("app.services.auction_grid_edits.bump_dataset_version", AsyncMock(return_value=6)),
+            patch("app.services.grid_backend_edits.AuctionGridEditService") as service_type,
         ):
+            service_type.return_value.commit_edits = AsyncMock(
+                return_value=SimpleNamespace(
+                    revision="6",
+                    rows=[SimpleNamespace(record=target_one_record), SimpleNamespace(record=target_two_record)],
+                    rejected=[],
+                )
+            )
             response = await commit_auction_lot_grid_fill(
                 session,
                 request,
@@ -133,16 +100,13 @@ class AuctionGridFillTests(unittest.IsolatedAsyncioTestCase):
                 session_id="session-1",
             )
 
-        self.assertEqual(target_one_work_item.market_value, Decimal("10"))
-        self.assertEqual(target_two_work_item.market_value, Decimal("10"))
         self.assertEqual(response.dataset_version, 6)
         self.assertEqual([row.row.market_value for row in response.updated_rows], [Decimal("10"), Decimal("10")])
-        events = [item for item in session.added if isinstance(item, GridChangeEventModel)]
-        self.assertEqual(len(events), 2)
-        self.assertEqual({event.payload["source"] for event in events}, {"grid_edit"})
-        operations = [item for item in session.added if isinstance(item, GridOperationModel)]
-        self.assertEqual(len(operations), 1)
-        self.assertEqual(operations[0].operation_type, "fill")
+        backend_request = service_type.return_value.commit_edits.await_args.args[1]
+        self.assertEqual(backend_request.operation_type, "fill")
+        self.assertEqual(backend_request.base_version, 5)
+        self.assertEqual([edit.row_id for edit in backend_request.edits], ["tbankrot:auction-1:lot-2", "tbankrot:auction-1:lot-3"])
+        self.assertEqual([edit.value for edit in backend_request.edits], [Decimal("10"), Decimal("10")])
 
 
 if __name__ == "__main__":
