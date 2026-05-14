@@ -20,6 +20,7 @@ import {
   PROCUREMENT_GRID_EDITABLE_COLUMN_IDS,
   type ProcurementGridCellEdit,
 } from '@/datagrid/procurementGridEdits'
+import { requestGridRedo, requestGridUndo } from '@/datagrid/gridHistory'
 import {
   createProcurementServerDatasource,
   type ProcurementServerDatasource,
@@ -244,6 +245,7 @@ const GRID_CHANGES_POLL_INTERVAL_MS = 5_000
 const GRID_CHANGES_REFRESH_DEBOUNCE_MS = 650
 
 const gridRef = ref<DataGridExposed<ProcurementGridRow> | null>(null)
+const workspaceRef = ref<HTMLElement | null>(null)
 const rowModel = shallowRef<ProcurementRowModel | null>(null)
 const rowRevision = ref(0)
 const latestDatasetVersion = ref<number | null>(null)
@@ -604,6 +606,54 @@ async function commitGridEdits(request: ProcurementCommitEditsRequest): Promise<
   }
 }
 
+function isTextEditingTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) return false
+  return Boolean(
+    target.closest('input, textarea, select, [contenteditable="true"], [contenteditable="plaintext-only"]'),
+  )
+}
+
+function isProcurementGridShortcutTarget(event: KeyboardEvent) {
+  if (event.isComposing || isTextEditingTarget(event.target)) return false
+  const workspace = workspaceRef.value
+  return Boolean(workspace && event.target instanceof Node && workspace.contains(event.target))
+}
+
+function isUndoShortcut(event: KeyboardEvent) {
+  return (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z' && !event.shiftKey
+}
+
+function isRedoShortcut(event: KeyboardEvent) {
+  if (!event.ctrlKey && !event.metaKey) return false
+  const key = event.key.toLowerCase()
+  return key === 'y' || (key === 'z' && event.shiftKey)
+}
+
+async function applyProcurementHistoryMutation(response: { datasetVersion: number }) {
+  latestDatasetVersion.value = response.datasetVersion
+  await refreshGrid()
+}
+
+function handleProcurementGridUndoRedo(event: KeyboardEvent) {
+  if (!isProcurementGridShortcutTarget(event)) return
+  if (!isUndoShortcut(event) && !isRedoShortcut(event)) return
+
+  event.preventDefault()
+  event.stopPropagation()
+  void (async () => {
+    try {
+      const response = isUndoShortcut(event)
+        ? await requestGridUndo<ProcurementApiRow>({ postJson: props.postJson, tableId: PROCUREMENT_LOTS_TABLE_ID })
+        : await requestGridRedo<ProcurementApiRow>({ postJson: props.postJson, tableId: PROCUREMENT_LOTS_TABLE_ID })
+      await applyProcurementHistoryMutation(response)
+      errorMessage.value = ''
+    } catch (error) {
+      errorMessage.value = error instanceof Error ? error.message : 'Не удалось выполнить undo/redo'
+      await refreshGrid()
+    }
+  })()
+}
+
 function mapRow(row: ProcurementApiRow, revision: number): ProcurementGridRow {
   const inputs = row.calculatorInputs ?? {}
   return {
@@ -887,10 +937,12 @@ onMounted(() => {
   rowModel.value = createGridRowModel()
   void loadPipelineHealth()
   document.addEventListener('visibilitychange', handleGridVisibilityChange)
+  document.addEventListener('keydown', handleProcurementGridUndoRedo)
 })
 
 onUnmounted(() => {
   document.removeEventListener('visibilitychange', handleGridVisibilityChange)
+  document.removeEventListener('keydown', handleProcurementGridUndoRedo)
   stopGridChangePolling()
   pipelineHealthAbortController?.abort()
   pipelineHealthAbortController = null
@@ -900,7 +952,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <section class="procurement-workspace" aria-label="Закупки">
+  <section ref="workspaceRef" class="procurement-workspace" aria-label="Закупки">
     <header class="auction-toolbar">
       <div class="toolbar-title">
         <button
@@ -955,6 +1007,7 @@ onUnmounted(() => {
           :row-selection="false"
           :cell-menu="true"
           :chrome="{ toolbarPlacement: 'integrated', density: 'compact', toolbarGap: 0, workspaceGap: 8 }"
+          :history="{ enabled: true, shortcuts: 'grid', controls: true }"
           @update:column-widths="persistColumnWidths"
         />
       </section>
