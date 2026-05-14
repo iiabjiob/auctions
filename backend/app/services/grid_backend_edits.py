@@ -25,6 +25,7 @@ from app.services.auction_scoring import recalculate_record_rating, sync_record_
 from app.services.auction_search import update_record_search_text
 from app.services.auction_workspace import ensure_work_item
 from app.services.grid_backend_history import AuctionGridRevisionService, ProcurementGridRevisionService
+from app.services.grid_side_effects import enqueue_grid_side_effect_tasks
 from app.services.grid_state import clear_redo_grid_operations
 from app.services.grid_table_registry import get_grid_table_definition
 from app.services.procurement_calculator import (
@@ -277,6 +278,15 @@ class ProcurementGridEditService(GridEditServiceBase):
                     payload={"source": "grid_edit", "changed_fields": _changed_fields_for_row(row_id, request.edits)},
                 )
             )
+        if operation_id is not None:
+            await enqueue_grid_side_effect_tasks(
+                session,
+                operation_id=operation_id,
+                workspace_id=request.workspace_id,
+                table_id=PROCUREMENT_LOTS_TABLE_ID,
+                row_ids=[procurement_lot_grid_row_id(row) for row in rows or []],
+                trigger_type="commit",
+            )
         return None
 
 
@@ -483,6 +493,15 @@ class AuctionGridEditService(GridEditServiceBase):
                     row_id=row_id,
                     payload={"source": "grid_edit", "changed_fields": _auction_changed_fields_for_row(row_id, request.edits)},
                 )
+            )
+        if operation_id is not None:
+            await enqueue_grid_side_effect_tasks(
+                session,
+                operation_id=operation_id,
+                workspace_id=request.workspace_id,
+                table_id=AUCTION_LOTS_TABLE_ID,
+                row_ids=[auction_lot_grid_row_id(row.record) for row in rows or []],
+                trigger_type="commit",
             )
         return None
 

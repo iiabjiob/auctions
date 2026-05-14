@@ -33,6 +33,7 @@ from app.services.grid_table_registry import (
     is_supported_grid_table,
     procurement_field_for_column,
 )
+from app.services.grid_side_effects import enqueue_grid_side_effect_tasks
 from app.services.procurement_calculator import (
     calculator_field_for_column,
     coerce_calculator_input_value,
@@ -297,6 +298,14 @@ async def _apply_loaded_package_history_operation(
         session_id=session_id,
     )
     updated_row_ids = [row.id for row in updated_rows]
+    await enqueue_grid_side_effect_tasks(
+        session,
+        operation_id=operation_id,
+        workspace_id=workspace_id,
+        table_id=table_id,
+        row_ids=updated_row_ids,
+        trigger_type=action,
+    )
     changed_cell_count = sum(len(fields) for fields in changed_fields_by_row.values())
     return GridHistoryMutationResponse(
         operation_id=str(operation_id),

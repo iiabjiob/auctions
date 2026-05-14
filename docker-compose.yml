@@ -191,6 +191,24 @@ services:
     networks:
       - net
 
+  grid-side-effect-worker:
+    build:
+      context: .
+      dockerfile: .devcontainer/Dockerfile
+      tags:
+        - auctions-dev:latest
+    container_name: auctions-grid-side-effect-worker-dev
+    working_dir: /workspace/backend
+    command: uv run python -m app.worker.grid_side_effect_worker
+    volumes:
+      - .:/workspace
+    env_file:
+      - ./backend/.env.dev
+    depends_on:
+      - db
+    networks:
+      - net
+
   zakupki-fetcher:
     profiles:
       - zakupki-fetch

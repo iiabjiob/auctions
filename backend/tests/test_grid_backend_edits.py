@@ -191,18 +191,17 @@ class GridBackendEditsTests(unittest.IsolatedAsyncioTestCase):
         )
         session = FakeSession()
 
-        with patch("app.services.grid_backend_edits.enqueue_procurement_telegram_notifications", AsyncMock()):
-            await service.collect_history_status(
-                session,
-                request,
-                operation_id=None,
-                committed=[],
-                committed_row_ids=[],
-                rejected=[],
-                affected_indexes=[],
-                revision="6",
-                rows=[record],
-            )
+        await service.collect_history_status(
+            session,
+            request,
+            operation_id=None,
+            committed=[],
+            committed_row_ids=[],
+            rejected=[],
+            affected_indexes=[],
+            revision="6",
+            rows=[record],
+        )
 
         changes = [item for item in session.added if isinstance(item, GridChangeEventModel)]
         self.assertEqual(len(changes), 1)
@@ -346,18 +345,17 @@ class GridBackendEditsTests(unittest.IsolatedAsyncioTestCase):
         )
         session = FakeSession()
 
-        with patch("app.services.grid_backend_edits.generate_and_persist_lot_decision_report_snapshot", AsyncMock()):
-            await service.collect_history_status(
-                session,
-                request,
-                operation_id=None,
-                committed=[],
-                committed_row_ids=[],
-                rejected=[],
-                affected_indexes=[],
-                revision="8",
-                rows=[row],
-            )
+        await service.collect_history_status(
+            session,
+            request,
+            operation_id=None,
+            committed=[],
+            committed_row_ids=[],
+            rejected=[],
+            affected_indexes=[],
+            revision="8",
+            rows=[row],
+        )
 
         changes = [item for item in session.added if isinstance(item, GridChangeEventModel)]
         self.assertEqual(len(changes), 1)
