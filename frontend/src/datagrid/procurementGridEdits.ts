@@ -4,19 +4,6 @@ export type ProcurementGridCellEdit = {
   value: unknown
 }
 
-export type ProcurementGridEditUpdatedRow<TApiRow> = {
-  id: string
-  index: number
-  row: TApiRow
-}
-
-export type ProcurementGridEditResponse<TApiRow> = {
-  datasetVersion: number
-  updatedRows: ProcurementGridEditUpdatedRow<TApiRow>[]
-}
-
-type PostJson = <TResponse>(path: string, payload: unknown, signal?: AbortSignal) => Promise<TResponse>
-
 const PROCUREMENT_GRID_NUMERIC_EDIT_COLUMNS = new Set([
   'quantity',
   'unitNmck',
@@ -71,22 +58,6 @@ export function buildProcurementGridCellEditsFromPatch(
     })
   }
   return edits
-}
-
-export async function commitProcurementGridEdits<TApiRow>(options: {
-  postJson: PostJson
-  baseVersion: number
-  edits: readonly ProcurementGridCellEdit[]
-  signal?: AbortSignal
-}) {
-  return options.postJson<ProcurementGridEditResponse<TApiRow>>(
-    '/api/procurement-lots/edits',
-    {
-      baseVersion: options.baseVersion,
-      edits: options.edits,
-    },
-    options.signal,
-  )
 }
 
 function normalizeProcurementGridEditValue(columnId: string, value: unknown) {

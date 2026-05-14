@@ -60,13 +60,8 @@ import {
 import {
   AUCTION_GRID_EDITABLE_COLUMN_IDS,
   buildAuctionGridCellEditsFromPatch,
-  commitAuctionGridEdits,
   type AuctionGridCellEdit,
 } from './datagrid/auctionGridEdits'
-import {
-  requestAuctionGridRedo,
-  requestAuctionGridUndo,
-} from './datagrid/auctionGridHistory'
 import { useAuthStore } from './stores/auth'
 import { workspaceDataGridTheme } from './theme/dataGridTheme'
 import type { ActionRecommendation, DecisionLevel, LotDecisionReport } from './types/decisionReport'
@@ -3349,8 +3344,7 @@ async function commitCatalogServerGridEdits(request: CatalogCommitEditsRequest):
       rowContexts.size === 1
         ? `Сохраняю экономику лота ${firstContext?.nextRow.lotNumber || firstContext?.nextRow.id}`
         : `Сохраняю ${rowContexts.size} лотов`
-    const response = await commitAuctionGridEdits<ApiLotRow>({
-      postJson: postAuctionServerGridJson,
+    const response = await auctionServerDataSource.commitCellEdits({
       baseVersion,
       edits: cellEdits,
       signal: request.signal,
@@ -4732,9 +4726,7 @@ function handleAuctionGridUndoRedo(event: KeyboardEvent) {
     event.stopPropagation()
     void (async () => {
       try {
-        const response = await requestAuctionGridUndo<ApiLotRow>({
-          postJson: postAuctionServerGridJson,
-        })
+        const response = await auctionServerDataSource.undoHistory()
         if (!applyAuctionGridHistoryMutation(response)) {
           await refreshAuctionGridAfterHistoryMutation(response.datasetVersion)
         }
@@ -4750,9 +4742,7 @@ function handleAuctionGridUndoRedo(event: KeyboardEvent) {
     event.stopPropagation()
     void (async () => {
       try {
-        const response = await requestAuctionGridRedo<ApiLotRow>({
-          postJson: postAuctionServerGridJson,
-        })
+        const response = await auctionServerDataSource.redoHistory()
         if (!applyAuctionGridHistoryMutation(response)) {
           await refreshAuctionGridAfterHistoryMutation(response.datasetVersion)
         }

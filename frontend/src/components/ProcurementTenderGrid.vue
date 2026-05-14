@@ -16,11 +16,9 @@ import {
 } from '@affino/datagrid-vue'
 import {
   buildProcurementGridCellEditsFromPatch,
-  commitProcurementGridEdits,
   PROCUREMENT_GRID_EDITABLE_COLUMN_IDS,
   type ProcurementGridCellEdit,
 } from '@/datagrid/procurementGridEdits'
-import { requestGridRedo, requestGridUndo } from '@/datagrid/gridHistory'
 import {
   createProcurementServerDatasource,
   type ProcurementServerDatasource,
@@ -247,6 +245,7 @@ const GRID_CHANGES_REFRESH_DEBOUNCE_MS = 650
 const gridRef = ref<DataGridExposed<ProcurementGridRow> | null>(null)
 const workspaceRef = ref<HTMLElement | null>(null)
 const rowModel = shallowRef<ProcurementRowModel | null>(null)
+const datasourceRef = shallowRef<ProcurementServerGridDataSource | null>(null)
 const rowRevision = ref(0)
 const latestDatasetVersion = ref<number | null>(null)
 const pipelineHealth = ref<ProcurementPipelineHealthResponse | null>(null)
@@ -555,6 +554,7 @@ function createGridRowModel(): ProcurementRowModel {
 
 function createGridDataSource(): ProcurementDataSource {
   const datasource = createDatasource()
+  datasourceRef.value = datasource
   return {
     pull(request) {
       loading.value = true
@@ -589,8 +589,11 @@ async function commitGridEdits(request: ProcurementCommitEditsRequest): Promise<
   }
 
   try {
-    const response = await commitProcurementGridEdits<ProcurementApiRow>({
-      postJson: props.postJson,
+    const datasource = datasourceRef.value
+    if (!datasource) {
+      throw new Error('Procurement grid datasource is not initialized')
+    }
+    const response = await datasource.commitCellEdits({
       baseVersion,
       edits: cellEdits,
       signal: request.signal,
@@ -642,9 +645,13 @@ function handleProcurementGridUndoRedo(event: KeyboardEvent) {
   event.stopPropagation()
   void (async () => {
     try {
+      const datasource = datasourceRef.value
+      if (!datasource) {
+        throw new Error('Procurement grid datasource is not initialized')
+      }
       const response = isUndoShortcut(event)
-        ? await requestGridUndo<ProcurementApiRow>({ postJson: props.postJson, tableId: PROCUREMENT_LOTS_TABLE_ID })
-        : await requestGridRedo<ProcurementApiRow>({ postJson: props.postJson, tableId: PROCUREMENT_LOTS_TABLE_ID })
+        ? await datasource.undoHistory()
+        : await datasource.redoHistory()
       await applyProcurementHistoryMutation(response)
       errorMessage.value = ''
     } catch (error) {

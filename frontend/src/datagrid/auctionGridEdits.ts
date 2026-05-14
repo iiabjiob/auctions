@@ -4,19 +4,6 @@ export type AuctionGridCellEdit = {
   value: unknown
 }
 
-export type AuctionGridEditUpdatedRow<TApiRow> = {
-  id: string
-  index: number
-  row: TApiRow
-}
-
-export type AuctionGridEditResponse<TApiRow> = {
-  datasetVersion: number
-  updatedRows: AuctionGridEditUpdatedRow<TApiRow>[]
-}
-
-type PostJson = <TResponse>(path: string, payload: unknown, signal?: AbortSignal) => Promise<TResponse>
-
 const AUCTION_GRID_NUMERIC_EDIT_COLUMNS = new Set([
   'marketValue',
   'platformFee',
@@ -53,24 +40,6 @@ export function buildAuctionGridCellEditsFromPatch(
     })
   }
   return edits
-}
-
-export async function commitAuctionGridEdits<TApiRow>(options: {
-  postJson: PostJson
-  baseVersion: number
-  edits: readonly AuctionGridCellEdit[]
-  signal?: AbortSignal
-}) {
-  const response = await options.postJson<AuctionGridEditResponse<TApiRow>>(
-    '/api/auction-lots/edits',
-    {
-      baseVersion: options.baseVersion,
-      edits: options.edits,
-    },
-    options.signal,
-  )
-
-  return response
 }
 
 function normalizeAuctionGridEditValue(columnId: string, value: unknown) {

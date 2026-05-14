@@ -11,9 +11,17 @@ import type {
 } from '@affino/datagrid-vue'
 import {
   createAffinoDatasource,
+  type AffinoDatasource,
   normalizeDataGridServerQuery,
   type DataGridServerQuery,
 } from '@affino/datagrid-server-adapters'
+import {
+  commitAffinoCellEdits,
+  requestAffinoHistoryMutation,
+  type AffinoGridCellEdit,
+  type AffinoGridEditResponse,
+  type AffinoGridHistoryMutationResponse,
+} from './affinoGridMutations'
 import { createAffinoPostJsonFetch } from './affinoPostJsonFetch'
 
 export type ProcurementServerGridFilters = {
@@ -59,6 +67,13 @@ export type ProcurementServerPullWindowResult<TRow> = {
 
 export type ProcurementServerDatasource<TApiRow, TRow> = DataGridDataSource<TRow> & {
   pullWindow(request: ProcurementServerPullWindowRequest): Promise<ProcurementServerPullWindowResult<TRow>>
+  commitCellEdits(options: {
+    baseVersion: number
+    edits: readonly AffinoGridCellEdit[]
+    signal?: AbortSignal
+  }): Promise<AffinoGridEditResponse<TApiRow>>
+  undoHistory(): Promise<AffinoGridHistoryMutationResponse<TApiRow>>
+  redoHistory(): Promise<AffinoGridHistoryMutationResponse<TApiRow>>
 }
 
 type ProcurementServerPullResponse<TApiRow> = {
@@ -101,7 +116,7 @@ export function createProcurementServerDatasource<TApiRow, TRow>(
   options: CreateProcurementServerDatasourceOptions<TApiRow, TRow>,
 ): ProcurementServerDatasource<TApiRow, TRow> {
   const fetchImpl = createAffinoPostJsonFetch(options.postJson)
-  const affinoDatasource = createAffinoDatasource<TRow>({
+  const affinoDatasource: AffinoDatasource<TRow> = createAffinoDatasource<TRow>({
     baseUrl: '',
     tableId: 'procurement-lots',
     fetchImpl,
@@ -202,6 +217,28 @@ export function createProcurementServerDatasource<TApiRow, TRow>(
     pull,
     pullWindow,
     getColumnHistogram,
+    commitCellEdits(options) {
+      return commitAffinoCellEdits<TApiRow, TRow>({
+        datasource: affinoDatasource,
+        fetchImpl,
+        tableId: 'procurement-lots',
+        ...options,
+      })
+    },
+    undoHistory() {
+      return requestAffinoHistoryMutation<TApiRow, TRow>({
+        datasource: affinoDatasource,
+        fetchImpl,
+        action: 'undo',
+      })
+    },
+    redoHistory() {
+      return requestAffinoHistoryMutation<TApiRow, TRow>({
+        datasource: affinoDatasource,
+        fetchImpl,
+        action: 'redo',
+      })
+    },
   }
 }
 

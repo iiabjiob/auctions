@@ -11,9 +11,17 @@ import type {
 } from '@affino/datagrid-vue'
 import {
   createAffinoDatasource,
+  type AffinoDatasource,
   normalizeDataGridServerQuery,
   type DataGridServerQuery,
 } from '@affino/datagrid-server-adapters'
+import {
+  commitAffinoCellEdits,
+  requestAffinoHistoryMutation,
+  type AffinoGridCellEdit,
+  type AffinoGridEditResponse,
+  type AffinoGridHistoryMutationResponse,
+} from './affinoGridMutations'
 import { createAffinoPostJsonFetch } from './affinoPostJsonFetch'
 
 export type AuctionServerGridFilters = {
@@ -51,6 +59,13 @@ export type AuctionServerPullWindowResult<TRow> = {
 
 export type AuctionServerDatasource<TApiRow, TRow> = DataGridDataSource<TRow> & {
   pullWindow(request: AuctionServerPullWindowRequest): Promise<AuctionServerPullWindowResult<TRow>>
+  commitCellEdits(options: {
+    baseVersion: number
+    edits: readonly AffinoGridCellEdit[]
+    signal?: AbortSignal
+  }): Promise<AffinoGridEditResponse<TApiRow>>
+  undoHistory(): Promise<AffinoGridHistoryMutationResponse<TApiRow>>
+  redoHistory(): Promise<AffinoGridHistoryMutationResponse<TApiRow>>
 }
 
 type AuctionServerPullResponse<TApiRow> = {
@@ -101,7 +116,7 @@ export function createAuctionServerDatasource<TApiRow, TRow>(
   options: CreateAuctionServerDatasourceOptions<TApiRow, TRow>,
 ): AuctionServerDatasource<TApiRow, TRow> {
   const fetchImpl = createAffinoPostJsonFetch(options.postJson)
-  const affinoDatasource = createAffinoDatasource<TRow>({
+  const affinoDatasource: AffinoDatasource<TRow> = createAffinoDatasource<TRow>({
     baseUrl: '',
     tableId: 'auction-lots',
     fetchImpl,
@@ -205,6 +220,28 @@ export function createAuctionServerDatasource<TApiRow, TRow>(
     pull,
     pullWindow,
     getColumnHistogram,
+    commitCellEdits(options) {
+      return commitAffinoCellEdits<TApiRow, TRow>({
+        datasource: affinoDatasource,
+        fetchImpl,
+        tableId: 'auction-lots',
+        ...options,
+      })
+    },
+    undoHistory() {
+      return requestAffinoHistoryMutation<TApiRow, TRow>({
+        datasource: affinoDatasource,
+        fetchImpl,
+        action: 'undo',
+      })
+    },
+    redoHistory() {
+      return requestAffinoHistoryMutation<TApiRow, TRow>({
+        datasource: affinoDatasource,
+        fetchImpl,
+        action: 'redo',
+      })
+    },
   }
 }
 
