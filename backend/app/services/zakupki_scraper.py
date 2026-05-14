@@ -101,8 +101,13 @@ def _search_keyword_queries(search_keywords: tuple[str, ...] | list[str] | None 
     return tuple(dict.fromkeys(keyword.strip() for keyword in keywords if keyword.strip()))
 
 
-def fetch_procurement_list(limit: int | None = None, *, page: int = 1) -> list[ProcurementLotItem]:
-    return list(iter_procurement_list(limit=limit, start_page=page))
+def fetch_procurement_list(
+    limit: int | None = None,
+    *,
+    page: int = 1,
+    search_keywords: tuple[str, ...] | list[str] | None = None,
+) -> list[ProcurementLotItem]:
+    return list(iter_procurement_list(limit=limit, start_page=page, search_keywords=search_keywords))
 
 
 def fetch_search_page(

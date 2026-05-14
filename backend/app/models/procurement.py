@@ -43,6 +43,8 @@ class ProcurementSourceSyncState(Base):
     last_sync_status_changed: Mapped[int | None] = mapped_column(Integer)
     last_sync_parser_failures: Mapped[int | None] = mapped_column(Integer)
     last_sync_missing_critical_fields: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    cursor_payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    cursor_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     parser_version: Mapped[str | None] = mapped_column(String(64), index=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False

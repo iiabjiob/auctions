@@ -111,12 +111,12 @@ class ProcurementSchemaTests(unittest.TestCase):
         self.assertIn("review", record.search_text or "")
 
     def test_procurement_diagnostics_migration_follows_current_head(self) -> None:
-        migration_path = Path("alembic/versions/202605130015_add_procurement_pipeline_diagnostics.py")
-        spec = importlib.util.spec_from_file_location("procurement_diagnostics_migration", migration_path)
+        migration_path = Path("alembic/versions/202605140001_add_procurement_sync_cursor.py")
+        spec = importlib.util.spec_from_file_location("procurement_sync_cursor_migration", migration_path)
         self.assertIsNotNone(spec)
         self.assertIsNotNone(spec.loader)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
 
-        self.assertEqual(module.revision, "202605130015")
-        self.assertEqual(module.down_revision, "202605130014")
+        self.assertEqual(module.revision, "202605140001")
+        self.assertEqual(module.down_revision, "202605130015")

@@ -219,8 +219,8 @@ const gridStatus = computed(() => {
   if (errorMessage.value) return errorMessage.value
   if (loading.value && !loadedOnce.value) return 'Загружаем закупки'
   const source = pipelineHealth.value?.sources.find((item) => item.code === filters.source)
-  if (source?.last_sync_result === 'failed') return `Ошибка синка: ${source.last_sync_error_code ?? source.last_sync_error ?? 'source'}`
   if (source?.last_successful_sync_at) return `Синк ${formatDateTime(source.last_successful_sync_at)}`
+  if (source?.last_sync_result === 'failed') return `Ошибка синка: ${source.last_sync_error_code ?? source.last_sync_error ?? 'source'}`
   if (loadedOnce.value) return `Загружено ${total.value}`
   return 'Ожидаем загрузку'
 })

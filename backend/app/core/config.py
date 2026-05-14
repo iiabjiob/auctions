@@ -80,6 +80,8 @@ class Settings(BaseSettings):
     procurement_sync_interval_seconds: int = 60 * 60
     procurement_sync_interval_jitter_seconds: int = 60 * 10
     procurement_sync_limit: int = 100
+    procurement_sync_page_batch_size: int = 5
+    procurement_sync_max_pages_per_keyword: int = 0
     telegram_bot_token: str | None = None
     telegram_bot_username: str | None = None
     telegram_webhook_secret: str | None = None

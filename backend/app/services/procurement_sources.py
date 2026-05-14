@@ -20,6 +20,9 @@ class ProcurementSourceProvider(Protocol):
     def iter_lots(self, limit: int | None = None, *, page: int = 1) -> Iterable[ProcurementLotItem]:
         ...
 
+    def list_lots_page(self, *, keyword: str, page: int = 1, limit: int | None = None) -> list[ProcurementLotItem]:
+        ...
+
     def get_lot_detail(self, external_id: str) -> dict | None:
         ...
 
@@ -40,6 +43,9 @@ class EisZakupkiProvider:
 
     def iter_lots(self, limit: int | None = None, *, page: int = 1) -> Iterable[ProcurementLotItem]:
         return fetch_procurement_list(limit=limit, page=page)
+
+    def list_lots_page(self, *, keyword: str, page: int = 1, limit: int | None = None) -> list[ProcurementLotItem]:
+        return fetch_procurement_list(limit=limit, page=page, search_keywords=(keyword,))
 
     def get_lot_detail(self, external_id: str) -> dict | None:
         del external_id
@@ -63,6 +69,10 @@ class DisabledProcurementSourceProvider:
 
     def iter_lots(self, limit: int | None = None, *, page: int = 1) -> Iterable[ProcurementLotItem]:
         del limit, page
+        raise NotImplementedError(f"Procurement provider '{self.code}' is disabled")
+
+    def list_lots_page(self, *, keyword: str, page: int = 1, limit: int | None = None) -> list[ProcurementLotItem]:
+        del keyword, page, limit
         raise NotImplementedError(f"Procurement provider '{self.code}' is disabled")
 
     def get_lot_detail(self, external_id: str) -> dict | None:
