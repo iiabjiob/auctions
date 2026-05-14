@@ -18,8 +18,8 @@ importers:
         specifier: ^0.1.2
         version: 0.1.2
       '@affino/datagrid-vue':
-        specifier: ^0.3.41
-        version: 0.3.41(@affino/datagrid-theme@0.2.3)(pinia@3.0.4(typescript@5.9.3)(vue@3.5.26(typescript@5.9.3)))(vue@3.5.26(typescript@5.9.3))
+        specifier: ^0.3.43
+        version: 0.3.43(@affino/datagrid-theme@0.2.3)(pinia@3.0.4(typescript@5.9.3)(vue@3.5.26(typescript@5.9.3)))(vue@3.5.26(typescript@5.9.3))
       '@affino/datagrid-vue-app':
         specifier: ^0.1.60
         version: 0.1.60(@affino/menu-core@1.1.0)(pinia@3.0.4(typescript@5.9.3)(vue@3.5.26(typescript@5.9.3)))(vue@3.5.26(typescript@5.9.3))
@@ -110,9 +110,6 @@ packages:
   '@affino/datagrid-core@0.3.25':
     resolution: {integrity: sha512-T+9SYffjj/p1J7EukF1bYiRnsBTO0LsEbtlK1qhuvKo/PXhVrHyavwOlsGww5brIm92wu/88kjPOO3ZLEEerGA==}
 
-  '@affino/datagrid-core@0.3.28':
-    resolution: {integrity: sha512-rYnL0CAHuCJqXLGc/Ue5j+P43CpWtH2xmI2A4WlZGUDit83jVLw56Xbn4RL+o4T1uWAsU+nnZPrJPu/MBatX3g==}
-
   '@affino/datagrid-core@0.3.30':
     resolution: {integrity: sha512-GKIJSPtfxheB9f8xy5JY9lhIoGJg74thPOccFtq7BBalDAKdm9qrdJIQ0JMHGvBBNt6HRB+o96ehleVdqDbDqA==}
 
@@ -127,9 +124,6 @@ packages:
 
   '@affino/datagrid-gantt@0.1.2':
     resolution: {integrity: sha512-ebfG4vu7K3hfwUojDJi2pRD++j1OB6WaNP4jBmIrdQv+1wRtqwtNWlCxfJsXj8ND/wqcA2+aRyLC1KM3X/q9Cg==}
-
-  '@affino/datagrid-orchestration@0.3.19':
-    resolution: {integrity: sha512-FHTALjq4hSfoJofesZgONZsF/wImSRRMh0uB2x8wjDFx/twz+68/v0P2uWT++iDyXvTLtE4TX1xm3ShOQd/wYQ==}
 
   '@affino/datagrid-orchestration@0.3.21':
     resolution: {integrity: sha512-ur/UJlJuasrzTsr0f/rnw/oUGIzLREKPfMN7BOneZ7VIJRczElvJHuSLJFjlMNF0OjsXOAx31OdXTBGzMziPiA==}
@@ -156,16 +150,6 @@ packages:
     resolution: {integrity: sha512-olVQh5ux2nt4jgpazTrhQV1IJ/JHChoSGXatPBWc0wnbYgCWIY3l6ozii8NlVPCnoWIUPIkws6K6Kf5T4JS/pg==}
     peerDependencies:
       vue: ^3.3.0
-
-  '@affino/datagrid-vue@0.3.41':
-    resolution: {integrity: sha512-Qm6sXK6Xk6FHscKC+merjmRRg0t2DKqAt0rPMivkFVQsMqXke6446M+EehuAvZva4KuKYy6WHK1iTTMZb6f9vg==}
-    peerDependencies:
-      '@affino/datagrid-theme': ^0.2.3
-      pinia: ^2.1.0 || ^3.0.0
-      vue: ^3.3.0
-    peerDependenciesMeta:
-      '@affino/datagrid-theme':
-        optional: true
 
   '@affino/datagrid-vue@0.3.43':
     resolution: {integrity: sha512-Qj1ffUuzevwvyKZDFHodnbrYjQMDB2Qhoc27/+btcEhW7TcgpSeYsfMNoqdWlrMkqxzNmcwu0aBbM6bGNEH2Fw==}
@@ -1517,14 +1501,6 @@ snapshots:
       '@affino/datagrid-plugins': 0.2.2
       '@affino/projection-engine': 0.2.2
 
-  '@affino/datagrid-core@0.3.28':
-    dependencies:
-      '@affino/datagrid-format': 0.1.1
-      '@affino/datagrid-formula-engine': 0.1.2
-      '@affino/datagrid-pivot': 0.1.2
-      '@affino/datagrid-plugins': 0.2.2
-      '@affino/projection-engine': 0.2.2
-
   '@affino/datagrid-core@0.3.30':
     dependencies:
       '@affino/datagrid-format': 0.1.1
@@ -1542,10 +1518,6 @@ snapshots:
   '@affino/datagrid-gantt@0.1.2':
     dependencies:
       '@affino/datagrid-core': 0.3.12
-
-  '@affino/datagrid-orchestration@0.3.19':
-    dependencies:
-      '@affino/datagrid-core': 0.3.28
 
   '@affino/datagrid-orchestration@0.3.21':
     dependencies:
@@ -1580,17 +1552,6 @@ snapshots:
     transitivePeerDependencies:
       - '@affino/menu-core'
       - pinia
-
-  '@affino/datagrid-vue@0.3.41(@affino/datagrid-theme@0.2.3)(pinia@3.0.4(typescript@5.9.3)(vue@3.5.26(typescript@5.9.3)))(vue@3.5.26(typescript@5.9.3))':
-    dependencies:
-      '@affino/datagrid-core': 0.3.28
-      '@affino/datagrid-orchestration': 0.3.19
-      '@affino/datagrid-pivot': 0.1.2
-      '@affino/datagrid-worker': 0.1.2
-      pinia: 3.0.4(typescript@5.9.3)(vue@3.5.26(typescript@5.9.3))
-      vue: 3.5.26(typescript@5.9.3)
-    optionalDependencies:
-      '@affino/datagrid-theme': 0.2.3
 
   '@affino/datagrid-vue@0.3.43(@affino/datagrid-theme@0.2.3)(pinia@3.0.4(typescript@5.9.3)(vue@3.5.26(typescript@5.9.3)))(vue@3.5.26(typescript@5.9.3))':
     dependencies:

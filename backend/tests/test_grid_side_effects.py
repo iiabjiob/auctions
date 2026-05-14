@@ -5,6 +5,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from app.models.grid import GridSideEffectTaskModel
 from app.services.auction_grid_state import AUCTION_LOTS_TABLE_ID
 from app.services.grid_side_effects import (
@@ -27,6 +29,17 @@ class FakeSession:
             return self.scalar_results.pop(0)
         return None
 
+    def begin_nested(self):
+        return FakeNestedTransaction()
+
+
+class FakeNestedTransaction:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return False
+
 
 class GridSideEffectsTests(unittest.IsolatedAsyncioTestCase):
     async def test_enqueue_deduplicates_row_ids_and_uses_operation_scope(self) -> None:
@@ -44,6 +57,20 @@ class GridSideEffectsTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(inserted, 1)
         session.execute.assert_awaited_once()
+
+    async def test_enqueue_failure_does_not_fail_core_grid_mutation(self) -> None:
+        session = FakeSession()
+        session.execute.side_effect = SQLAlchemyError("outbox unavailable")
+
+        inserted = await enqueue_grid_side_effect_tasks(
+            session,
+            operation_id=uuid4(),
+            workspace_id=DEFAULT_GRID_WORKSPACE_ID,
+            table_id=AUCTION_LOTS_TABLE_ID,
+            row_ids=["tbankrot:auction-1:lot-1"],
+        )
+
+        self.assertEqual(inserted, 0)
 
     async def test_process_auction_task_generates_decision_report_snapshot(self) -> None:
         session = FakeSession()

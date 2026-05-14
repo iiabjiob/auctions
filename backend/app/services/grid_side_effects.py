@@ -7,6 +7,7 @@ from uuid import UUID
 
 from sqlalchemy import or_, select, update
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.auction import AuctionLotDetailCache, AuctionLotRecord, AuctionLotWorkItem
@@ -71,7 +72,15 @@ async def enqueue_grid_side_effect_tasks(
     statement = statement.on_conflict_do_nothing(
         constraint="uq_grid_side_effect_tasks_operation_row_effect_trigger",
     )
-    result = await session.execute(statement)
+    try:
+        async with session.begin_nested():
+            result = await session.execute(statement)
+    except SQLAlchemyError:
+        logger.exception(
+            "Failed to enqueue grid side effect tasks",
+            extra={"table_id": table_id, "operation_id": str(operation_uuid), "row_count": len(unique_row_ids)},
+        )
+        return 0
     return int(result.rowcount or 0)
 
 
