@@ -26,7 +26,6 @@ from app.services.auction_search import update_record_search_text
 from app.services.auction_workspace import ensure_work_item
 from app.services.grid_backend_history import AuctionGridRevisionService, ProcurementGridRevisionService
 from app.services.grid_state import clear_redo_grid_operations
-from app.services.lot_decision_report import generate_and_persist_lot_decision_report_snapshot
 from app.services.grid_table_registry import get_grid_table_definition
 from app.services.procurement_calculator import (
     calculator_field_for_column,
@@ -46,7 +45,6 @@ from app.services.procurement_grid_state import (
     PROCUREMENT_LOTS_TABLE_ID,
     procurement_lot_grid_row_id,
 )
-from app.services.procurement_notifications import enqueue_procurement_telegram_notifications
 from app.services.procurement_scoring import apply_procurement_score
 
 
@@ -269,7 +267,6 @@ class ProcurementGridEditService(GridEditServiceBase):
                 operation.resulting_version = dataset_version
         for row in rows or []:
             row_id = procurement_lot_grid_row_id(row)
-            await enqueue_procurement_telegram_notifications(session, row)
             session.add(
                 GridChangeEventModel(
                     workspace_id=request.workspace_id,
@@ -477,7 +474,6 @@ class AuctionGridEditService(GridEditServiceBase):
                 operation.resulting_version = dataset_version
         for row in rows or []:
             row_id = auction_lot_grid_row_id(row.record)
-            await generate_and_persist_lot_decision_report_snapshot(session, row.record, row.detail_cache, row.work_item)
             session.add(
                 GridChangeEventModel(
                     workspace_id=request.workspace_id,

@@ -33,7 +33,6 @@ from app.services.grid_table_registry import (
     is_supported_grid_table,
     procurement_field_for_column,
 )
-from app.services.lot_decision_report import generate_and_persist_lot_decision_report_snapshot
 from app.services.procurement_calculator import (
     calculator_field_for_column,
     coerce_calculator_input_value,
@@ -53,7 +52,6 @@ from app.services.procurement_grid_state import (
     bump_procurement_lot_dataset_version,
     procurement_lot_grid_row_id,
 )
-from app.services.procurement_notifications import enqueue_procurement_telegram_notifications
 from app.services.procurement_scoring import apply_procurement_score
 
 
@@ -811,12 +809,7 @@ async def _persist_history_side_effects(
     operation: GridOperationModel,
     dataset_version: int,
 ) -> None:
-    del action, operation, dataset_version
-    if isinstance(row, AuctionGridHistoryRow):
-        await generate_and_persist_lot_decision_report_snapshot(session, row.record, row.detail_cache, row.work_item)
-        return
-    if isinstance(row, ProcurementLotRecord):
-        await enqueue_procurement_telegram_notifications(session, row)
+    del session, row, action, operation, dataset_version
 
 
 async def _refresh_history_result_row(session: AsyncSession, row: Any) -> None:

@@ -123,6 +123,7 @@ class ProcurementLotsGridEditRequest(BaseModel):
 class ProcurementLotsGridEditResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
+    operation_id: str | None = Field(default=None, alias="operationId")
     dataset_version: int = Field(alias="datasetVersion")
     updated_rows: list[ProcurementLotsGridPullRow] = Field(alias="updatedRows")
     revision: str | None = None
@@ -130,6 +131,12 @@ class ProcurementLotsGridEditResponse(BaseModel):
     rejected: list[dict[str, Any]] = Field(default_factory=list)
     invalidation: dict[str, Any] | None = None
     rows: list[ProcurementLotsGridPullRow] = Field(default_factory=list)
+    affected_rows: int = Field(default=0, alias="affectedRows")
+    affected_cells: int = Field(default=0, alias="affectedCells")
+    can_undo: bool | None = Field(default=None, alias="canUndo")
+    can_redo: bool | None = Field(default=None, alias="canRedo")
+    latest_undo_operation_id: str | None = Field(default=None, alias="latestUndoOperationId")
+    latest_redo_operation_id: str | None = Field(default=None, alias="latestRedoOperationId")
 
 
 class ProcurementLotsGridFillRange(BaseModel):

@@ -162,14 +162,29 @@ async def _commit_auction_lot_grid_operations(
         )
         )
     updated_row_ids = [row.id for row in updated_rows]
+    history_status = getattr(result, "history_status", None)
+    committed_cells = getattr(result, "committed", [])
+    committed_payload = [
+        {"rowId": item.row_id, "columnId": item.column_id, "revision": item.revision}
+        for item in committed_cells
+    ]
+    if not committed_payload:
+        committed_payload = [{"rowId": row_id, "revision": str(result.revision)} for row_id in updated_row_ids]
     return AuctionLotsGridEditResponse(
+        operation_id=getattr(result, "operation_id", None),
         dataset_version=int(result.revision),
         updated_rows=updated_rows,
         revision=str(result.revision),
-        committed=[{"rowId": row_id, "revision": str(result.revision)} for row_id in updated_row_ids],
+        committed=committed_payload,
         rejected=[],
         invalidation={"type": "rows", "rowIds": updated_row_ids, "reason": "edit"},
         rows=updated_rows,
+        affected_rows=len(updated_row_ids),
+        affected_cells=len(committed_payload),
+        can_undo=getattr(history_status, "can_undo", None),
+        can_redo=getattr(history_status, "can_redo", None),
+        latest_undo_operation_id=getattr(history_status, "latest_undo_operation_id", None),
+        latest_redo_operation_id=getattr(history_status, "latest_redo_operation_id", None),
     )
 
 
