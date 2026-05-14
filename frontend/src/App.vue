@@ -2585,10 +2585,11 @@ const auctionServerDataSource = createAuctionServerCatalogDataSource()
 const auctionGridHistoryAdapter: DataGridTableStageHistoryAdapter = {
   captureSnapshot: () => null,
   captureSnapshotForRowIds: () => null,
-  recordIntentTransaction: () => {},
+  recordIntentTransaction: () => {
+    markAuctionGridHistoryCommitted()
+  },
   recordServerFillTransaction: () => {
-    auctionGridHistoryState.canUndo = true
-    auctionGridHistoryState.canRedo = false
+    markAuctionGridHistoryCommitted()
   },
   canUndo: () => auctionGridHistoryState.canUndo,
   canRedo: () => auctionGridHistoryState.canRedo,

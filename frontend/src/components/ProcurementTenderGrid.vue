@@ -591,10 +591,11 @@ function createGridDataSource(): ProcurementDataSource {
 const procurementGridHistoryAdapter: DataGridTableStageHistoryAdapter = {
   captureSnapshot: () => null,
   captureSnapshotForRowIds: () => null,
-  recordIntentTransaction: () => {},
+  recordIntentTransaction: () => {
+    markProcurementHistoryCommitted()
+  },
   recordServerFillTransaction: () => {
-    gridHistoryState.canUndo = true
-    gridHistoryState.canRedo = false
+    markProcurementHistoryCommitted()
   },
   canUndo: () => gridHistoryState.canUndo,
   canRedo: () => gridHistoryState.canRedo,
