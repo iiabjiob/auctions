@@ -514,6 +514,7 @@ function datetimeColumn(key: keyof ProcurementGridRow & string, label: string, w
 function createDatasource(): ProcurementServerGridDataSource {
   return createProcurementServerDatasource<ProcurementApiRow, ProcurementGridRow>({
     postJson: props.postJson,
+    getJson: props.getJson,
     getFilters: buildServerFilters,
     hasFilterModel,
     mapRow,
@@ -816,11 +817,11 @@ async function pollGridChanges() {
 
   gridChangesPolling = true
   try {
-    const params = new URLSearchParams({
-      tableId: PROCUREMENT_LOTS_TABLE_ID,
-      sinceVersion: String(sinceVersion),
-    })
-    const response = await props.getJson<GridChangeFeedResponse>(`/api/changes?${params.toString()}`)
+    const datasource = datasourceRef.value
+    if (!datasource) {
+      throw new Error('Procurement grid datasource is not initialized')
+    }
+    const response = await datasource.getChangesSinceVersion({ sinceVersion }) as GridChangeFeedResponse
     const currentVersion = latestDatasetVersion.value ?? 0
     if (response.changes.length > 0 || response.datasetVersion > currentVersion) {
       scheduleGridChangeRefresh()

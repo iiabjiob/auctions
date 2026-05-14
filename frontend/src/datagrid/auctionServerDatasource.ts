@@ -66,6 +66,7 @@ export type AuctionServerDatasource<TApiRow, TRow> = DataGridDataSource<TRow> & 
   }): Promise<AffinoGridEditResponse<TApiRow>>
   undoHistory(): Promise<AffinoGridHistoryMutationResponse<TApiRow>>
   redoHistory(): Promise<AffinoGridHistoryMutationResponse<TApiRow>>
+  getChangesSinceVersion(request: { sinceVersion: number; signal?: AbortSignal }): Promise<unknown>
 }
 
 type AuctionServerPullResponse<TApiRow> = {
@@ -93,10 +94,12 @@ type AuctionServerHistogramResponse = {
 }
 
 type PostJson = <TResponse>(path: string, payload: unknown, signal?: AbortSignal) => Promise<TResponse>
+type GetJson = <TResponse>(path: string, signal?: AbortSignal) => Promise<TResponse>
 type QueryRequestProjection = Pick<DataGridDataSourcePullRequest, 'range' | 'sortModel' | 'filterModel' | 'groupBy' | 'pagination'>
 
 export type CreateAuctionServerDatasourceOptions<TApiRow, TRow> = {
   postJson: PostJson
+  getJson?: GetJson
   getFilters: () => AuctionServerGridFilters
   hasFilterModel: (filterModel: DataGridFilterSnapshot | null | undefined) => boolean
   mapRow: (row: TApiRow, rowRevision: number) => TRow
@@ -115,11 +118,12 @@ export type CreateAuctionServerDatasourceOptions<TApiRow, TRow> = {
 export function createAuctionServerDatasource<TApiRow, TRow>(
   options: CreateAuctionServerDatasourceOptions<TApiRow, TRow>,
 ): AuctionServerDatasource<TApiRow, TRow> {
-  const fetchImpl = createAffinoPostJsonFetch(options.postJson)
+  const fetchImpl = createAffinoPostJsonFetch(options.postJson, options.getJson)
   const affinoDatasource: AffinoDatasource<TRow> = createAffinoDatasource<TRow>({
     baseUrl: '',
     tableId: 'auction-lots',
     fetchImpl,
+    headers: { 'X-Grid-Table-Id': 'auction-lots' },
     mapQuery: (query) => ({
       ...options.getFilters(),
       ...mapAuctionServerQuery(query),

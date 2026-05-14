@@ -74,6 +74,7 @@ export type ProcurementServerDatasource<TApiRow, TRow> = DataGridDataSource<TRow
   }): Promise<AffinoGridEditResponse<TApiRow>>
   undoHistory(): Promise<AffinoGridHistoryMutationResponse<TApiRow>>
   redoHistory(): Promise<AffinoGridHistoryMutationResponse<TApiRow>>
+  getChangesSinceVersion(request: { sinceVersion: number; signal?: AbortSignal }): Promise<unknown>
 }
 
 type ProcurementServerPullResponse<TApiRow> = {
@@ -93,10 +94,12 @@ type ProcurementServerHistogramResponse = {
 }
 
 type PostJson = <TResponse>(path: string, payload: unknown, signal?: AbortSignal) => Promise<TResponse>
+type GetJson = <TResponse>(path: string, signal?: AbortSignal) => Promise<TResponse>
 type QueryRequestProjection = Pick<DataGridDataSourcePullRequest, 'range' | 'sortModel' | 'filterModel' | 'groupBy' | 'pagination'>
 
 export type CreateProcurementServerDatasourceOptions<TApiRow, TRow> = {
   postJson: PostJson
+  getJson?: GetJson
   getFilters: () => ProcurementServerGridFilters
   hasFilterModel: (filterModel: DataGridFilterSnapshot | null | undefined) => boolean
   mapRow: (row: TApiRow, rowRevision: number) => TRow
@@ -115,11 +118,12 @@ export type CreateProcurementServerDatasourceOptions<TApiRow, TRow> = {
 export function createProcurementServerDatasource<TApiRow, TRow>(
   options: CreateProcurementServerDatasourceOptions<TApiRow, TRow>,
 ): ProcurementServerDatasource<TApiRow, TRow> {
-  const fetchImpl = createAffinoPostJsonFetch(options.postJson)
+  const fetchImpl = createAffinoPostJsonFetch(options.postJson, options.getJson)
   const affinoDatasource: AffinoDatasource<TRow> = createAffinoDatasource<TRow>({
     baseUrl: '',
     tableId: 'procurement-lots',
     fetchImpl,
+    headers: { 'X-Grid-Table-Id': 'procurement-lots' },
     mapQuery: (query) => ({
       ...options.getFilters(),
       ...mapProcurementServerQuery(query),

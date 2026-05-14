@@ -787,7 +787,6 @@ const DETAIL_PANE_WIDTH_STORAGE_KEY = 'auction-detail-pane-width'
 const GRID_STATE_PERSISTENCE_KEY = 'auction-grid-state-v1'
 const GRID_COLUMN_WIDTHS_STORAGE_KEY = 'auction-grid-column-widths-v1'
 const SERVER_FILTERS_STORAGE_KEY = 'auction-server-filters'
-const AUCTION_GRID_CHANGES_TABLE_ID = 'auction-lots'
 const AUCTION_GRID_CHANGES_POLL_INTERVAL_MS = 3_000
 const AUCTION_GRID_CHANGES_REFRESH_DEBOUNCE_MS = 300
 const CATALOG_TOTAL_ROW_LIMIT = 1_000_000
@@ -2503,6 +2502,7 @@ async function getProcurementServerJson<TResponse>(path: string, signal?: AbortS
 function createAuctionServerCatalogDataSource(): CatalogAuctionServerDataSource {
   return createAuctionServerDatasource<ApiLotRow, GridLotRow>({
     postJson: postAuctionServerGridJson,
+    getJson: (path, signal) => fetchJson(path, { signal }),
     getFilters: buildAuctionServerGridFilters,
     hasFilterModel: hasGridFilterModel,
     mapRow: mapApiRow,
@@ -3648,11 +3648,7 @@ async function pollAuctionGridChanges() {
 
   auctionGridChangesPolling = true
   try {
-    const params = new URLSearchParams({
-      tableId: AUCTION_GRID_CHANGES_TABLE_ID,
-      sinceVersion: String(sinceVersion),
-    })
-    const response = await fetchJson<GridChangeFeedResponse>(`/api/changes?${params.toString()}`)
+    const response = await auctionServerDataSource.getChangesSinceVersion({ sinceVersion }) as GridChangeFeedResponse
     const currentVersion = latestAuctionGridDatasetVersion.value ?? 0
     if (response.changes.length > 0 || response.datasetVersion > currentVersion) {
       scheduleAuctionGridChangeRefresh()
