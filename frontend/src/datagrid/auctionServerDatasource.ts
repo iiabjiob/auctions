@@ -15,10 +15,6 @@ import {
   normalizeDataGridServerQuery,
   type DataGridServerQuery,
 } from '@affino/datagrid-server-adapters'
-import {
-  requestAffinoHistoryMutation,
-  type AffinoGridHistoryMutationResponse,
-} from './affinoGridMutations'
 import { createAffinoPostJsonFetch } from './affinoPostJsonFetch'
 
 export type AuctionServerGridFilters = {
@@ -56,8 +52,6 @@ export type AuctionServerPullWindowResult<TRow> = {
 
 export type AuctionServerDatasource<TApiRow, TRow> = DataGridDataSource<TRow> & {
   pullWindow(request: AuctionServerPullWindowRequest): Promise<AuctionServerPullWindowResult<TRow>>
-  undoHistory(): Promise<AffinoGridHistoryMutationResponse<TApiRow>>
-  redoHistory(): Promise<AffinoGridHistoryMutationResponse<TApiRow>>
   getChangesSinceVersion(request: { sinceVersion: number; signal?: AbortSignal }): Promise<unknown>
 }
 
@@ -218,20 +212,6 @@ export function createAuctionServerDatasource<TApiRow, TRow>(
     pull,
     pullWindow,
     getColumnHistogram,
-    undoHistory() {
-      return requestAffinoHistoryMutation<TApiRow>({
-        postJson: options.postJson,
-        tableId: 'auction-lots',
-        action: 'undo',
-      })
-    },
-    redoHistory() {
-      return requestAffinoHistoryMutation<TApiRow>({
-        postJson: options.postJson,
-        tableId: 'auction-lots',
-        action: 'redo',
-      })
-    },
   }
 }
 

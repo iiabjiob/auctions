@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, defineComponent, h, nextTick, onMounted, onUnmounted, reactive, ref, shallowRef, watch } from 'vue'
-import type { ComponentPublicInstance, PropType } from 'vue'
+import { computed, h, nextTick, onMounted, onUnmounted, reactive, ref, shallowRef, watch } from 'vue'
+import type { ComponentPublicInstance } from 'vue'
 import { useRoute } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import {
@@ -20,7 +20,6 @@ import {
   type DataGridCellStyleResolver,
   type DataGridExposed,
   type DataGridFocusAnchor,
-  type DataGridAppToolbarModule,
   type DataGridSavedViewSnapshot,
 } from '@affino/datagrid-vue-app'
 import {
@@ -600,43 +599,6 @@ type GridSelectionSnapshot = ReturnType<GridApi['selection']['getSnapshot']>
 type CatalogDataSource = DataGridDataSource<GridLotRow>
 type CatalogAuctionServerDataSource = AuctionServerDatasource<ApiLotRow, GridLotRow>
 
-const GridHistoryToolbarButton = defineComponent({
-  name: 'GridHistoryToolbarButton',
-  props: {
-    label: {
-      type: String,
-      required: true,
-    },
-    disabled: {
-      type: Boolean,
-      default: false,
-    },
-    action: {
-      type: String,
-      required: true,
-    },
-    onTrigger: {
-      type: Function as PropType<() => void>,
-      required: true,
-    },
-  },
-  setup(props) {
-    return () =>
-      h(
-        'button',
-        {
-          type: 'button',
-          class: 'datagrid-app-toolbar__button',
-          disabled: props.disabled,
-          title: props.label,
-          'data-datagrid-toolbar-action': `server-history-${props.action}`,
-          onClick: () => props.onTrigger(),
-        },
-        props.label,
-      )
-  },
-})
-
 type CatalogRowModel = DataSourceBackedRowModel<GridLotRow> & {
   patchRows?: (updates: readonly { rowId: string | number; data: Partial<GridLotRow> }[]) => void | Promise<void>
   dataSource: CatalogDataSource
@@ -851,10 +813,6 @@ const catalogGridHasLoadedOnce = ref(false)
 const catalogQueryPlaceholderVisible = ref(false)
 const gridRowRevision = ref(0)
 const latestAuctionGridDatasetVersion = ref<number | null>(null)
-const auctionGridHistoryState = reactive({
-  canUndo: false,
-  canRedo: false,
-})
 const loadingSkeletonVisibleRows = ref(LOADING_SKELETON_MIN_ROWS)
 let resizeStartX = 0
 let resizeStartWidth = 0
@@ -883,7 +841,6 @@ let catalogQueryPlaceholderVisibleAt = 0
 let catalogNextViewportPullShouldDim = false
 let catalogViewportRecoveryTimer: ReturnType<typeof window.setTimeout> | null = null
 let keepCatalogEditErrorOnNextPull = false
-let auctionGridHistoryActionInFlight = false
 const catalogFetchRequests = new Map<string, Promise<LotsResponse>>()
 let auctionGridChangesPollTimer: ReturnType<typeof window.setTimeout> | null = null
 let auctionGridChangesRefreshTimer: ReturnType<typeof window.setTimeout> | null = null
@@ -2519,36 +2476,9 @@ const auctionServerDataSource = createAuctionServerCatalogDataSource()
 
 const auctionGridHistoryOptions = {
   enabled: true,
-  shortcuts: false,
-  controls: false,
+  shortcuts: 'grid' as const,
+  controls: true,
 }
-
-const auctionGridToolbarModules = computed<readonly DataGridAppToolbarModule[]>(() => [
-  {
-    key: 'server-history-undo',
-    component: GridHistoryToolbarButton,
-    props: {
-      action: 'undo',
-      label: 'Undo',
-      disabled: !auctionGridHistoryState.canUndo,
-      onTrigger: () => {
-        void runAuctionGridServerHistoryAction('undo')
-      },
-    },
-  },
-  {
-    key: 'server-history-redo',
-    component: GridHistoryToolbarButton,
-    props: {
-      action: 'redo',
-      label: 'Redo',
-      disabled: !auctionGridHistoryState.canRedo,
-      onTrigger: () => {
-        void runAuctionGridServerHistoryAction('redo')
-      },
-    },
-  },
-])
 
 function rememberLoadedRows(rows: GridLotRow[], options: { trackLoadedRows?: boolean } = {}) {
   const trackLoadedRows = options.trackLoadedRows !== false
@@ -2826,42 +2756,7 @@ function createCatalogDataSource(): CatalogDataSource {
       }
       const result = await commitEdits(request)
       if (!result.rejected?.length) {
-        markAuctionGridHistoryCommitted()
         errorMessage.value = ''
-      }
-      return result
-    },
-    async commitFillOperation(request) {
-      const commitFillOperation = auctionServerDataSource.commitFillOperation
-      if (typeof commitFillOperation !== 'function') {
-        throw new Error('Auction grid datasource does not support fill operations')
-      }
-      const result = await commitFillOperation(request)
-      if (result) {
-        markAuctionGridHistoryCommitted()
-      }
-      return result
-    },
-    async undoFillOperation(request) {
-      const undoFillOperation = auctionServerDataSource.undoFillOperation
-      if (typeof undoFillOperation !== 'function') {
-        throw new Error('Auction grid datasource does not support fill undo')
-      }
-      const result = await undoFillOperation(request)
-      if (result) {
-        auctionGridHistoryState.canUndo = false
-        auctionGridHistoryState.canRedo = true
-      }
-      return result
-    },
-    async redoFillOperation(request) {
-      const redoFillOperation = auctionServerDataSource.redoFillOperation
-      if (typeof redoFillOperation !== 'function') {
-        throw new Error('Auction grid datasource does not support fill redo')
-      }
-      const result = await redoFillOperation(request)
-      if (result) {
-        markAuctionGridHistoryCommitted()
       }
       return result
     },
@@ -2982,8 +2877,6 @@ function resetCatalogRowModel() {
   catalogRowModel.value?.dispose()
   catalogDataSourceListeners.clear()
   clearCatalogViewportDim()
-  auctionGridHistoryState.canUndo = false
-  auctionGridHistoryState.canRedo = false
   allRows.value = []
   loadedGridRowIds.clear()
   gridRowsById.value.clear()
@@ -4540,114 +4433,7 @@ function stopDetailResize() {
   saveDetailPaneWidth()
 }
 
-function isTextEditingTarget(target: EventTarget | null) {
-  if (!(target instanceof HTMLElement)) return false
-  return Boolean(
-    target.closest('input, textarea, select, [contenteditable="true"], [contenteditable="plaintext-only"]'),
-  )
-}
-
-function isAuctionGridShortcutTarget(event: KeyboardEvent) {
-  if (event.isComposing) return false
-  if (isTextEditingTarget(event.target)) return false
-  const gridSurface = gridSurfaceRef.value
-  if (!gridSurface) return false
-  return event.target instanceof Node && gridSurface.contains(event.target)
-}
-
-function isUndoShortcut(event: KeyboardEvent) {
-  if (event.ctrlKey || event.metaKey) {
-    return event.key.toLowerCase() === 'z' && !event.shiftKey
-  }
-  return false
-}
-
-function isRedoShortcut(event: KeyboardEvent) {
-  if (event.ctrlKey || event.metaKey) {
-    const key = event.key.toLowerCase()
-    return key === 'y' || (key === 'z' && event.shiftKey)
-  }
-  return false
-}
-
-function applyAuctionGridHistoryState(response: { canUndo?: boolean; canRedo?: boolean }) {
-  if (typeof response.canUndo === 'boolean') {
-    auctionGridHistoryState.canUndo = response.canUndo
-  }
-  if (typeof response.canRedo === 'boolean') {
-    auctionGridHistoryState.canRedo = response.canRedo
-  }
-}
-
-function markAuctionGridHistoryCommitted() {
-  auctionGridHistoryState.canUndo = true
-  auctionGridHistoryState.canRedo = false
-}
-
-function applyAuctionGridHistoryMutation(response: {
-  datasetVersion: number
-  updatedRows: Array<{ row: ApiLotRow | null | undefined }>
-  canUndo?: boolean
-  canRedo?: boolean
-}) {
-  latestAuctionGridDatasetVersion.value = response.datasetVersion
-  applyAuctionGridHistoryState(response)
-  const updatedRows = response.updatedRows.map((entry) => entry.row).filter(Boolean) as ApiLotRow[]
-  if (updatedRows.length === 0) return false
-
-  applyWorkspaceRows(updatedRows, { clearOptimistic: true, refreshSummary: false })
-  syncSelectedWorkDraftFromGridRows(updatedRows)
-  return true
-}
-
-async function refreshAuctionGridAfterHistoryMutation(datasetVersion: number) {
-  latestAuctionGridDatasetVersion.value = datasetVersion
-  await softRefreshCatalogRows({ dimViewport: false, range: resolveCatalogReloadRange() })
-}
-
-async function runAuctionGridServerHistoryAction(direction: 'undo' | 'redo') {
-  if (direction === 'undo' && !auctionGridHistoryState.canUndo) return
-  if (direction === 'redo' && !auctionGridHistoryState.canRedo) return
-  if (auctionGridHistoryActionInFlight) return
-  auctionGridHistoryActionInFlight = true
-  try {
-    const response = await (
-      direction === 'undo'
-        ? auctionServerDataSource.undoHistory()
-        : auctionServerDataSource.redoHistory()
-    )
-    if (!applyAuctionGridHistoryMutation(response)) {
-      await refreshAuctionGridAfterHistoryMutation(response.datasetVersion)
-    }
-  } catch (error) {
-    console.warn(`[auction-grid] history ${direction} failed`, error)
-  } finally {
-    auctionGridHistoryActionInFlight = false
-  }
-}
-
-function handleAuctionGridUndoRedo(event: KeyboardEvent) {
-  if (!isAuctionGridShortcutTarget(event)) return false
-
-  if (isUndoShortcut(event)) {
-    event.preventDefault()
-    event.stopPropagation()
-    void runAuctionGridServerHistoryAction('undo')
-    return true
-  }
-
-  if (isRedoShortcut(event)) {
-    event.preventDefault()
-    event.stopPropagation()
-    void runAuctionGridServerHistoryAction('redo')
-    return true
-  }
-
-  return false
-}
-
 function handleGlobalKeydown(event: KeyboardEvent) {
-  if (handleAuctionGridUndoRedo(event)) return
   if (analysisConfigDialog.snapshot.value.isOpen) {
     if (['Escape', 'Esc'].includes(event.key)) {
       event.preventDefault()
@@ -5096,7 +4882,6 @@ onUnmounted(() => {
               fill-handle
               range-move
               layout-mode="fill"
-              :toolbar-modules="auctionGridToolbarModules"
               :row-selection="false"
               :cell-menu="true"
               :chrome="{ toolbarPlacement: 'integrated', density: 'compact', toolbarGap: 0, workspaceGap: 8 }"

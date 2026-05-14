@@ -1,6 +1,5 @@
 <script setup lang="ts">
-import { computed, defineComponent, h, onMounted, onUnmounted, reactive, ref, shallowRef } from 'vue'
-import type { PropType } from 'vue'
+import { computed, h, onMounted, onUnmounted, reactive, ref, shallowRef } from 'vue'
 import {
   DataGrid,
   defineDataGridColumnMenu,
@@ -8,7 +7,6 @@ import {
   type DataGridAppColumnFilterOptions,
   type DataGridCellStyleResolver,
   type DataGridExposed,
-  type DataGridAppToolbarModule,
 } from '@affino/datagrid-vue-app'
 import {
   createDataSourceBackedRowModel,
@@ -213,50 +211,6 @@ type ProcurementWorkspaceRefreshResponse = {
 
 type ProcurementDataSource = DataGridDataSource<ProcurementGridRow>
 
-const GridHistoryToolbarButton = defineComponent({
-  name: 'GridHistoryToolbarButton',
-  props: {
-    label: {
-      type: String,
-      required: true,
-    },
-    disabled: {
-      type: Boolean,
-      default: false,
-    },
-    action: {
-      type: String,
-      required: true,
-    },
-    onTrigger: {
-      type: Function as PropType<() => void>,
-      required: true,
-    },
-  },
-  setup(props) {
-    return () =>
-      h(
-        'button',
-        {
-          type: 'button',
-          class: 'datagrid-app-toolbar__button',
-          disabled: props.disabled,
-          title: props.label,
-          'data-datagrid-toolbar-action': `server-history-${props.action}`,
-          onClick: () => props.onTrigger(),
-        },
-        props.label,
-      )
-  },
-})
-
-type ProcurementHistoryMutationResponse = {
-  operationId?: string | null
-  datasetVersion: number
-  updatedRows?: unknown[]
-  canUndo?: boolean
-  canRedo?: boolean
-}
 type ProcurementRowModel = DataSourceBackedRowModel<ProcurementGridRow> & {
   patchRows?: (updates: readonly { rowId: string | number; data: Partial<ProcurementGridRow> }[]) => void | Promise<void>
   dataSource: ProcurementDataSource
@@ -276,10 +230,6 @@ const rowModel = shallowRef<ProcurementRowModel | null>(null)
 const datasourceRef = shallowRef<ProcurementServerGridDataSource | null>(null)
 const rowRevision = ref(0)
 const latestDatasetVersion = ref<number | null>(null)
-const gridHistoryState = reactive({
-  canUndo: false,
-  canRedo: false,
-})
 const pipelineHealth = ref<ProcurementPipelineHealthResponse | null>(null)
 const loadedOnce = ref(false)
 const loading = ref(false)
@@ -310,7 +260,6 @@ let gridChangesPolling = false
 let gridChangesRefreshInFlight = false
 let pipelineHealthAbortController: AbortController | null = null
 let workspaceAbortController: AbortController | null = null
-let gridHistoryActionInFlight = false
 
 const gridStatus = computed(() => {
   if (errorMessage.value) return errorMessage.value
@@ -609,42 +558,7 @@ function createGridDataSource(): ProcurementDataSource {
       }
       const result = await commitEdits(request)
       if (!result.rejected?.length) {
-        markProcurementHistoryCommitted()
         errorMessage.value = ''
-      }
-      return result
-    },
-    async commitFillOperation(request) {
-      const commitFillOperation = datasource.commitFillOperation
-      if (typeof commitFillOperation !== 'function') {
-        throw new Error('Procurement grid datasource does not support fill operations')
-      }
-      const result = await commitFillOperation(request)
-      if (result) {
-        markProcurementHistoryCommitted()
-      }
-      return result
-    },
-    async undoFillOperation(request) {
-      const undoFillOperation = datasource.undoFillOperation
-      if (typeof undoFillOperation !== 'function') {
-        throw new Error('Procurement grid datasource does not support fill undo')
-      }
-      const result = await undoFillOperation(request)
-      if (result) {
-        gridHistoryState.canUndo = false
-        gridHistoryState.canRedo = true
-      }
-      return result
-    },
-    async redoFillOperation(request) {
-      const redoFillOperation = datasource.redoFillOperation
-      if (typeof redoFillOperation !== 'function') {
-        throw new Error('Procurement grid datasource does not support fill redo')
-      }
-      const result = await redoFillOperation(request)
-      if (result) {
-        markProcurementHistoryCommitted()
       }
       return result
     },
@@ -653,112 +567,8 @@ function createGridDataSource(): ProcurementDataSource {
 
 const procurementGridHistoryOptions = {
   enabled: true,
-  shortcuts: false,
-  controls: false,
-}
-
-const procurementGridToolbarModules = computed<readonly DataGridAppToolbarModule[]>(() => [
-  {
-    key: 'server-history-undo',
-    component: GridHistoryToolbarButton,
-    props: {
-      action: 'undo',
-      label: 'Undo',
-      disabled: !gridHistoryState.canUndo,
-      onTrigger: () => {
-        void runProcurementServerHistoryAction('undo')
-      },
-    },
-  },
-  {
-    key: 'server-history-redo',
-    component: GridHistoryToolbarButton,
-    props: {
-      action: 'redo',
-      label: 'Redo',
-      disabled: !gridHistoryState.canRedo,
-      onTrigger: () => {
-        void runProcurementServerHistoryAction('redo')
-      },
-    },
-  },
-])
-
-function isTextEditingTarget(target: EventTarget | null) {
-  if (!(target instanceof HTMLElement)) return false
-  return Boolean(
-    target.closest('input, textarea, select, [contenteditable="true"], [contenteditable="plaintext-only"]'),
-  )
-}
-
-function isProcurementGridShortcutTarget(event: KeyboardEvent) {
-  if (event.isComposing || isTextEditingTarget(event.target)) return false
-  const workspace = workspaceRef.value
-  return Boolean(workspace && event.target instanceof Node && workspace.contains(event.target))
-}
-
-function isUndoShortcut(event: KeyboardEvent) {
-  return (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z' && !event.shiftKey
-}
-
-function isRedoShortcut(event: KeyboardEvent) {
-  if (!event.ctrlKey && !event.metaKey) return false
-  const key = event.key.toLowerCase()
-  return key === 'y' || (key === 'z' && event.shiftKey)
-}
-
-function applyProcurementHistoryState(response: { canUndo?: boolean; canRedo?: boolean }) {
-  if (typeof response.canUndo === 'boolean') {
-    gridHistoryState.canUndo = response.canUndo
-  }
-  if (typeof response.canRedo === 'boolean') {
-    gridHistoryState.canRedo = response.canRedo
-  }
-}
-
-function markProcurementHistoryCommitted() {
-  gridHistoryState.canUndo = true
-  gridHistoryState.canRedo = false
-}
-
-async function applyProcurementHistoryMutation(response: ProcurementHistoryMutationResponse) {
-  latestDatasetVersion.value = response.datasetVersion
-  applyProcurementHistoryState(response)
-  await refreshGrid()
-}
-
-async function runProcurementServerHistoryAction(direction: 'undo' | 'redo') {
-  if (direction === 'undo' && !gridHistoryState.canUndo) return
-  if (direction === 'redo' && !gridHistoryState.canRedo) return
-  if (gridHistoryActionInFlight) return
-  gridHistoryActionInFlight = true
-  try {
-    const datasource = datasourceRef.value
-    if (!datasource) {
-      throw new Error('Procurement grid datasource is not initialized')
-    }
-    const response = await (
-      direction === 'undo'
-        ? datasource.undoHistory()
-        : datasource.redoHistory()
-    )
-    await applyProcurementHistoryMutation(response)
-    errorMessage.value = ''
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : 'Не удалось выполнить undo/redo'
-    await refreshGrid()
-  } finally {
-    gridHistoryActionInFlight = false
-  }
-}
-
-function handleProcurementGridUndoRedo(event: KeyboardEvent) {
-  if (!isProcurementGridShortcutTarget(event)) return
-  if (!isUndoShortcut(event) && !isRedoShortcut(event)) return
-
-  event.preventDefault()
-  event.stopPropagation()
-  void runProcurementServerHistoryAction(isUndoShortcut(event) ? 'undo' : 'redo')
+  shortcuts: 'grid' as const,
+  controls: true,
 }
 
 function mapRow(row: ProcurementApiRow, revision: number): ProcurementGridRow {
@@ -1041,17 +851,13 @@ function emptySummary(total: number): ProcurementServerGridSummary {
 }
 
 onMounted(() => {
-  gridHistoryState.canUndo = false
-  gridHistoryState.canRedo = false
   rowModel.value = createGridRowModel()
   void loadPipelineHealth()
   document.addEventListener('visibilitychange', handleGridVisibilityChange)
-  document.addEventListener('keydown', handleProcurementGridUndoRedo)
 })
 
 onUnmounted(() => {
   document.removeEventListener('visibilitychange', handleGridVisibilityChange)
-  document.removeEventListener('keydown', handleProcurementGridUndoRedo)
   stopGridChangePolling()
   pipelineHealthAbortController?.abort()
   pipelineHealthAbortController = null
@@ -1113,7 +919,6 @@ onUnmounted(() => {
           fill-handle
           range-move
           layout-mode="fill"
-          :toolbar-modules="procurementGridToolbarModules"
           :row-selection="false"
           :cell-menu="true"
           :chrome="{ toolbarPlacement: 'integrated', density: 'compact', toolbarGap: 0, workspaceGap: 8 }"
