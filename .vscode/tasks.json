@@ -161,6 +161,23 @@
       }
     },
     {
+      "label": "backend: procurement actuality worker",
+      "type": "shell",
+      "command": "uv run python -m app.worker.procurement_actuality_worker",
+      "options": {
+        "cwd": "${workspaceFolder}/backend",
+        "env": {
+          "PROCUREMENT_ACTUALITY_SWEEP_ENABLED": "true"
+        }
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "group": "backend",
+        "panel": "dedicated",
+        "reveal": "always"
+      }
+    },
+    {
       "label": "backend: start all",
       "dependsOrder": "parallel",
       "dependsOn": [
@@ -172,6 +189,7 @@
         "backend: zakupki fetcher",
         "backend: procurement sync worker",
         "backend: procurement enrichment worker",
+        "backend: procurement actuality worker",
         "backend: telegram sender worker"
       ],
       "problemMatcher": [],

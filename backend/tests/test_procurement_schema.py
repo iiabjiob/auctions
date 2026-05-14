@@ -61,6 +61,11 @@ class ProcurementSchemaTests(unittest.TestCase):
             "enrichment_attempt_count",
             "next_enrichment_attempt_at",
             "last_enrichment_error",
+            "lifecycle_status",
+            "finished_at",
+            "archived_at",
+            "archive_reason",
+            "actuality_checked_at",
         ):
             self.assertIn(column_name, columns)
 
@@ -133,12 +138,12 @@ class ProcurementSchemaTests(unittest.TestCase):
         self.assertIn("review", record.search_text or "")
 
     def test_procurement_diagnostics_migration_follows_current_head(self) -> None:
-        migration_path = Path("alembic/versions/202605140002_add_procurement_enrichment_foundation.py")
-        spec = importlib.util.spec_from_file_location("procurement_enrichment_foundation_migration", migration_path)
+        migration_path = Path("alembic/versions/202605140003_add_procurement_actuality.py")
+        spec = importlib.util.spec_from_file_location("procurement_actuality_migration", migration_path)
         self.assertIsNotNone(spec)
         self.assertIsNotNone(spec.loader)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
 
-        self.assertEqual(module.revision, "202605140002")
-        self.assertEqual(module.down_revision, "202605140001")
+        self.assertEqual(module.revision, "202605140003")
+        self.assertEqual(module.down_revision, "202605140002")

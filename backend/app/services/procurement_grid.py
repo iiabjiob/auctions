@@ -272,11 +272,16 @@ def build_procurement_grid_row(record: ProcurementLotRecord) -> dict[str, Any]:
         "calculatorScenarios": dict(record.calculator_scenarios or {}),
         "firstSeenAt": _datetime_json(record.first_seen_at),
         "lastSeenAt": _datetime_json(record.last_seen_at),
+        "lifecycleStatus": record.lifecycle_status or "active",
+        "finishedAt": _datetime_json(record.finished_at),
+        "archivedAt": _datetime_json(record.archived_at),
+        "archiveReason": record.archive_reason,
+        "actualityCheckedAt": _datetime_json(record.actuality_checked_at),
     }
 
 
 def _build_procurement_lots_statement(*, grid_filter: dict[str, Any] | None = None):
-    statement = select(ProcurementLotRecord)
+    statement = select(ProcurementLotRecord).where(ProcurementLotRecord.lifecycle_status == "active")
     predicate = _grid_filter_predicate(grid_filter)
     if predicate is not None:
         statement = statement.where(predicate)
@@ -494,6 +499,7 @@ def _grid_column_expression(key: str | None):
         "initialPrice": (ProcurementLotRecord.initial_price_value, "number"),
         "isNew": (ProcurementLotRecord.is_new, "boolean"),
         "law": (ProcurementLotRecord.law, "text"),
+        "lifecycleStatus": (ProcurementLotRecord.lifecycle_status, "text"),
         "netProfit": (ProcurementLotRecord.net_profit, "number"),
         "platformName": (ProcurementLotRecord.platform_name, "text"),
         "procedureType": (ProcurementLotRecord.procedure_type, "text"),

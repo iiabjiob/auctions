@@ -131,6 +131,7 @@ class ProcurementGridSqlTests(unittest.TestCase):
         sql = str(compiled)
 
         self.assertIn("procurement_lot_records", sql)
+        self.assertIn("procurement_lot_records.lifecycle_status", sql)
         self.assertIn("LIKE", sql)
         self.assertNotIn("LIMIT", sql)
 
@@ -189,6 +190,7 @@ class ProcurementGridRowTests(unittest.TestCase):
         self.assertEqual(row["score"], 83)
         self.assertEqual(row["workflowStatus"], "new")
         self.assertEqual(row["matchedKeywords"], ["спецодежда"])
+        self.assertEqual(row["lifecycleStatus"], "active")
 
 
 class ProcurementGridPullServiceTests(unittest.IsolatedAsyncioTestCase):

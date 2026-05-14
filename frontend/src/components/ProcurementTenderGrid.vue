@@ -97,6 +97,11 @@ type ProcurementApiRow = {
   calculatorScenarios?: Record<string, unknown>
   firstSeenAt: string | null
   lastSeenAt: string | null
+  lifecycleStatus: string
+  finishedAt: string | null
+  archivedAt: string | null
+  archiveReason: string | null
+  actualityCheckedAt: string | null
 }
 
 type ProcurementGridRow = ProcurementApiRow & {

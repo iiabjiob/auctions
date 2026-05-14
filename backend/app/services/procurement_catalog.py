@@ -23,7 +23,7 @@ async def list_procurement_lots(
     page: int = 1,
     page_size: int = 100,
 ) -> ProcurementLotListResponse:
-    filters = []
+    filters = [ProcurementLotRecord.lifecycle_status == "active"]
     if source:
         filters.append(ProcurementLotRecord.source_code == source)
     if law:
@@ -139,4 +139,9 @@ def procurement_lot_response(record: ProcurementLotRecord) -> ProcurementLotResp
         calculator_scenarios=dict(record.calculator_scenarios or {}),
         first_seen_at=record.first_seen_at,
         last_seen_at=record.last_seen_at,
+        lifecycle_status=record.lifecycle_status,
+        finished_at=record.finished_at,
+        archived_at=record.archived_at,
+        archive_reason=record.archive_reason,
+        actuality_checked_at=record.actuality_checked_at,
     )

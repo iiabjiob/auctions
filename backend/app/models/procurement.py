@@ -115,6 +115,17 @@ class ProcurementLotRecord(Base):
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     status_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     is_new: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    lifecycle_status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="active",
+        server_default=text("'active'"),
+        index=True,
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    archive_reason: Mapped[str | None] = mapped_column(Text)
+    actuality_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     category: Mapped[str | None] = mapped_column(String(64), index=True)
     matched_keywords: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     excluded_keywords: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)

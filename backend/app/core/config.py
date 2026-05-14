@@ -87,6 +87,9 @@ class Settings(BaseSettings):
     procurement_enrichment_batch_size: int = 25
     procurement_enrichment_item_pause_seconds: float = 0.0
     procurement_enrichment_empty_pause_seconds: int = 60 * 30
+    procurement_actuality_sweep_enabled: bool = False
+    procurement_actuality_sweep_interval_seconds: int = 60 * 15
+    procurement_actuality_sweep_batch_size: int = 500
     telegram_bot_token: str | None = None
     telegram_bot_username: str | None = None
     telegram_webhook_secret: str | None = None

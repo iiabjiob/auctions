@@ -104,6 +104,11 @@ class ProcurementLotResponse(BaseModel):
     calculator_scenarios: dict[str, Any] = Field(default_factory=dict)
     first_seen_at: datetime
     last_seen_at: datetime
+    lifecycle_status: str
+    finished_at: datetime | None
+    archived_at: datetime | None
+    archive_reason: str | None
+    actuality_checked_at: datetime | None
 
 
 class ProcurementLotListResponse(BaseModel):

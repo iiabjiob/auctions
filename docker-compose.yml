@@ -158,6 +158,26 @@ services:
     networks:
       - net
 
+  procurement-actuality-worker:
+    build:
+      context: .
+      dockerfile: .devcontainer/Dockerfile
+      tags:
+        - auctions-dev:latest
+    container_name: auctions-procurement-actuality-worker-dev
+    working_dir: /workspace/backend
+    command: uv run python -m app.worker.procurement_actuality_worker
+    volumes:
+      - .:/workspace
+    env_file:
+      - ./backend/.env.dev
+    environment:
+      PROCUREMENT_ACTUALITY_SWEEP_ENABLED: "true"
+    depends_on:
+      - db
+    networks:
+      - net
+
   telegram-sender-worker:
     build:
       context: .
