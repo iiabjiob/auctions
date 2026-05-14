@@ -12,10 +12,13 @@ from app.schemas.procurements import (
     ProcurementLotListResponse,
     ProcurementSourceInfo,
     ProcurementSyncResult,
+    ProcurementWorkspaceRefreshResponse,
+    ProcurementWorkspaceResponse,
 )
 from app.services.procurement_catalog import list_procurement_lots
 from app.services.procurement_sources import list_procurement_source_infos
 from app.services.procurement_sync import sync_procurement_source
+from app.services.procurement_workspace import get_procurement_lot_workspace, refresh_procurement_lot_workspace_live
 
 
 router = APIRouter(prefix="/api/v1/procurements", tags=["Procurements"])
@@ -71,3 +74,43 @@ async def sync_procurements(
         return await sync_procurement_source(session, source=source, limit=limit)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.get("/{source}/lots/{external_id}/workspace", response_model=ProcurementWorkspaceResponse)
+async def get_procurement_workspace(
+    source: str,
+    external_id: str,
+    refresh: bool = Query(default=False),
+    include_detail: bool = Query(default=True),
+    session: AsyncSession = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
+) -> ProcurementWorkspaceResponse:
+    del current_user
+    try:
+        return await get_procurement_lot_workspace(
+            session,
+            source=source,
+            external_id=external_id,
+            refresh=refresh,
+            include_detail=include_detail,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@router.post("/{source}/lots/{external_id}/workspace/refresh", response_model=ProcurementWorkspaceRefreshResponse)
+async def refresh_procurement_workspace(
+    source: str,
+    external_id: str,
+    session: AsyncSession = Depends(get_db),
+    current_user: UserModel = Depends(get_current_user),
+) -> ProcurementWorkspaceRefreshResponse:
+    del current_user
+    try:
+        return await refresh_procurement_lot_workspace_live(session, source=source, external_id=external_id)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error

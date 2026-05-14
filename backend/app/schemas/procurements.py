@@ -127,6 +127,53 @@ class ProcurementSyncResult(BaseModel):
     status_changed: int
 
 
+class ProcurementDocument(BaseModel):
+    title: str | None = None
+    url: str | None = None
+    source_url: str | None = None
+
+
+class ProcurementRawField(BaseModel):
+    name: str
+    value: str
+
+
+class ProcurementWorkspaceChangeSummary(BaseModel):
+    observations_count: int = 0
+    detail_observations_count: int = 0
+    last_observed_at: datetime | None = None
+    last_detail_observed_at: datetime | None = None
+    changed_fields: list[str] = Field(default_factory=list)
+
+
+class ProcurementWorkspaceEnrichmentState(BaseModel):
+    requested_at: datetime | None = None
+    requested_reason: str | None = None
+    last_attempt_at: datetime | None = None
+    attempt_count: int = 0
+    next_attempt_at: datetime | None = None
+    last_error: str | None = None
+    claimed_at: datetime | None = None
+    claimed_by: str | None = None
+    claim_expires_at: datetime | None = None
+
+
+class ProcurementWorkspaceResponse(BaseModel):
+    record: ProcurementLotResponse
+    detail_cached_at: datetime | None = None
+    detail_payload: dict[str, Any] | None = None
+    documents: list[ProcurementDocument] = Field(default_factory=list)
+    raw_fields: list[ProcurementRawField] = Field(default_factory=list)
+    changes: ProcurementWorkspaceChangeSummary = Field(default_factory=ProcurementWorkspaceChangeSummary)
+    current_enrichment_state: ProcurementWorkspaceEnrichmentState
+
+
+class ProcurementWorkspaceRefreshResponse(BaseModel):
+    status: str
+    refreshed: bool
+    workspace: ProcurementWorkspaceResponse
+
+
 class ProcurementListDebugResponse(BaseModel):
     items: list[ProcurementLotItem]
     raw: dict[str, Any] | None = None

@@ -181,6 +181,52 @@ type ProcurementPipelineHealthResponse = {
   }>
 }
 
+type ProcurementWorkspaceRecord = {
+  id: number
+  source: string
+  external_id: string
+  registry_number: string
+  title: string | null
+  status: string | null
+  customer_name: string | null
+  customer_inn: string | null
+  initial_price_value: number | null
+  application_deadline_at: string | null
+  notice_url: string | null
+}
+
+type ProcurementWorkspaceResponse = {
+  record: ProcurementWorkspaceRecord
+  detail_cached_at: string | null
+  detail_payload: Record<string, unknown> | null
+  documents: Array<{ title: string | null; url: string | null; source_url: string | null }>
+  raw_fields: Array<{ name: string; value: string }>
+  changes: {
+    observations_count: number
+    detail_observations_count: number
+    last_observed_at: string | null
+    last_detail_observed_at: string | null
+    changed_fields: string[]
+  }
+  current_enrichment_state: {
+    requested_at: string | null
+    requested_reason: string | null
+    last_attempt_at: string | null
+    attempt_count: number
+    next_attempt_at: string | null
+    last_error: string | null
+    claimed_at: string | null
+    claimed_by: string | null
+    claim_expires_at: string | null
+  }
+}
+
+type ProcurementWorkspaceRefreshResponse = {
+  status: string
+  refreshed: boolean
+  workspace: ProcurementWorkspaceResponse
+}
+
 type ProcurementDataSource = DataGridDataSource<ProcurementGridRow> & {
   commitEdits?(request: ProcurementCommitEditsRequest): Promise<ProcurementCommitEditsResult>
 }
@@ -208,6 +254,11 @@ const errorMessage = ref('')
 const total = ref(0)
 const summary = ref<ProcurementServerGridSummary>(emptySummary(0))
 const gridColumnWidths = ref<Record<string, number>>(readStoredColumnWidths())
+const selectedRow = ref<ProcurementGridRow | null>(null)
+const selectedWorkspace = ref<ProcurementWorkspaceResponse | null>(null)
+const workspaceLoading = ref(false)
+const workspaceRefreshing = ref(false)
+const workspaceError = ref('')
 const filters = reactive({
   source: 'zakupki',
   law: '',
@@ -225,6 +276,7 @@ let gridChangesRefreshTimer: ReturnType<typeof window.setTimeout> | null = null
 let gridChangesPolling = false
 let gridChangesRefreshInFlight = false
 let pipelineHealthAbortController: AbortController | null = null
+let workspaceAbortController: AbortController | null = null
 
 const gridStatus = computed(() => {
   if (errorMessage.value) return errorMessage.value
@@ -304,6 +356,28 @@ const prefetchOptions = {
 }
 
 const columns = defineDataGridColumns<ProcurementGridRow>()([
+  {
+    key: 'workspace',
+    label: '',
+    initialState: { width: 78 },
+    capabilities: { sortable: false, filterable: false },
+    cellRenderer: ({ row }) =>
+      row
+        ? h(
+            'button',
+            {
+              class: 'procurement-detail-button',
+              type: 'button',
+              title: 'Открыть карточку',
+              onClick: (event: MouseEvent) => {
+                event.stopPropagation()
+                void openWorkspace(row)
+              },
+            },
+            'Открыть',
+          )
+        : '',
+  },
   {
     key: 'score',
     label: 'Рейтинг',
@@ -570,6 +644,65 @@ function refreshGrid() {
   return rowModel.value?.refresh('manual') ?? Promise.resolve()
 }
 
+async function openWorkspace(row: ProcurementGridRow, options: { refresh?: boolean } = {}) {
+  selectedRow.value = row
+  workspaceError.value = ''
+  workspaceAbortController?.abort()
+  const controller = new AbortController()
+  workspaceAbortController = controller
+  workspaceLoading.value = !options.refresh
+  workspaceRefreshing.value = Boolean(options.refresh)
+  try {
+    const params = new URLSearchParams()
+    if (options.refresh) params.set('refresh', 'true')
+    const query = params.toString()
+    selectedWorkspace.value = await props.getJson<ProcurementWorkspaceResponse>(
+      `/api/v1/procurements/${encodeURIComponent(row.source)}/lots/${encodeURIComponent(row.externalId)}/workspace${query ? `?${query}` : ''}`,
+      controller.signal,
+    )
+  } catch (error) {
+    if (!isAbortLikeError(error)) {
+      workspaceError.value = formatCommitError(error)
+    }
+  } finally {
+    if (workspaceAbortController === controller) {
+      workspaceAbortController = null
+    }
+    workspaceLoading.value = false
+    workspaceRefreshing.value = false
+  }
+}
+
+async function refreshWorkspaceLive() {
+  const row = selectedRow.value
+  if (!row) return
+  workspaceRefreshing.value = true
+  workspaceError.value = ''
+  try {
+    const response = await props.postJson<ProcurementWorkspaceRefreshResponse>(
+      `/api/v1/procurements/${encodeURIComponent(row.source)}/lots/${encodeURIComponent(row.externalId)}/workspace/refresh`,
+      {},
+    )
+    selectedWorkspace.value = response.workspace
+    await refreshGrid()
+    await loadPipelineHealth()
+  } catch (error) {
+    workspaceError.value = formatCommitError(error)
+  } finally {
+    workspaceRefreshing.value = false
+  }
+}
+
+function closeWorkspace() {
+  workspaceAbortController?.abort()
+  workspaceAbortController = null
+  selectedRow.value = null
+  selectedWorkspace.value = null
+  workspaceError.value = ''
+  workspaceLoading.value = false
+  workspaceRefreshing.value = false
+}
+
 async function loadPipelineHealth() {
   pipelineHealthAbortController?.abort()
   const controller = new AbortController()
@@ -799,30 +932,86 @@ onUnmounted(() => {
 
     <div v-if="errorMessage" class="error-banner">{{ errorMessage }}</div>
 
-    <section class="grid-surface procurement-grid-surface" aria-label="Таблица закупок">
-      <DataGrid
-        v-if="rowModel"
-        ref="gridRef"
-        :row-model="rowModel"
-        :columns="columns"
-        :column-widths="gridColumnWidths"
-        :base-row-height="26"
-        :theme="workspaceDataGridTheme"
-        :is-cell-editable="({ column }) => PROCUREMENT_GRID_EDITABLE_COLUMN_IDS.has(column.key)"
-        :cell-style="editableCellStyle"
-        :virtualization="virtualizationOptions"
-        :advanced-filter="advancedFilterOptions"
-        :quick-filter="quickFilter"
-        :column-menu="columnMenuOptions"
-        :column-layout="columnLayoutOptions"
-        fill-handle
-        range-move
-        layout-mode="fill"
-        :row-selection="false"
-        :cell-menu="true"
-        :chrome="{ toolbarPlacement: 'integrated', density: 'compact', toolbarGap: 0, workspaceGap: 8 }"
-        @update:column-widths="persistColumnWidths"
-      />
+    <section class="procurement-content">
+      <section class="grid-surface procurement-grid-surface" aria-label="Таблица закупок">
+        <DataGrid
+          v-if="rowModel"
+          ref="gridRef"
+          :row-model="rowModel"
+          :columns="columns"
+          :column-widths="gridColumnWidths"
+          :base-row-height="26"
+          :theme="workspaceDataGridTheme"
+          :is-cell-editable="({ column }) => PROCUREMENT_GRID_EDITABLE_COLUMN_IDS.has(column.key)"
+          :cell-style="editableCellStyle"
+          :virtualization="virtualizationOptions"
+          :advanced-filter="advancedFilterOptions"
+          :quick-filter="quickFilter"
+          :column-menu="columnMenuOptions"
+          :column-layout="columnLayoutOptions"
+          fill-handle
+          range-move
+          layout-mode="fill"
+          :row-selection="false"
+          :cell-menu="true"
+          :chrome="{ toolbarPlacement: 'integrated', density: 'compact', toolbarGap: 0, workspaceGap: 8 }"
+          @update:column-widths="persistColumnWidths"
+        />
+      </section>
+
+      <aside v-if="selectedRow" class="procurement-detail-pane" aria-label="Карточка закупки">
+        <div class="procurement-detail-pane__header">
+          <div>
+            <span>{{ selectedRow.registryNumber }}</span>
+            <strong>{{ selectedRow.title || 'Без названия' }}</strong>
+          </div>
+          <button type="button" class="procurement-detail-pane__close" aria-label="Закрыть" @click="closeWorkspace">×</button>
+        </div>
+
+        <div class="procurement-detail-pane__actions">
+          <button type="button" class="procurement-detail-button" :disabled="workspaceRefreshing" @click="refreshWorkspaceLive">
+            {{ workspaceRefreshing ? 'Обновляем' : 'Live refresh' }}
+          </button>
+          <a v-if="selectedRow.noticeUrl" :href="selectedRow.noticeUrl" target="_blank" rel="noreferrer">ЕИС</a>
+        </div>
+
+        <div v-if="workspaceError" class="error-banner">{{ workspaceError }}</div>
+        <div v-if="workspaceLoading" class="procurement-detail-pane__muted">Загружаем карточку</div>
+
+        <template v-if="selectedWorkspace">
+          <dl class="procurement-detail-list">
+            <div><dt>Статус</dt><dd>{{ selectedWorkspace.record.status || '—' }}</dd></div>
+            <div><dt>Заказчик</dt><dd>{{ selectedWorkspace.record.customer_name || '—' }}</dd></div>
+            <div><dt>ИНН</dt><dd>{{ selectedWorkspace.record.customer_inn || '—' }}</dd></div>
+            <div><dt>НМЦК</dt><dd>{{ formatMoney(selectedWorkspace.record.initial_price_value) }}</dd></div>
+            <div><dt>Заявки до</dt><dd>{{ formatDateTime(selectedWorkspace.record.application_deadline_at) }}</dd></div>
+            <div><dt>Детали</dt><dd>{{ formatDateTime(selectedWorkspace.detail_cached_at) }}</dd></div>
+            <div><dt>Наблюдений</dt><dd>{{ selectedWorkspace.changes.observations_count }} / {{ selectedWorkspace.changes.detail_observations_count }}</dd></div>
+            <div><dt>Enrichment</dt><dd>{{ selectedWorkspace.current_enrichment_state.requested_reason || selectedWorkspace.current_enrichment_state.last_error || '—' }}</dd></div>
+          </dl>
+
+          <section class="procurement-detail-section">
+            <h2>Документы</h2>
+            <ul v-if="selectedWorkspace.documents.length">
+              <li v-for="document in selectedWorkspace.documents.slice(0, 12)" :key="document.url || document.title || ''">
+                <a v-if="document.url" :href="document.url" target="_blank" rel="noreferrer">{{ document.title || document.url }}</a>
+                <span v-else>{{ document.title }}</span>
+              </li>
+            </ul>
+            <p v-else>Нет документов</p>
+          </section>
+
+          <section class="procurement-detail-section">
+            <h2>Поля ЕИС</h2>
+            <dl class="procurement-detail-list">
+              <div v-for="field in selectedWorkspace.raw_fields.slice(0, 16)" :key="field.name">
+                <dt>{{ field.name }}</dt>
+                <dd>{{ field.value }}</dd>
+              </div>
+            </dl>
+          </section>
+        </template>
+      </aside>
     </section>
   </section>
 </template>
