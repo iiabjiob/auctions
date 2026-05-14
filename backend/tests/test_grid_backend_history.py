@@ -76,6 +76,7 @@ class GridBackendHistoryTests(unittest.IsolatedAsyncioTestCase):
     async def test_auction_history_uses_package_history_scope(self) -> None:
         session = AsyncMock()
         operation = SimpleNamespace(id="operation")
+        next_undo_operation = SimpleNamespace(id="previous-operation")
         with patch("app.services.grid_backend_history._find_history_operation", new_callable=AsyncMock) as finder:
             with patch("app.services.grid_backend_history.AuctionGridHistoryService") as service_type:
                 with patch("app.services.grid_backend_history._operation_changed_fields", new_callable=AsyncMock) as fields:
@@ -83,7 +84,7 @@ class GridBackendHistoryTests(unittest.IsolatedAsyncioTestCase):
                     service.apply_loaded_operation = AsyncMock(
                         return_value=SimpleNamespace(revision="10", rows=[], committed_row_ids=[])
                     )
-                    finder.return_value = operation
+                    finder.side_effect = [operation, next_undo_operation, operation]
                     fields.return_value = {}
 
                     response = await undo_grid_history(
@@ -95,7 +96,11 @@ class GridBackendHistoryTests(unittest.IsolatedAsyncioTestCase):
                     )
 
         self.assertEqual(response.dataset_version, 10)
-        finder.assert_awaited_once()
+        self.assertTrue(response.can_undo)
+        self.assertTrue(response.can_redo)
+        self.assertEqual(response.latest_undo_operation_id, "previous-operation")
+        self.assertEqual(response.latest_redo_operation_id, "operation")
+        self.assertEqual(finder.await_count, 3)
         service.apply_loaded_operation.assert_awaited_once_with(session, operation, "undo")
 
     async def test_procurement_history_writes_change_event(self) -> None:
@@ -110,7 +115,7 @@ class GridBackendHistoryTests(unittest.IsolatedAsyncioTestCase):
         ):
             service = service_type.return_value
             service.apply_loaded_operation = AsyncMock(return_value=SimpleNamespace(revision="9", rows=[record]))
-            finder.return_value = operation
+            finder.side_effect = [operation, None, operation]
             fields.return_value = {"zakupki:123": {"quantity"}}
 
             response = await undo_grid_history(

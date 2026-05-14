@@ -207,6 +207,8 @@ async def _apply_package_history(
         action=action,
         workspace_id=workspace_id,
         table_id=table_id,
+        user_id=user_id,
+        session_id=session_id,
     )
 
 
@@ -239,6 +241,8 @@ async def _apply_package_history_by_operation_id(
         action=action,
         workspace_id=workspace_id,
         table_id=table_id,
+        user_id=getattr(operation, "user_id", None),
+        session_id=getattr(operation, "session_id", None),
     )
 
 
@@ -249,6 +253,8 @@ async def _apply_loaded_package_history_operation(
     action: str,
     workspace_id: str,
     table_id: str,
+    user_id: str | None,
+    session_id: str | None,
 ) -> GridHistoryMutationResponse:
     service = _history_service_for_table(table_id, workspace_id=workspace_id)
     operation_id = operation.id
@@ -285,6 +291,13 @@ async def _apply_loaded_package_history_operation(
         )
     await session.flush()
 
+    history_state = await _collect_history_stack_state(
+        session,
+        workspace_id=workspace_id,
+        table_id=table_id,
+        user_id=user_id,
+        session_id=session_id,
+    )
     updated_row_ids = [row.id for row in updated_rows]
     changed_cell_count = sum(len(fields) for fields in changed_fields_by_row.values())
     return GridHistoryMutationResponse(
@@ -299,12 +312,46 @@ async def _apply_loaded_package_history_operation(
         rejected=[_history_result_item_payload(item) for item in getattr(result, "rejected", [])],
         affected_rows=len(updated_row_ids),
         affected_cells=changed_cell_count,
-        can_undo=action == "redo",
-        can_redo=action == "undo",
+        can_undo=history_state["canUndo"],
+        can_redo=history_state["canRedo"],
         invalidation={"type": "rows", "rowIds": updated_row_ids, "reason": f"history_{action}"},
-        latest_undo_operation_id=str(operation_id) if action == "redo" else None,
-        latest_redo_operation_id=str(operation_id) if action == "undo" else None,
+        latest_undo_operation_id=history_state["latestUndoOperationId"],
+        latest_redo_operation_id=history_state["latestRedoOperationId"],
     )
+
+
+async def _collect_history_stack_state(
+    session: AsyncSession,
+    *,
+    workspace_id: str,
+    table_id: str,
+    user_id: str | None,
+    session_id: str | None,
+) -> dict[str, bool | str | None]:
+    undo_operation = await _find_history_operation(
+        session,
+        workspace_id=workspace_id,
+        table_id=table_id,
+        user_id=user_id,
+        session_id=session_id,
+        action="undo",
+        with_for_update=False,
+    )
+    redo_operation = await _find_history_operation(
+        session,
+        workspace_id=workspace_id,
+        table_id=table_id,
+        user_id=user_id,
+        session_id=session_id,
+        action="redo",
+        with_for_update=False,
+    )
+    return {
+        "canUndo": undo_operation is not None,
+        "canRedo": redo_operation is not None,
+        "latestUndoOperationId": str(undo_operation.id) if undo_operation is not None else None,
+        "latestRedoOperationId": str(redo_operation.id) if redo_operation is not None else None,
+    }
 
 
 def _validate_history_operation_scope(
