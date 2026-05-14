@@ -132,3 +132,35 @@ class ProcurementLotsGridFillRequest(BaseModel):
     source: ProcurementLotsGridFillRange
     target: ProcurementLotsGridFillRange
     mode: Literal["copy"]
+
+
+class ProcurementLotsGridFillCommitRange(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    start_row: int = Field(ge=0, alias="startRow")
+    end_row: int = Field(ge=0, alias="endRow")
+    start_column: int = Field(default=0, ge=0, alias="startColumn")
+    end_column: int = Field(default=0, ge=0, alias="endColumn")
+
+
+class ProcurementLotsGridFillCommitRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    operation_id: str | None = Field(default=None, alias="operationId")
+    revision: str | int | None = None
+    base_revision: str | int | None = Field(default=None, alias="baseRevision")
+    projection_hash: str | None = Field(default=None, alias="projectionHash")
+    boundary_token: str | None = Field(default=None, alias="boundaryToken")
+    source_range: ProcurementLotsGridFillCommitRange = Field(alias="sourceRange")
+    target_range: ProcurementLotsGridFillCommitRange = Field(alias="targetRange")
+    source_row_ids: list[str] = Field(default_factory=list, alias="sourceRowIds")
+    target_row_ids: list[str] = Field(default_factory=list, alias="targetRowIds")
+    fill_columns: list[str] = Field(default_factory=list, alias="fillColumns")
+    reference_columns: list[str] = Field(default_factory=list, alias="referenceColumns")
+    mode: Literal["copy"]
+    projection: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] | None = None
+    workspace_id: str | None = None
+    table_id: str | None = None
+    user_id: str | None = None
+    session_id: str | None = None

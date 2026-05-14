@@ -93,6 +93,25 @@ async def get_grid_history_status(
         raise HTTPException(status_code=400, detail=str(error)) from error
 
 
+@router.post("/status", response_model=GridHistoryStatusResponse)
+async def post_grid_history_status(
+    payload: GridHistoryMutationRequest,
+    workspace_id: str | None = Header(default=None, alias="X-Workspace-Id"),
+    session: AsyncSession = Depends(get_read_db),
+    current_user: UserModel = Depends(get_current_user),
+) -> GridHistoryStatusResponse:
+    try:
+        return await get_grid_history_status_service(
+            session,
+            workspace_id=workspace_id or DEFAULT_GRID_WORKSPACE_ID,
+            table_id=payload.table_id,
+            user_id=_resolve_history_user_id(payload.user_id, current_user),
+            session_id=payload.session_id,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
 def _resolve_history_user_id(request_user_id: str | None, current_user: UserModel) -> str:
     if request_user_id is not None and request_user_id.strip() and request_user_id.strip() != current_user.id:
         raise HTTPException(status_code=403, detail="Cannot access another user's grid history")

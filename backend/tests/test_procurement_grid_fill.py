@@ -7,10 +7,14 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 
-from app.api.procurement_lots_grid_router import commit_procurement_lots_fill
+from app.api.procurement_lots_grid_router import (
+    commit_procurement_lots_fill,
+    commit_procurement_lots_fill_commit,
+    resolve_procurement_lots_fill_boundary,
+)
 from app.models.procurement import ProcurementLotRecord
-from app.schemas.procurement_grid import ProcurementLotsGridFillRequest
-from app.services.procurement_grid_fill import commit_procurement_lot_grid_fill
+from app.schemas.procurement_grid import ProcurementLotsGridFillCommitRequest, ProcurementLotsGridFillRequest
+from app.services.procurement_grid_fill import commit_procurement_lot_grid_fill, commit_procurement_lot_grid_fill_commit
 
 
 def make_record(record_id: int, external_id: str, quantity: Decimal | None) -> ProcurementLotRecord:
@@ -126,6 +130,86 @@ class ProcurementGridFillTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(context.exception.status_code, 409)
         self.assertEqual(session.rollback_count, 1)
         self.assertEqual(session.commit_count, 0)
+
+    async def test_package_fill_commit_router_returns_invalidation_payload(self) -> None:
+        session = FakeSession()
+        request = ProcurementLotsGridFillCommitRequest.model_validate(
+            {
+                "operationId": "fill-1",
+                "baseRevision": "5",
+                "sourceRange": {"startRow": 0, "endRow": 1, "startColumn": 0, "endColumn": 0},
+                "targetRange": {"startRow": 1, "endRow": 2, "startColumn": 0, "endColumn": 0},
+                "sourceRowIds": ["zakupki:source"],
+                "targetRowIds": ["zakupki:target"],
+                "fillColumns": ["quantity"],
+                "referenceColumns": ["quantity"],
+                "mode": "copy",
+                "projection": {},
+            }
+        )
+
+        with patch(
+            "app.api.procurement_lots_grid_router.commit_procurement_lot_grid_fill_commit",
+            AsyncMock(
+                return_value=SimpleNamespace(
+                    dataset_version=6,
+                    updated_rows=[SimpleNamespace(id="zakupki:target", model_dump=lambda by_alias: {"id": "zakupki:target"})],
+                )
+            ),
+        ) as fill_commit:
+            response = await commit_procurement_lots_fill_commit(
+                request,
+                workspace_id=None,
+                grid_session_id=None,
+                session=session,
+                current_user=SimpleNamespace(id="user-1"),
+            )
+
+        fill_commit.assert_awaited_once()
+        self.assertEqual(session.commit_count, 1)
+        self.assertEqual(response["operationId"], "fill-1")
+        self.assertEqual(response["datasetVersion"], 6)
+        self.assertEqual(response["affectedRowCount"], 1)
+        self.assertEqual(response["affectedCellCount"], 1)
+        self.assertEqual(response["invalidation"], {"type": "rows", "rowIds": ["zakupki:target"], "reason": "fill"})
+
+    async def test_package_fill_commit_service_uses_row_ids_without_projection_pull(self) -> None:
+        request = ProcurementLotsGridFillCommitRequest.model_validate(
+            {
+                "operationId": "fill-1",
+                "baseRevision": "5",
+                "sourceRange": {"startRow": 0, "endRow": 1},
+                "targetRange": {"startRow": 1, "endRow": 2},
+                "sourceRowIds": ["zakupki:source"],
+                "targetRowIds": ["zakupki:target"],
+                "fillColumns": ["quantity"],
+                "referenceColumns": ["quantity"],
+                "mode": "copy",
+                "projection": {"tableId": "procurement-lots"},
+            }
+        )
+
+        with patch("app.services.grid_backend_fill.ProcurementGridFillService") as service_type:
+            service_type.return_value.commit_fill = AsyncMock(return_value=SimpleNamespace(revision="6", rows=[]))
+            response = await commit_procurement_lot_grid_fill_commit(
+                FakeSession(),
+                request,
+                user_id="user-1",
+                session_id="session-1",
+            )
+
+        self.assertEqual(response.dataset_version, 6)
+        backend_request = service_type.return_value.commit_fill.await_args.args[1]
+        self.assertEqual(backend_request.operation_id, "fill-1")
+        self.assertEqual(backend_request.base_version, 5)
+        self.assertEqual(backend_request.source_row_ids, ["zakupki:source"])
+        self.assertEqual(backend_request.target_row_ids, ["zakupki:target"])
+        self.assertEqual(backend_request.metadata["edits"], [{"rowId": "zakupki:target", "columnId": "quantity"}])
+
+    async def test_package_fill_boundary_returns_unresolved(self) -> None:
+        response = await resolve_procurement_lots_fill_boundary({}, current_user=SimpleNamespace(id="user-1"))
+
+        self.assertEqual(response, {"boundaryKind": "unresolved", "endRowIndex": None})
 
 
 if __name__ == "__main__":
