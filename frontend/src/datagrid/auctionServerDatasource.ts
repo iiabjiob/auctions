@@ -10,9 +10,11 @@ import type {
   DataGridSortState,
 } from '@affino/datagrid-vue'
 import {
+  createAffinoDatasource,
   normalizeDataGridServerQuery,
   type DataGridServerQuery,
 } from '@affino/datagrid-server-adapters'
+import { createAffinoPostJsonFetch } from './affinoPostJsonFetch'
 
 export type AuctionServerGridFilters = {
   period: string
@@ -98,6 +100,17 @@ export type CreateAuctionServerDatasourceOptions<TApiRow, TRow> = {
 export function createAuctionServerDatasource<TApiRow, TRow>(
   options: CreateAuctionServerDatasourceOptions<TApiRow, TRow>,
 ): AuctionServerDatasource<TApiRow, TRow> {
+  const fetchImpl = createAffinoPostJsonFetch(options.postJson)
+  const affinoDatasource = createAffinoDatasource<TRow>({
+    baseUrl: '',
+    tableId: 'auction-lots',
+    fetchImpl,
+    mapQuery: (query) => ({
+      ...options.getFilters(),
+      ...mapAuctionServerQuery(query),
+    }),
+  })
+
   async function pullWindow(request: AuctionServerPullWindowRequest): Promise<AuctionServerPullWindowResult<TRow>> {
     if (request.signal?.aborted) {
       throw new DOMException('Request aborted', 'AbortError')
@@ -105,24 +118,18 @@ export function createAuctionServerDatasource<TApiRow, TRow>(
 
     const start = Math.max(0, Math.trunc(request.start))
     const inclusiveEnd = Math.max(start, Math.trunc(request.end))
-    const serverQuery = normalizeAuctionServerQuery(
-      {
-        range: { start, end: inclusiveEnd },
-        sortModel: request.sortModel,
-        filterModel: request.filterModel,
-      },
-      options.hasFilterModel,
-    )
 
-    const payload = {
-      ...options.getFilters(),
-      ...mapAuctionServerQuery(serverQuery),
+    await affinoDatasource.pull({
+      range: { start, end: inclusiveEnd },
+      sortModel: request.sortModel ?? [],
+      filterModel: options.hasFilterModel(request.filterModel) ? request.filterModel ?? null : null,
+      signal: request.signal,
+    } as DataGridDataSourcePullRequest)
+
+    const data = fetchImpl.lastJsonByPath.get('/api/auction-lots/pull') as AuctionServerPullResponse<TApiRow> | undefined
+    if (!data) {
+      throw new Error('Auction datasource pull did not return a server response')
     }
-    const data = await options.postJson<AuctionServerPullResponse<TApiRow>>(
-      '/api/auction-lots/pull',
-      payload,
-      request.signal,
-    )
 
     if (request.signal?.aborted) {
       throw new DOMException('Request aborted', 'AbortError')
@@ -194,6 +201,7 @@ export function createAuctionServerDatasource<TApiRow, TRow>(
   }
 
   return {
+    ...affinoDatasource,
     pull,
     pullWindow,
     getColumnHistogram,

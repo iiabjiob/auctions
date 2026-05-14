@@ -115,6 +115,13 @@ class AuctionGridEditsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.dataset_version, 6)
         self.assertEqual(response.updated_rows[0].id, "tbankrot:auction-1:lot-1")
         self.assertEqual(response.updated_rows[0].row.market_value, Decimal("123.45"))
+        self.assertEqual(response.revision, "6")
+        self.assertEqual(response.committed, [{"rowId": "tbankrot:auction-1:lot-1", "revision": "6"}])
+        self.assertEqual(
+            response.invalidation,
+            {"type": "rows", "rowIds": ["tbankrot:auction-1:lot-1"], "reason": "edit"},
+        )
+        self.assertEqual(response.rows[0].id, "tbankrot:auction-1:lot-1")
         service_type.assert_called_once_with(workspace_id="default")
         service.commit_edits.assert_awaited_once()
         backend_request = service.commit_edits.await_args.args[1]
@@ -123,6 +130,21 @@ class AuctionGridEditsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(backend_request.user_id, "user-1")
         self.assertEqual(backend_request.session_id, "session-1")
         self.assertEqual(backend_request.payload["edits"][0]["rowId"], "tbankrot:auction-1:lot-1")
+
+    async def test_package_edit_request_accepts_base_revision(self) -> None:
+        record = make_record()
+        request = AuctionLotsGridEditRequest.model_validate(
+            {"baseRevision": "5", "edits": [{"rowId": "tbankrot:auction-1:lot-1", "columnId": "marketValue", "value": 1}]}
+        )
+
+        with patch("app.services.grid_backend_edits.AuctionGridEditService") as service_type:
+            service_type.return_value.commit_edits = AsyncMock(
+                return_value=SimpleNamespace(revision="6", rows=[SimpleNamespace(record=record)], rejected=[])
+            )
+            response = await commit_auction_lot_grid_edits(FakeSession(), request)
+
+        self.assertEqual(request.base_version, 5)
+        self.assertEqual(response.committed, [{"rowId": "tbankrot:auction-1:lot-1", "revision": "6"}])
 
     async def test_commit_edits_passes_scope_to_backend_adapter(self) -> None:
         record = make_record()

@@ -140,16 +140,23 @@ async def _commit_auction_lot_grid_operations(
             raise LookupError(reason)
         raise ValueError(reason)
 
+    updated_rows = [
+        AuctionLotsGridPullRow(
+            id=auction_lot_grid_row_id(row.record),
+            index=int(row.record.id),
+            row=validate_datagrid_row_payload(row.record.datagrid_row),
+        )
+        for row in result.rows
+    ]
+    updated_row_ids = [row.id for row in updated_rows]
     return AuctionLotsGridEditResponse(
         dataset_version=int(result.revision),
-        updated_rows=[
-            AuctionLotsGridPullRow(
-                id=auction_lot_grid_row_id(row.record),
-                index=int(row.record.id),
-                row=validate_datagrid_row_payload(row.record.datagrid_row),
-            )
-            for row in result.rows
-        ],
+        updated_rows=updated_rows,
+        revision=str(result.revision),
+        committed=[{"rowId": row_id, "revision": str(result.revision)} for row_id in updated_row_ids],
+        rejected=[],
+        invalidation={"type": "rows", "rowIds": updated_row_ids, "reason": "edit"},
+        rows=updated_rows,
     )
 
 

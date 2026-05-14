@@ -152,16 +152,23 @@ async def commit_procurement_lot_grid_edits(
             raise LookupError(reason)
         raise ValueError(reason)
 
+    updated_rows = [
+        ProcurementLotsGridPullRow(
+            id=procurement_lot_grid_row_id(record),
+            index=int(record.id or 0),
+            row=build_procurement_grid_row(record),
+        )
+        for record in result.rows
+    ]
+    updated_row_ids = [row.id for row in updated_rows]
     return ProcurementLotsGridEditResponse(
         dataset_version=int(result.revision),
-        updated_rows=[
-            ProcurementLotsGridPullRow(
-                id=procurement_lot_grid_row_id(record),
-                index=int(record.id or 0),
-                row=build_procurement_grid_row(record),
-            )
-            for record in result.rows
-        ],
+        updated_rows=updated_rows,
+        revision=str(result.revision),
+        committed=[{"rowId": row_id, "revision": str(result.revision)} for row_id in updated_row_ids],
+        rejected=[],
+        invalidation={"type": "rows", "rowIds": updated_row_ids, "reason": "edit"},
+        rows=updated_rows,
     )
 
 

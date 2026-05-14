@@ -10,9 +10,11 @@ import type {
   DataGridSortState,
 } from '@affino/datagrid-vue'
 import {
+  createAffinoDatasource,
   normalizeDataGridServerQuery,
   type DataGridServerQuery,
 } from '@affino/datagrid-server-adapters'
+import { createAffinoPostJsonFetch } from './affinoPostJsonFetch'
 
 export type ProcurementServerGridFilters = {
   source: string | null
@@ -98,6 +100,17 @@ export type CreateProcurementServerDatasourceOptions<TApiRow, TRow> = {
 export function createProcurementServerDatasource<TApiRow, TRow>(
   options: CreateProcurementServerDatasourceOptions<TApiRow, TRow>,
 ): ProcurementServerDatasource<TApiRow, TRow> {
+  const fetchImpl = createAffinoPostJsonFetch(options.postJson)
+  const affinoDatasource = createAffinoDatasource<TRow>({
+    baseUrl: '',
+    tableId: 'procurement-lots',
+    fetchImpl,
+    mapQuery: (query) => ({
+      ...options.getFilters(),
+      ...mapProcurementServerQuery(query),
+    }),
+  })
+
   async function pullWindow(request: ProcurementServerPullWindowRequest): Promise<ProcurementServerPullWindowResult<TRow>> {
     if (request.signal?.aborted) {
       throw new DOMException('Request aborted', 'AbortError')
@@ -105,22 +118,17 @@ export function createProcurementServerDatasource<TApiRow, TRow>(
 
     const start = Math.max(0, Math.trunc(request.start))
     const inclusiveEnd = Math.max(start, Math.trunc(request.end))
-    const serverQuery = normalizeProcurementServerQuery(
-      {
-        range: { start, end: inclusiveEnd },
-        sortModel: request.sortModel,
-        filterModel: request.filterModel,
-      },
-      options.hasFilterModel,
-    )
-    const data = await options.postJson<ProcurementServerPullResponse<TApiRow>>(
-      '/api/procurement-lots/pull',
-      {
-        ...options.getFilters(),
-        ...mapProcurementServerQuery(serverQuery),
-      },
-      request.signal,
-    )
+    await affinoDatasource.pull({
+      range: { start, end: inclusiveEnd },
+      sortModel: request.sortModel ?? [],
+      filterModel: options.hasFilterModel(request.filterModel) ? request.filterModel ?? null : null,
+      signal: request.signal,
+    } as DataGridDataSourcePullRequest)
+
+    const data = fetchImpl.lastJsonByPath.get('/api/procurement-lots/pull') as ProcurementServerPullResponse<TApiRow> | undefined
+    if (!data) {
+      throw new Error('Procurement datasource pull did not return a server response')
+    }
 
     if (request.signal?.aborted) {
       throw new DOMException('Request aborted', 'AbortError')
@@ -190,6 +198,7 @@ export function createProcurementServerDatasource<TApiRow, TRow>(
   }
 
   return {
+    ...affinoDatasource,
     pull,
     pullWindow,
     getColumnHistogram,

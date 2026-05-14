@@ -99,6 +99,10 @@ class ProcurementGridEditsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.updated_rows[0].row["quantity"], 10.5)
         self.assertTrue(response.updated_rows[0].row["documentationPresent"])
         self.assertEqual(response.updated_rows[0].row["certificateRequirements"], "ГОСТ 12.4")
+        self.assertEqual(response.revision, "6")
+        self.assertEqual(response.committed, [{"rowId": "zakupki:123", "revision": "6"}])
+        self.assertEqual(response.invalidation, {"type": "rows", "rowIds": ["zakupki:123"], "reason": "edit"})
+        self.assertEqual(response.rows[0].id, "zakupki:123")
 
         service_type.assert_called_once_with(workspace_id="default")
         service.commit_edits.assert_awaited_once()
@@ -108,6 +112,21 @@ class ProcurementGridEditsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(backend_request.user_id, "user-1")
         self.assertEqual(backend_request.session_id, "s-1")
         self.assertEqual(backend_request.payload["edits"][0]["rowId"], "zakupki:123")
+
+    async def test_package_edit_request_accepts_base_revision(self) -> None:
+        record = make_record()
+        request = ProcurementLotsGridEditRequest.model_validate(
+            {"baseRevision": "5", "edits": [{"rowId": "zakupki:123", "columnId": "quantity", "value": 1}]}
+        )
+
+        with patch("app.services.grid_backend_edits.ProcurementGridEditService") as service_type:
+            service_type.return_value.commit_edits = AsyncMock(
+                return_value=SimpleNamespace(revision="6", rows=[record], rejected=[])
+            )
+            response = await commit_procurement_lot_grid_edits(FakeSession(), request)
+
+        self.assertEqual(request.base_version, 5)
+        self.assertEqual(response.committed, [{"rowId": "zakupki:123", "revision": "6"}])
 
     async def test_conflict_stops_before_loading_rows(self) -> None:
         request = ProcurementLotsGridEditRequest.model_validate(

@@ -106,8 +106,20 @@ class AuctionLotsGridCellEdit(BaseModel):
 class AuctionLotsGridEditRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
-    base_version: int = Field(alias="baseVersion", ge=0)
+    base_version: int | None = Field(default=None, alias="baseVersion", ge=0)
+    base_revision: str | int | None = Field(default=None, alias="baseRevision")
     edits: list[AuctionLotsGridCellEdit] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_base_version(self) -> "AuctionLotsGridEditRequest":
+        if self.base_version is None and self.base_revision is not None:
+            try:
+                self.base_version = int(self.base_revision)
+            except (TypeError, ValueError) as error:
+                raise ValueError("baseRevision must be an integer revision") from error
+        if self.base_version is None:
+            raise ValueError("baseVersion or baseRevision is required")
+        return self
 
 
 class AuctionLotsGridEditResponse(BaseModel):
@@ -115,6 +127,11 @@ class AuctionLotsGridEditResponse(BaseModel):
 
     dataset_version: int = Field(alias="datasetVersion")
     updated_rows: list[AuctionLotsGridPullRow] = Field(alias="updatedRows")
+    revision: str | None = None
+    committed: list[dict[str, Any]] = Field(default_factory=list)
+    rejected: list[dict[str, Any]] = Field(default_factory=list)
+    invalidation: dict[str, Any] | None = None
+    rows: list[AuctionLotsGridPullRow] = Field(default_factory=list)
 
 
 class AuctionLotsGridFillRange(BaseModel):
