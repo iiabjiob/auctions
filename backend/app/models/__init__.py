@@ -11,7 +11,7 @@ from app.models.auction import (
 )
 from app.models.auction_analysis_config import AuctionAnalysisConfigModel
 from app.models.filter_preset import FilterPresetModel
-from app.models.grid import GridChangeEventModel, GridOperationModel, GridRevisionModel
+from app.models.grid import GridCellEventModel, GridChangeEventModel, GridOperationModel, GridRevisionModel
 from app.models.procurement import (
     ProcurementLotDetailCache,
     ProcurementLotDetailObservation,
@@ -51,6 +51,7 @@ __all__ = [
     "TelegramNotificationOutbox",
     "FilterPresetModel",
     "GridChangeEventModel",
+    "GridCellEventModel",
     "GridOperationModel",
     "GridRevisionModel",
     "ScoringProfileModel",

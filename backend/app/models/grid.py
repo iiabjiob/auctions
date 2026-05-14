@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import BigInteger, DateTime, Index, String, UniqueConstraint, func, text
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, String, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PostgresUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -76,3 +76,27 @@ class GridOperationModel(Base):
     redo_payload: Mapped[dict | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     undone_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class GridCellEventModel(Base):
+    __tablename__ = "grid_cell_events"
+    __table_args__ = (
+        Index("ix_grid_cell_events_operation_id", "operation_id"),
+        Index("ix_grid_cell_events_workspace_table_operation", "workspace_id", "table_id", "operation_id"),
+        Index("ix_grid_cell_events_workspace_table_row", "workspace_id", "table_id", "row_id"),
+        Index("ix_grid_cell_events_created_at", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    operation_id: Mapped[UUID] = mapped_column(
+        PostgresUUID(as_uuid=True),
+        ForeignKey("grid_operations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    table_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    row_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    column_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    before_value: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb"))
+    after_value: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

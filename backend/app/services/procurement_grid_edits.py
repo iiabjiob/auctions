@@ -17,7 +17,12 @@ from app.schemas.procurement_grid import (
     ProcurementLotsGridEditResponse,
     ProcurementLotsGridPullRow,
 )
-from app.services.grid_state import clear_redo_grid_operations, get_or_create_grid_revision, record_grid_operation
+from app.services.grid_state import (
+    clear_redo_grid_operations,
+    get_or_create_grid_revision,
+    record_grid_cell_events_from_payloads,
+    record_grid_operation,
+)
 from app.services.procurement_calculator import (
     calculator_field_for_column,
     coerce_calculator_input_value,
@@ -214,7 +219,9 @@ async def commit_procurement_lot_grid_edits(
         user_id=user_id,
         session_id=session_id,
     )
-    await record_grid_operation(
+    undo_payload = {"edits": list(undo_values.values())}
+    redo_payload = {"edits": list(redo_values.values())}
+    operation = await record_grid_operation(
         session,
         workspace_id=workspace_id,
         table_id=PROCUREMENT_LOTS_TABLE_ID,
@@ -224,8 +231,16 @@ async def commit_procurement_lot_grid_edits(
         base_version=request.base_version,
         resulting_version=resulting_version,
         payload={"edits": [edit.model_dump(by_alias=True, mode="json") for edit in request.edits]},
-        undo_payload={"edits": list(undo_values.values())},
-        redo_payload={"edits": list(redo_values.values())},
+        undo_payload=undo_payload,
+        redo_payload=redo_payload,
+    )
+    await record_grid_cell_events_from_payloads(
+        session,
+        operation_id=operation.id,
+        workspace_id=workspace_id,
+        table_id=PROCUREMENT_LOTS_TABLE_ID,
+        undo_payload=undo_payload,
+        redo_payload=redo_payload,
     )
     await session.flush()
 

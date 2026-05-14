@@ -3,12 +3,13 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.grid import GridChangeEventModel, GridOperationModel, GridRevisionModel
+from app.models.grid import GridCellEventModel, GridChangeEventModel, GridOperationModel, GridRevisionModel
 
 
 def _require_scope_value(value: str, field_name: str) -> str:
@@ -111,6 +112,51 @@ async def record_grid_operation(
     session.add(operation)
     await session.flush()
     return operation
+
+
+async def record_grid_cell_events_from_payloads(
+    session: AsyncSession,
+    *,
+    operation_id: UUID,
+    workspace_id: str,
+    table_id: str,
+    undo_payload: Mapping[str, Any] | None,
+    redo_payload: Mapping[str, Any] | None,
+) -> list[GridCellEventModel]:
+    before_by_key = _payload_values_by_cell(undo_payload)
+    after_by_key = _payload_values_by_cell(redo_payload)
+    events: list[GridCellEventModel] = []
+    for key in sorted(set(before_by_key) | set(after_by_key)):
+        row_id, column_id = key
+        event = GridCellEventModel(
+            operation_id=operation_id,
+            workspace_id=_require_scope_value(workspace_id, "workspace_id"),
+            table_id=_require_scope_value(table_id, "table_id"),
+            row_id=row_id,
+            column_id=column_id,
+            before_value={"value": before_by_key.get(key)},
+            after_value={"value": after_by_key.get(key)},
+        )
+        session.add(event)
+        events.append(event)
+    await session.flush()
+    return events
+
+
+def _payload_values_by_cell(payload: Mapping[str, Any] | None) -> dict[tuple[str, str], Any]:
+    values: dict[tuple[str, str], Any] = {}
+    edits = payload.get("edits") if isinstance(payload, Mapping) else None
+    if not isinstance(edits, list):
+        return values
+    for edit in edits:
+        if not isinstance(edit, Mapping):
+            continue
+        row_id = edit.get("rowId")
+        column_id = edit.get("columnId")
+        if not isinstance(row_id, str) or not row_id.strip() or not isinstance(column_id, str) or not column_id.strip():
+            continue
+        values[(row_id.strip(), column_id.strip())] = edit.get("value")
+    return values
 
 
 async def clear_redo_grid_operations(

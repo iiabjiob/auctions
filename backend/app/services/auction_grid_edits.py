@@ -31,6 +31,7 @@ from app.services.grid_state import (
     bump_dataset_version,
     clear_redo_grid_operations,
     get_or_create_grid_revision,
+    record_grid_cell_events_from_payloads,
     record_grid_operation,
 )
 
@@ -210,7 +211,9 @@ async def _commit_auction_lot_grid_operations(
         user_id=user_id,
         session_id=session_id,
     )
-    await record_grid_operation(
+    undo_payload = {"edits": list(undo_values.values())}
+    redo_payload = {"edits": list(redo_values.values())}
+    operation = await record_grid_operation(
         session,
         workspace_id=workspace_id,
         table_id=AUCTION_LOTS_TABLE_ID,
@@ -220,8 +223,16 @@ async def _commit_auction_lot_grid_operations(
         base_version=base_version,
         resulting_version=resulting_version,
         payload=payload,
-        undo_payload={"edits": list(undo_values.values())},
-        redo_payload={"edits": list(redo_values.values())},
+        undo_payload=undo_payload,
+        redo_payload=redo_payload,
+    )
+    await record_grid_cell_events_from_payloads(
+        session,
+        operation_id=operation.id,
+        workspace_id=workspace_id,
+        table_id=AUCTION_LOTS_TABLE_ID,
+        undo_payload=undo_payload,
+        redo_payload=redo_payload,
     )
     await session.flush()
 
