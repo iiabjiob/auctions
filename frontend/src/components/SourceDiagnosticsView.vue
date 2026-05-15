@@ -362,29 +362,31 @@ watch(selectedKind, () => {
                 </div>
               </dl>
 
-              <table>
-                <thead>
-                  <tr>
-                    <th>Операция</th>
-                    <th>Запросы</th>
-                    <th>Входящий</th>
-                    <th>Исходящий</th>
-                    <th>Среднее</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="operation in source.operations" :key="operation.operation">
-                    <td>{{ operation.operation }}</td>
-                    <td>{{ operation.request_count }}</td>
-                    <td>{{ formatBytes(operation.inbound_bytes) }}</td>
-                    <td>{{ formatBytes(operation.outbound_bytes) }}</td>
-                    <td>{{ formatDuration(operation.average_duration_ms) }}</td>
-                  </tr>
-                  <tr v-if="!source.operations.length">
-                    <td colspan="5">Нет запросов за выбранный период</td>
-                  </tr>
-                </tbody>
-              </table>
+              <div class="source-diagnostics__table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Операция</th>
+                      <th>Запросы</th>
+                      <th>Входящий</th>
+                      <th>Исходящий</th>
+                      <th>Среднее</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="operation in source.operations" :key="operation.operation">
+                      <td>{{ operation.operation }}</td>
+                      <td>{{ operation.request_count }}</td>
+                      <td>{{ formatBytes(operation.inbound_bytes) }}</td>
+                      <td>{{ formatBytes(operation.outbound_bytes) }}</td>
+                      <td>{{ formatDuration(operation.average_duration_ms) }}</td>
+                    </tr>
+                    <tr v-if="!source.operations.length">
+                      <td colspan="5">Нет запросов за выбранный период</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             </article>
           </div>
         </article>
@@ -436,6 +438,7 @@ watch(selectedKind, () => {
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
+  min-width: 0;
 }
 
 .source-diagnostics__header h1 {
@@ -452,6 +455,7 @@ watch(selectedKind, () => {
   display: grid;
   gap: 8px;
   justify-items: end;
+  min-width: 0;
 }
 
 .source-diagnostics__ranges {
@@ -484,6 +488,7 @@ watch(selectedKind, () => {
     box-shadow 160ms ease,
     background-color 160ms ease,
     color 160ms ease;
+  max-width: 100%;
 }
 
 .source-diagnostics__ranges button:hover,
@@ -645,6 +650,7 @@ watch(selectedKind, () => {
   display: grid;
   gap: 12px;
   padding: 14px;
+  min-width: 0;
 }
 
 .source-diagnostics__source-group-header {
@@ -652,6 +658,7 @@ watch(selectedKind, () => {
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+  min-width: 0;
 }
 
 .source-diagnostics__source-group-header h2 {
@@ -681,6 +688,7 @@ watch(selectedKind, () => {
 
 .source-diagnostics__source {
   padding: 14px;
+  min-width: 0;
 }
 
 .source-diagnostics__source header,
@@ -689,6 +697,7 @@ watch(selectedKind, () => {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  min-width: 0;
 }
 
 .source-diagnostics__source h2,
@@ -701,6 +710,7 @@ watch(selectedKind, () => {
 .source-diagnostics__source a {
   color: #346f4b;
   font-size: 13px;
+  overflow-wrap: anywhere;
 }
 
 .source-diagnostics__source dl {
@@ -715,8 +725,16 @@ watch(selectedKind, () => {
   font-weight: 700;
 }
 
+.source-diagnostics__table-scroll {
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+}
+
 .source-diagnostics__source table {
-  width: 100%;
+  min-width: 560px;
+  width: max-content;
   border-collapse: collapse;
   font-size: 13px;
 }
@@ -792,13 +810,41 @@ watch(selectedKind, () => {
     flex-direction: column;
   }
 
+  .source-diagnostics__header h1 {
+    font-size: 24px;
+  }
+
+  .source-diagnostics__header p {
+    overflow-wrap: anywhere;
+  }
+
   .source-diagnostics__filters {
     justify-items: start;
   }
 
+  .source-diagnostics__ranges,
   .source-diagnostics__kinds,
   .source-diagnostics__sources-filter {
     justify-content: flex-start;
+  }
+
+  .source-diagnostics__ranges,
+  .source-diagnostics__kinds,
+  .source-diagnostics__sources-filter {
+    width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    flex-wrap: nowrap;
+    padding-bottom: 2px;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-gutter: stable;
+  }
+
+  .source-diagnostics__ranges button,
+  .source-diagnostics__kinds button,
+  .source-diagnostics__sources-filter button {
+    flex: 0 0 auto;
+    white-space: nowrap;
   }
 
   .source-diagnostics__summary,
@@ -810,15 +856,47 @@ watch(selectedKind, () => {
   .source-diagnostics__chart {
     min-height: 200px;
     padding-top: 22px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
   }
 
   .source-diagnostics__bar-cell {
-    min-width: 22px;
+    flex: 0 0 28px;
+    min-width: 28px;
+  }
+
+  .source-diagnostics__bar {
+    min-width: 20px;
+  }
+
+  .source-diagnostics__source header,
+  .source-diagnostics__json header,
+  .source-diagnostics__source-group-header {
+    align-items: flex-start;
+  }
+
+  .source-diagnostics__source header > div,
+  .source-diagnostics__json header > div,
+  .source-diagnostics__source-group-header > div {
+    min-width: 0;
+  }
+
+  .source-diagnostics__source a {
+    display: inline-block;
+    max-width: 100%;
+  }
+
+  .source-diagnostics__source dl {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .source-diagnostics__json pre {
-    min-height: 320px;
-    max-height: 70vh;
+    min-height: 260px;
+    max-height: 60vh;
+    white-space: pre;
+    word-break: normal;
+    overflow-wrap: normal;
   }
 }
 </style>
