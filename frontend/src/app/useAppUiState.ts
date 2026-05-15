@@ -50,29 +50,9 @@ export function useAppUiState() {
     focusOrchestrator: presetDialogFocus,
   })
 
-  const interestProfilesDialogTriggerRef = ref<HTMLElement | null>(null)
-  const interestProfilesDialogRef = ref<HTMLDivElement | null>(null)
   const interestProfilesDialogInitialRef = ref<HTMLElement | null>(null)
-  const interestProfilesDialogFocus = createDialogFocusOrchestrator({
-    dialog: () => interestProfilesDialogRef.value,
-    initialFocus: () => interestProfilesDialogInitialRef.value,
-    returnFocus: () => interestProfilesDialogTriggerRef.value,
-  })
-  const interestProfilesDialog = useDialogController({
-    focusOrchestrator: interestProfilesDialogFocus,
-  })
 
-  const analysisConfigDialogTriggerRef = ref<HTMLElement | null>(null)
-  const analysisConfigDialogRef = ref<HTMLDivElement | null>(null)
   const analysisConfigDialogInitialRef = ref<HTMLElement | null>(null)
-  const analysisConfigDialogFocus = createDialogFocusOrchestrator({
-    dialog: () => analysisConfigDialogRef.value,
-    initialFocus: () => analysisConfigDialogInitialRef.value,
-    returnFocus: () => analysisConfigDialogTriggerRef.value,
-  })
-  const analysisConfigDialog = useDialogController({
-    focusOrchestrator: analysisConfigDialogFocus,
-  })
 
   function setPresetDialogInitialRef(element: Element | ComponentPublicInstance | null) {
     presetDialogInitialRef.value = element as HTMLElement | null
@@ -108,14 +88,8 @@ export function useAppUiState() {
     presetDialogRef,
     presetDialogInitialRef,
     presetDialog,
-    interestProfilesDialogTriggerRef,
-    interestProfilesDialogRef,
     interestProfilesDialogInitialRef,
-    interestProfilesDialog,
-    analysisConfigDialogTriggerRef,
-    analysisConfigDialogRef,
     analysisConfigDialogInitialRef,
-    analysisConfigDialog,
     setPresetDialogInitialRef,
     setInterestProfilesDialogInitialRef,
     setAnalysisConfigDialogInitialRef,

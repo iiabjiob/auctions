@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, shallowRef, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import {
   UiMenu,
@@ -143,6 +143,8 @@ import AuthLoginScreen from './components/AuthLoginScreen.vue'
 import RatingInfoTooltip from './components/RatingInfoTooltip.vue'
 import AuctionWorkspace from './components/AuctionWorkspace.vue'
 import ProcurementTenderGrid from './components/ProcurementTenderGrid.vue'
+import AnalysisConfigRoute from './views/AnalysisConfigRoute.vue'
+import InterestProfilesRoute from './views/InterestProfilesRoute.vue'
 import SourceDiagnosticsView from './components/SourceDiagnosticsView.vue'
 import {
   createAuctionServerDatasource,
@@ -346,6 +348,7 @@ const analysisConfigDraft = reactive<AnalysisConfigDraft>(emptyAnalysisConfigDra
 const authStore = useAuthStore()
 const { accessToken, currentUser, isAuthenticated, isRestoring } = storeToRefs(authStore)
 const route = useRoute()
+const router = useRouter()
 const {
   selectedPresetId,
   presetDialogMode,
@@ -360,14 +363,6 @@ const {
   presetDialogRef,
   presetDialogInitialRef,
   presetDialog,
-  interestProfilesDialogTriggerRef,
-  interestProfilesDialogRef,
-  interestProfilesDialogInitialRef,
-  interestProfilesDialog,
-  analysisConfigDialogTriggerRef,
-  analysisConfigDialogRef,
-  analysisConfigDialogInitialRef,
-  analysisConfigDialog,
   setPresetDialogInitialRef,
   setInterestProfilesDialogInitialRef,
   setAnalysisConfigDialogInitialRef,
@@ -443,6 +438,8 @@ const currentUserInitials = computed(() => {
 })
 
 const selectedPreset = computed(() => presets.value.find((preset) => preset.id === selectedPresetId.value) ?? null)
+const isAnalysisConfigRoute = computed(() => route.name === 'analysis-config')
+const isInterestProfilesRoute = computed(() => route.name === 'interest-profiles')
 const activeInterestProfiles = computed(() => userInterestProfiles.value.filter((profile) => profile.is_active))
 const interestProfileSummary = computed(() => {
   if (interestProfilesLoading.value) return 'Загрузка'
@@ -1824,23 +1821,13 @@ async function loadAnalysisConfig() {
 }
 
 function openAnalysisConfigDialog(event?: Event) {
-  analysisConfigDialogTriggerRef.value = event?.currentTarget as HTMLElement | null
-  analysisConfigError.value = ''
-  if (analysisConfig.value) {
-    applyAnalysisConfigDraft(analysisConfig.value)
-  } else {
-    resetAnalysisConfigDraft()
-  }
-  analysisConfigDialog.open('trigger')
-  void loadAnalysisConfig()
+  void event
+  void router.push({ name: 'analysis-config' })
 }
 
 function openInterestProfilesDialog(event?: Event) {
-  interestProfilesDialogTriggerRef.value = event?.currentTarget as HTMLElement | null
-  interestProfilesError.value = ''
-  resetInterestProfileDraft()
-  interestProfilesDialog.open('trigger')
-  void loadUserInterestProfiles()
+  void event
+  void router.push({ name: 'interest-profiles' })
 }
 
 function resetInterestProfileDraft() {
@@ -2001,7 +1988,7 @@ async function submitAnalysisConfigDialog() {
     if (analysisConfig.value) {
       applyAnalysisConfigDraft(analysisConfig.value)
     }
-    await analysisConfigDialog.close('programmatic')
+    await router.push('/auctions')
   } catch (error) {
     analysisConfigError.value = error instanceof Error ? error.message : 'Не удалось сохранить конфиг анализа'
   } finally {
@@ -2111,6 +2098,47 @@ async function confirmDeletePreset() {
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : 'Не удалось удалить подборку'
   }
+}
+
+const interestProfilesRouteBindings = {
+  presets,
+  presetsLoading,
+  userInterestProfiles,
+  interestProfilesLoading,
+  interestProfilesSaving,
+  interestProfilesError,
+  telegramConnectLoading,
+  telegramConnectUrl,
+  telegramConnectExpiresAt,
+  interestProfileDraft,
+  telegramPresetIdDraft,
+  interestProfileSummary,
+  formatDateTime,
+  setInterestProfilesDialogInitialRef,
+  loadPresets,
+  loadUserInterestProfiles,
+  resetInterestProfileDraft,
+  createInterestProfileFromCurrentFilters,
+  createInterestProfileFromSelectedPreset,
+  connectTelegramBot,
+  toggleInterestProfileActive,
+  toggleInterestProfileTelegram,
+  refreshInterestProfileFromPreset,
+  removeInterestProfile,
+  interestProfileNote,
+}
+
+const analysisConfigRouteBindings = {
+  analysisConfigLoading,
+  analysisConfigSaving,
+  analysisConfigError,
+  analysisConfigUpdatedAt,
+  analysisConfigDraft,
+  setAnalysisConfigDialogInitialRef,
+  loadAnalysisConfig,
+  submitAnalysisConfigDialog,
+  addAnalysisConfigCategoryRule,
+  removeAnalysisConfigCategoryRule,
 }
 
 function resetWorkDraft() {
@@ -2595,22 +2623,6 @@ function stopDetailResize() {
 }
 
 function handleGlobalKeydown(event: KeyboardEvent) {
-  if (analysisConfigDialog.snapshot.value.isOpen) {
-    if (['Escape', 'Esc'].includes(event.key)) {
-      event.preventDefault()
-      event.stopPropagation()
-      void analysisConfigDialog.close('escape-key')
-    }
-    return
-  }
-  if (interestProfilesDialog.snapshot.value.isOpen) {
-    if (['Escape', 'Esc'].includes(event.key)) {
-      event.preventDefault()
-      event.stopPropagation()
-      void interestProfilesDialog.close('escape-key')
-    }
-    return
-  }
   if (presetDialog.snapshot.value.isOpen) {
     if (['Escape', 'Esc'].includes(event.key)) {
       event.preventDefault()
@@ -3478,340 +3490,7 @@ onUnmounted(() => {
       </transition>
     </Teleport>
 
-    <Teleport to="#affino-dialog-host">
-      <transition name="dialog-layer">
-        <div
-          v-if="interestProfilesDialog.snapshot.value.isOpen"
-          class="app-dialog-layer"
-          @click.self="void interestProfilesDialog.close('backdrop')"
-        >
-          <div
-            ref="interestProfilesDialogRef"
-            class="app-dialog app-dialog--wide"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="interest-profiles-dialog-title"
-            tabindex="-1"
-          >
-            <header class="app-dialog__header">
-              <div>
-                <span class="eyebrow">Персональные сигналы</span>
-                <h2 id="interest-profiles-dialog-title">Профили интересов</h2>
-              </div>
-              <button
-                class="icon-button"
-                type="button"
-                aria-label="Закрыть окно"
-                @click="void interestProfilesDialog.close('programmatic')"
-              >
-                ×
-              </button>
-            </header>
-
-            <div class="app-dialog__body app-dialog__body--scroll">
-              <p class="app-dialog__text">
-                Профиль интересов управляет тем, какие рейтинговые лоты попадут в персональные Telegram-уведомления.
-                Срез таблицы остается только UI-фильтром.
-              </p>
-
-              <div v-if="interestProfilesError" class="error-banner">{{ interestProfilesError }}</div>
-
-              <section class="interest-profile-panel interest-profile-panel--telegram" aria-label="Подключить Telegram-бота">
-                <div class="interest-profile-panel__header">
-                  <div>
-                    <h3>Подключить Telegram-бота</h3>
-                    <p>
-                      Нажмите «Открыть бота» и запустите его по одноразовой ссылке. Бот сам отправит команду
-                      подключения, а приложение сохранит Chat ID автоматически.
-                    </p>
-                    <p v-if="telegramConnectUrl" class="interest-profile-connect-note">
-                      Ссылка создана до {{ formatDateTime(telegramConnectExpiresAt) }}.
-                    </p>
-                  </div>
-                  <button
-                    class="primary-button"
-                    type="button"
-                    :disabled="telegramConnectLoading"
-                    @click="void connectTelegramBot()"
-                  >
-                    {{ telegramConnectLoading ? 'Создаем...' : 'Открыть бота' }}
-                  </button>
-                </div>
-              </section>
-
-              <section class="interest-profile-panel" aria-label="Создать профиль из текущих фильтров">
-                <div class="interest-profile-panel__header">
-                  <div>
-                    <h3>Создать из текущих фильтров</h3>
-                    <p>{{ interestProfileSummary }}</p>
-                  </div>
-                  <button
-                    class="secondary-button"
-                    type="button"
-                    :disabled="interestProfilesSaving"
-                    @click="resetInterestProfileDraft"
-                  >
-                    Обновить черновик
-                  </button>
-                </div>
-
-                <div class="app-dialog__grid">
-                  <label class="app-dialog__field">
-                    <span>Название</span>
-                    <input
-                      :ref="setInterestProfilesDialogInitialRef"
-                      v-model="interestProfileDraft.name"
-                      type="text"
-                      maxlength="160"
-                      placeholder="Например, BMW от 2 млн"
-                    />
-                  </label>
-                  <label class="app-dialog__field">
-                    <span>Минимальный рейтинг</span>
-                    <input v-model.number="interestProfileDraft.minRating" type="number" min="0" max="100" />
-                  </label>
-                  <label class="app-dialog__check">
-                    <input v-model="interestProfileDraft.telegramEnabled" type="checkbox" />
-                    <span>Telegram включен</span>
-                  </label>
-                  <label class="app-dialog__check">
-                    <input v-model="interestProfileDraft.isActive" type="checkbox" />
-                    <span>Профиль активен</span>
-                  </label>
-                </div>
-
-                <button
-                  class="primary-button"
-                  type="button"
-                  :disabled="interestProfilesSaving"
-                  @click="void createInterestProfileFromCurrentFilters()"
-                >
-                  Создать профиль
-                </button>
-              </section>
-
-              <section class="interest-profile-panel" aria-label="Подключить сохраненный срез к Telegram">
-                <div class="interest-profile-panel__header">
-                  <div>
-                    <h3>Подключить срез к Telegram</h3>
-                    <p>Выберите сохраненный срез. Backend превратит его фильтры в профиль интересов.</p>
-                  </div>
-                  <button
-                    class="secondary-button"
-                    type="button"
-                    :disabled="presetsLoading"
-                    @click="void loadPresets()"
-                  >
-                    Обновить срезы
-                  </button>
-                </div>
-
-                <div class="interest-profile-preset-row">
-                  <label class="app-dialog__field">
-                    <span>Срез для Telegram</span>
-                    <select v-model="telegramPresetIdDraft" :disabled="!presets.length || interestProfilesSaving">
-                      <option value="">Выберите срез</option>
-                      <option v-for="preset in presets" :key="preset.id" :value="preset.id">
-                        {{ preset.name }}
-                      </option>
-                    </select>
-                  </label>
-                  <button
-                    class="primary-button"
-                    type="button"
-                    :disabled="!telegramPresetIdDraft || interestProfilesSaving"
-                    @click="void createInterestProfileFromSelectedPreset()"
-                  >
-                    Подключить
-                  </button>
-                </div>
-              </section>
-
-              <section class="interest-profile-list" aria-label="Список профилей интересов">
-                <div v-if="interestProfilesLoading" class="app-dialog__text">Загружаем профили...</div>
-                <article v-else-if="!userInterestProfiles.length" class="interest-profile-card interest-profile-card--empty">
-                  <h3>Профилей пока нет</h3>
-                  <p>Создайте первый профиль из текущих фильтров каталога.</p>
-                </article>
-                <template v-else>
-                  <article
-                    v-for="profile in userInterestProfiles"
-                    :key="profile.id"
-                    class="interest-profile-card"
-                  >
-                    <div>
-                      <h3>{{ profile.name }}</h3>
-                      <p>{{ interestProfileNote(profile) }}</p>
-                    </div>
-                    <div class="interest-profile-card__actions">
-                      <button class="secondary-button" type="button" @click="void toggleInterestProfileActive(profile)">
-                        {{ profile.is_active ? 'Отключить' : 'Включить' }}
-                      </button>
-                      <button class="secondary-button" type="button" @click="void toggleInterestProfileTelegram(profile)">
-                        {{ profile.telegram_enabled ? 'Telegram вкл.' : 'Telegram выкл.' }}
-                      </button>
-                      <button
-                        class="secondary-button"
-                        type="button"
-                        :disabled="!profile.source_filter_preset_id"
-                        @click="void refreshInterestProfileFromPreset(profile)"
-                      >
-                        Обновить из среза
-                      </button>
-                      <button class="secondary-button secondary-button--danger" type="button" @click="void removeInterestProfile(profile)">
-                        Удалить
-                      </button>
-                    </div>
-                  </article>
-                </template>
-              </section>
-            </div>
-
-            <footer class="app-dialog__footer">
-              <button class="secondary-button" type="button" @click="void interestProfilesDialog.close('programmatic')">
-                Закрыть
-              </button>
-            </footer>
-          </div>
-        </div>
-      </transition>
-    </Teleport>
-
-    <Teleport to="#affino-dialog-host">
-      <transition name="dialog-layer">
-        <div
-          v-if="analysisConfigDialog.snapshot.value.isOpen"
-          class="app-dialog-layer"
-          @click.self="void analysisConfigDialog.close('backdrop')"
-        >
-          <div
-            ref="analysisConfigDialogRef"
-            class="app-dialog app-dialog--wide"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="analysis-config-dialog-title"
-            tabindex="-1"
-          >
-            <header class="app-dialog__header">
-              <div>
-                <span class="eyebrow">Анализ</span>
-                <h2 id="analysis-config-dialog-title">Правила категорий и риска</h2>
-              </div>
-              <button
-                :ref="analysisConfigLoading ? setAnalysisConfigDialogInitialRef : undefined"
-                class="icon-button"
-                type="button"
-                aria-label="Закрыть окно"
-                @click="void analysisConfigDialog.close('programmatic')"
-              >
-                ×
-              </button>
-            </header>
-
-            <div class="app-dialog__body app-dialog__body--scroll">
-              <p class="app-dialog__text">
-                Здесь редактируются категории, исключения и правила юридического риска без изменения backend-кода.
-              </p>
-              <p v-if="analysisConfigUpdatedAt" class="app-dialog__meta">Последнее обновление: {{ analysisConfigUpdatedAt }}</p>
-              <p v-if="analysisConfigError" class="error-banner error-banner--inline">{{ analysisConfigError }}</p>
-
-              <div v-if="analysisConfigLoading" class="detail-muted">Загружаю актуальный конфиг анализа</div>
-              <template v-else>
-                <section class="analysis-config-section">
-                  <div class="analysis-config-section__header">
-                    <div>
-                      <span class="eyebrow">Категории</span>
-                      <p class="analysis-config-section__hint">Порядок важен: категория назначается по первому совпавшему правилу.</p>
-                    </div>
-                    <button class="secondary-button" type="button" @click="addAnalysisConfigCategoryRule">Добавить категорию</button>
-                  </div>
-
-                  <div v-if="analysisConfigDraft.categoryRules.length" class="analysis-config-editor">
-                    <article
-                      v-for="(rule, index) in analysisConfigDraft.categoryRules"
-                      :key="rule.id"
-                      class="analysis-config-rule"
-                    >
-                      <div class="analysis-config-rule__row">
-                        <label class="app-dialog__field">
-                          <span>Категория</span>
-                          <input
-                            :ref="index === 0 ? setAnalysisConfigDialogInitialRef : undefined"
-                            v-model="rule.category"
-                            type="text"
-                            maxlength="160"
-                            placeholder="Например, Спецтехника"
-                          />
-                        </label>
-                        <button
-                          class="icon-button analysis-config-rule__remove"
-                          type="button"
-                          aria-label="Удалить категорию"
-                          @click="removeAnalysisConfigCategoryRule(rule.id)"
-                        >
-                          ×
-                        </button>
-                      </div>
-                      <label class="app-dialog__field">
-                        <span>Ключевые слова</span>
-                        <textarea
-                          v-model="rule.keywordsText"
-                          rows="5"
-                          placeholder="Одно ключевое слово или фраза на строку"
-                        ></textarea>
-                      </label>
-                    </article>
-                  </div>
-                  <div v-else class="detail-muted">Категории пока не заданы. Добавь хотя бы одно правило.</div>
-                </section>
-
-                <section class="analysis-config-section analysis-config-section--grid">
-                  <label class="app-dialog__field">
-                    <span>Исключения</span>
-                    <textarea
-                      :ref="analysisConfigDraft.categoryRules.length === 0 ? setAnalysisConfigDialogInitialRef : undefined"
-                      v-model="analysisConfigDraft.exclusionKeywordsText"
-                      rows="7"
-                      placeholder="Слова или фразы, по которым лот исключается из анализа"
-                    ></textarea>
-                  </label>
-                  <label class="app-dialog__field">
-                    <span>Высокий юридический риск</span>
-                    <textarea
-                      v-model="analysisConfigDraft.highRiskKeywordsText"
-                      rows="7"
-                      placeholder="Маркер высокого риска, одно значение на строку"
-                    ></textarea>
-                  </label>
-                  <label class="app-dialog__field">
-                    <span>Средний юридический риск</span>
-                    <textarea
-                      v-model="analysisConfigDraft.mediumRiskKeywordsText"
-                      rows="7"
-                      placeholder="Маркер среднего риска, одно значение на строку"
-                    ></textarea>
-                  </label>
-                  <label class="app-dialog__field">
-                    <span>Категории среднего риска</span>
-                    <textarea
-                      v-model="analysisConfigDraft.mediumRiskCategoriesText"
-                      rows="7"
-                      placeholder="Например, Земля и базы"
-                    ></textarea>
-                  </label>
-                </section>
-              </template>
-            </div>
-
-            <footer class="app-dialog__footer">
-              <button class="secondary-button" type="button" @click="void analysisConfigDialog.close('programmatic')">Отмена</button>
-              <button class="primary-button" type="button" :disabled="analysisConfigLoading || analysisConfigSaving" @click="void submitAnalysisConfigDialog()">
-                {{ analysisConfigSaving ? 'Сохраняю' : 'Сохранить конфиг' }}
-              </button>
-            </footer>
-          </div>
-        </div>
-      </transition>
-    </Teleport>
+    <InterestProfilesRoute v-if="isInterestProfilesRoute" :bindings="interestProfilesRouteBindings" />
+    <AnalysisConfigRoute v-else-if="isAnalysisConfigRoute" :bindings="analysisConfigRouteBindings" />
   </main>
 </template>

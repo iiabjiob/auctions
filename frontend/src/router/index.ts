@@ -1,5 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { defineComponent } from 'vue'
+import AnalysisConfigRoute from '@/views/AnalysisConfigRoute.vue'
+import InterestProfilesRoute from '@/views/InterestProfilesRoute.vue'
 
 const EmptyRouteView = defineComponent({
   name: 'EmptyRouteView',
@@ -32,6 +34,16 @@ const router = createRouter({
       path: '/diagnostics',
       name: 'diagnostics',
       component: EmptyRouteView,
+    },
+    {
+      path: '/analysis-config',
+      name: 'analysis-config',
+      component: AnalysisConfigRoute,
+    },
+    {
+      path: '/interest-profiles',
+      name: 'interest-profiles',
+      component: InterestProfilesRoute,
     },
   ],
 })
