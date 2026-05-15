@@ -6,7 +6,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from affino_grid_backend import ApiException
-from fastapi import HTTPException
 
 from app.api.auction_lots_grid_router import commit_auction_lots_edits
 from app.models.auction import AuctionLotRecord, AuctionLotWorkItem
@@ -144,7 +143,7 @@ class AuctionGridEditsTests(unittest.IsolatedAsyncioTestCase):
         service_type.assert_called_once_with(workspace_id="default")
         service.commit_edits.assert_awaited_once()
         backend_request = service.commit_edits.await_args.args[1]
-        self.assertEqual(backend_request.base_revision, "5")
+        self.assertIsNone(backend_request.base_revision)
         self.assertEqual(backend_request.base_version, 5)
         self.assertEqual(backend_request.user_id, "user-1")
         self.assertEqual(backend_request.session_id, "session-1")
@@ -232,16 +231,18 @@ class AuctionGridEditsTests(unittest.IsolatedAsyncioTestCase):
             "app.api.auction_lots_grid_router.commit_auction_lot_grid_edits",
             AsyncMock(side_effect=AuctionGridEditConflictError(base_version=4, current_version=5)),
         ):
-            with self.assertRaises(HTTPException) as context:
-                await commit_auction_lots_edits(
-                    request,
-                    workspace_id=None,
-                    grid_session_id=None,
-                    session=session,
-                    current_user=SimpleNamespace(id="user-1"),
-                )
+            response = await commit_auction_lots_edits(
+                request,
+                workspace_id=None,
+                grid_session_id=None,
+                session=session,
+                current_user=SimpleNamespace(id="user-1"),
+            )
 
-        self.assertEqual(context.exception.status_code, 409)
+        self.assertEqual(response.dataset_version, 5)
+        self.assertEqual(response.committed, [])
+        self.assertEqual(response.rejected[0]["rowId"], "tbankrot:auction-1:lot-1")
+        self.assertEqual(response.rejected[0]["columnId"], "marketValue")
         self.assertEqual(session.rollback_count, 1)
         self.assertEqual(session.commit_count, 0)
 

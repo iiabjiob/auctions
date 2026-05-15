@@ -396,6 +396,8 @@ async def execute_lot_enrichment_candidates(
         current_time=now,
         limit=limit,
     )
+    if candidates:
+        await _commit_if_supported(session)
     processed_count = 0
     fetched_count = 0
     cleared_count = 0
@@ -420,11 +422,11 @@ async def execute_lot_enrichment_candidates(
             else:
                 skipped_count += 1
             _release_lot_enrichment_claim(record)
+            await _commit_if_supported(session)
             if item_pause_seconds > 0:
                 await asyncio.sleep(item_pause_seconds)
             continue
 
-        attempt_marked = _mark_enrichment_attempt(record, now=now)
         detail_cache_before = await session.scalar(
             select(AuctionLotDetailCache).where(AuctionLotDetailCache.lot_record_id == record.id)
         )
@@ -435,6 +437,7 @@ async def execute_lot_enrichment_candidates(
             refresh=True,
             include_price_schedule=force_live_refresh,
         )
+        attempt_marked = _mark_enrichment_attempt(record, now=now)
         fetched_count += 1
         refresh_failed = force_live_refresh and (
             detail_cache is None or (fetched_at_before is not None and detail_cache.fetched_at == fetched_at_before)
@@ -447,6 +450,7 @@ async def execute_lot_enrichment_candidates(
             )
             _release_lot_enrichment_claim(record)
             still_missing_count += 1
+            await _commit_if_supported(session)
             if item_pause_seconds > 0:
                 await asyncio.sleep(item_pause_seconds)
             continue
@@ -461,6 +465,7 @@ async def execute_lot_enrichment_candidates(
             if not attempt_marked:
                 skipped_count += 1
             still_missing_count += 1
+            await _commit_if_supported(session)
             if item_pause_seconds > 0:
                 await asyncio.sleep(item_pause_seconds)
             continue
@@ -469,6 +474,7 @@ async def execute_lot_enrichment_candidates(
             cleared_count += 1
         completed_record_ids.append(record.id)
         _release_lot_enrichment_claim(record)
+        await _commit_if_supported(session)
         if item_pause_seconds > 0:
             await asyncio.sleep(item_pause_seconds)
 
@@ -482,6 +488,12 @@ async def execute_lot_enrichment_candidates(
         candidate_record_ids=candidate_record_ids,
         completed_record_ids=completed_record_ids,
     )
+
+
+async def _commit_if_supported(session: AsyncSession) -> None:
+    commit = getattr(session, "commit", None)
+    if callable(commit):
+        await commit()
 
 
 def _is_enrichment_candidate(record: AuctionLotRecord, *, current_time: datetime | None = None) -> bool:

@@ -231,23 +231,6 @@ services:
     networks:
       - net
 
-  grid-side-effect-worker:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile.prod
-    restart: unless-stopped
-    env_file:
-      - ./backend/.env.prod
-      - ./backend/.env.db.prod
-    command: ["python", "-m", "app.worker.grid_side_effect_worker"]
-    depends_on:
-      db:
-        condition: service_healthy
-      migrations:
-        condition: service_completed_successfully
-    networks:
-      - net
-
   zakupki-fetcher:
     profiles:
       - zakupki-fetch

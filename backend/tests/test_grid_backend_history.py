@@ -112,7 +112,6 @@ class GridBackendHistoryTests(unittest.IsolatedAsyncioTestCase):
             patch("app.services.grid_backend_history.ProcurementGridHistoryService") as service_type,
             patch("app.services.grid_backend_history._operation_changed_fields", new_callable=AsyncMock) as fields,
             patch("app.services.grid_backend_history._persist_history_side_effects", new_callable=AsyncMock) as side_effects,
-            patch("app.services.grid_backend_history.enqueue_grid_side_effect_tasks", new_callable=AsyncMock) as enqueue_side_effects,
         ):
             service = service_type.return_value
             service.apply_loaded_operation = AsyncMock(return_value=SimpleNamespace(revision="9", rows=[record]))
@@ -129,10 +128,9 @@ class GridBackendHistoryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.dataset_version, 9)
         self.assertEqual(session.flush_count, 1)
-        self.assertEqual(session.refreshed, [record])
+        self.assertEqual(session.refreshed, [])
         self.assertEqual(response.updated_rows[0].id, "zakupki:123")
-        side_effects.assert_awaited_once()
-        enqueue_side_effects.assert_awaited_once()
+        side_effects.assert_not_awaited()
         changes = [item for item in session.added if isinstance(item, GridChangeEventModel)]
         self.assertEqual(len(changes), 1)
         self.assertEqual(changes[0].table_id, PROCUREMENT_LOTS_TABLE_ID)

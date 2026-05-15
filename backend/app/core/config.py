@@ -106,12 +106,6 @@ class Settings(BaseSettings):
     telegram_sender_request_timeout_seconds: float = 10.0
     grid_change_feed_limit: int = 1000
     grid_change_feed_max_limit: int = 1000
-    grid_side_effect_worker_enabled: bool = True
-    grid_side_effect_worker_batch_size: int = 50
-    grid_side_effect_worker_poll_interval_seconds: int = 5
-    grid_side_effect_worker_claim_ttl_seconds: int = 120
-    grid_side_effect_worker_max_attempts: int = 3
-    grid_side_effect_worker_base_backoff_seconds: int = 60
     zakupki_fetch_gateway_url: str | None = None
     zakupki_fetch_token: str | None = None
     zakupki_fetch_timeout_seconds: float = 30.0

@@ -118,20 +118,6 @@
       }
     },
     {
-      "label": "backend: grid side effect worker",
-      "type": "shell",
-      "command": "uv run python -m app.worker.grid_side_effect_worker",
-      "options": {
-        "cwd": "${workspaceFolder}/backend"
-      },
-      "problemMatcher": [],
-      "presentation": {
-        "group": "backend",
-        "panel": "dedicated",
-        "reveal": "always"
-      }
-    },
-    {
       "label": "backend: procurement sync worker",
       "type": "shell",
       "command": "uv run python -m app.worker.procurement_sync_worker",
@@ -195,8 +181,7 @@
         "backend: procurement sync worker",
         "backend: procurement enrichment worker",
         "backend: procurement actuality worker",
-        "backend: telegram sender worker",
-        "backend: grid side effect worker"
+        "backend: telegram sender worker"
       ],
       "problemMatcher": [],
       "group": {

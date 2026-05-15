@@ -20,10 +20,11 @@ from app.services.auction_grid_state import AUCTION_LOTS_TABLE_ID, DEFAULT_GRID_
 
 
 class AuctionGridEditConflictError(Exception):
-    def __init__(self, *, base_version: int, current_version: int) -> None:
+    def __init__(self, *, base_version: int, current_version: int, reason: str | None = None) -> None:
         self.base_version = base_version
         self.current_version = current_version
-        super().__init__(f"Grid dataset version conflict: baseVersion={base_version}, current={current_version}")
+        self.reason = reason or f"Grid dataset version conflict: baseVersion={base_version}, current={current_version}"
+        super().__init__(self.reason)
 
 
 @dataclass(frozen=True)
@@ -141,6 +142,13 @@ async def _commit_auction_lot_grid_operations(
         if error.code == "stale-revision":
             current_version = await get_dataset_version(session, workspace_id, AUCTION_LOTS_TABLE_ID)
             raise AuctionGridEditConflictError(base_version=base_version, current_version=current_version) from error
+        if error.code == "row-locked":
+            current_version = await get_dataset_version(session, workspace_id, AUCTION_LOTS_TABLE_ID)
+            raise AuctionGridEditConflictError(
+                base_version=base_version,
+                current_version=current_version,
+                reason=error.message or "Grid row is locked by another operation",
+            ) from error
         if error.status_code == 404:
             raise LookupError(error.message) from error
         raise ValueError(error.message) from error

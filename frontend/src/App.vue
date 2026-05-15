@@ -804,7 +804,6 @@ const LOADING_SKELETON_HEADER_HEIGHT = 34
 const LOADING_SKELETON_ROW_HEIGHT = 26
 const CATALOG_QUERY_PLACEHOLDER_SHOW_DELAY_MS = 180
 const CATALOG_QUERY_PLACEHOLDER_MIN_VISIBLE_MS = 140
-const GRID_API_WRITE_TIMEOUT_MS = 45_000
 const detailPaneWidth = ref(readStoredDetailPaneWidth())
 const gridRef = ref<DataGridExposed<GridLotRow> | null>(null)
 const gridSurfaceRef = ref<HTMLElement | null>(null)
@@ -2401,7 +2400,7 @@ function hasMeaningfulAdvancedExpression(value: unknown): boolean {
 }
 
 function isAbortLikeError(error: unknown) {
-  return error instanceof DOMException && (error.name === 'AbortError' || error.name === 'TimeoutError')
+  return error instanceof DOMException && error.name === 'AbortError'
 }
 
 function isApiRequestStatus(error: unknown, status: number) {
@@ -2426,59 +2425,21 @@ function buildAuctionServerGridFilters(): AuctionServerGridFilters {
 }
 
 async function postAuctionServerGridJson<TResponse>(path: string, payload: unknown, signal?: AbortSignal) {
-  return postGridJsonWithTimeout<TResponse>(path, payload, signal)
+  return fetchJson<TResponse>(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    signal,
+  })
 }
 
 async function postProcurementServerGridJson<TResponse>(path: string, payload: unknown, signal?: AbortSignal) {
-  return postGridJsonWithTimeout<TResponse>(path, payload, signal)
-}
-
-async function postGridJsonWithTimeout<TResponse>(path: string, payload: unknown, signal?: AbortSignal) {
-  const timeout = createGridRequestTimeoutSignal(signal, GRID_API_WRITE_TIMEOUT_MS)
-  try {
-    return await fetchJson<TResponse>(path, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      signal: timeout.signal,
-    })
-  } catch (error) {
-    if (timeout.didTimeout() && isAbortLikeError(error)) {
-      throw new ApiRequestError('Grid request timed out', 408, {
-        detail: 'Grid request timed out',
-        path,
-        timeoutMs: GRID_API_WRITE_TIMEOUT_MS,
-      })
-    }
-    throw error
-  } finally {
-    timeout.cleanup()
-  }
-}
-
-function createGridRequestTimeoutSignal(parentSignal: AbortSignal | undefined, timeoutMs: number) {
-  const controller = new AbortController()
-  let timedOut = false
-  const abortFromParent = () => {
-    controller.abort(parentSignal?.reason)
-  }
-  if (parentSignal?.aborted) {
-    abortFromParent()
-  } else {
-    parentSignal?.addEventListener('abort', abortFromParent, { once: true })
-  }
-  const timeoutId = window.setTimeout(() => {
-    timedOut = true
-    controller.abort(new DOMException('Grid request timed out', 'TimeoutError'))
-  }, Math.max(1, timeoutMs))
-  return {
-    signal: controller.signal,
-    didTimeout: () => timedOut,
-    cleanup() {
-      window.clearTimeout(timeoutId)
-      parentSignal?.removeEventListener('abort', abortFromParent)
-    },
-  }
+  return fetchJson<TResponse>(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    signal,
+  })
 }
 
 async function getProcurementServerJson<TResponse>(path: string, signal?: AbortSignal) {

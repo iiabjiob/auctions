@@ -101,7 +101,7 @@ class GridBackendEditsTests(unittest.IsolatedAsyncioTestCase):
             payload={"edits": [{"rowId": "zakupki:123"}]},
         )
 
-        self.assertEqual(request.base_revision, "5")
+        self.assertIsNone(request.base_revision)
         self.assertEqual(request.base_version, 5)
         self.assertEqual(request.user_id, "u1")
         self.assertEqual(request.edits[0].row_id, "zakupki:123")
@@ -228,7 +228,7 @@ class GridBackendEditsTests(unittest.IsolatedAsyncioTestCase):
             payload={"edits": [{"rowId": "tbankrot:auction-1:lot-1"}]},
         )
 
-        self.assertEqual(request.base_revision, "7")
+        self.assertIsNone(request.base_revision)
         self.assertEqual(request.base_version, 7)
         self.assertEqual(request.user_id, "u1")
         self.assertEqual(request.edits[0].column_id, "marketValue")

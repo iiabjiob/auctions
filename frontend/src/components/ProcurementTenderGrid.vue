@@ -218,11 +218,15 @@ type ProcurementRowModel = DataSourceBackedRowModel<ProcurementGridRow> & {
 type ProcurementServerGridDataSource = ProcurementServerDatasource<ProcurementApiRow, ProcurementGridRow>
 
 const GRID_COLUMN_WIDTHS_STORAGE_KEY = 'procurement-grid-column-widths-v1'
+const DETAIL_PANE_WIDTH_STORAGE_KEY = 'procurement-detail-pane-width'
 const PROCUREMENT_LOTS_TABLE_ID = 'procurement-lots'
 const SERVER_ROW_MODEL_INITIAL_FETCH_SIZE = 160
 const ROW_CACHE_LIMIT = 8_000
 const GRID_CHANGES_POLL_INTERVAL_MS = 5_000
 const GRID_CHANGES_REFRESH_DEBOUNCE_MS = 650
+const DETAIL_PANE_DEFAULT_WIDTH = 560
+const DETAIL_PANE_MIN_WIDTH = 420
+const DETAIL_PANE_MAX_WIDTH = 920
 
 const gridRef = ref<DataGridExposed<ProcurementGridRow> | null>(null)
 const workspaceRef = ref<HTMLElement | null>(null)
@@ -237,6 +241,7 @@ const errorMessage = ref('')
 const total = ref(0)
 const summary = ref<ProcurementServerGridSummary>(emptySummary(0))
 const gridColumnWidths = ref<Record<string, number>>(readStoredColumnWidths())
+const detailPaneWidth = ref(readStoredDetailPaneWidth())
 const selectedRow = ref<ProcurementGridRow | null>(null)
 const selectedWorkspace = ref<ProcurementWorkspaceResponse | null>(null)
 const workspaceLoading = ref(false)
@@ -260,6 +265,12 @@ let gridChangesPolling = false
 let gridChangesRefreshInFlight = false
 let pipelineHealthAbortController: AbortController | null = null
 let workspaceAbortController: AbortController | null = null
+let resizeStartX = 0
+let resizeStartWidth = 0
+
+const procurementContentClass = computed(() => ({
+  'procurement-content--with-detail': Boolean(selectedRow.value),
+}))
 
 const gridStatus = computed(() => {
   if (errorMessage.value) return errorMessage.value
@@ -342,22 +353,29 @@ const columns = defineDataGridColumns<ProcurementGridRow>()([
   {
     key: 'workspace',
     label: '',
-    initialState: { width: 78 },
+    initialState: { width: 94 },
     capabilities: { sortable: false, filterable: false },
-    cellRenderer: ({ row }) =>
+    cellInteraction: {
+      click: true,
+      keyboard: ['enter', 'space'],
+      role: 'button',
+      label: ({ row }) => (row ? `Открыть карточку ${row.registryNumber}` : 'Открыть карточку'),
+      onInvoke: ({ row }) => {
+        if (row) void openWorkspace(row)
+      },
+    },
+    cellRenderer: ({ row, interactive }) =>
       row
         ? h(
-            'button',
+            'span',
             {
-              class: 'procurement-detail-button',
-              type: 'button',
-              title: 'Открыть карточку',
+              class: ['procurement-detail-trigger', { 'procurement-detail-trigger--disabled': interactive?.enabled === false }],
               onClick: (event: MouseEvent) => {
                 event.stopPropagation()
-                void openWorkspace(row)
+                interactive?.activate('click')
               },
             },
-            'Открыть',
+            '',
           )
         : '',
   },
@@ -670,6 +688,45 @@ function closeWorkspace() {
   workspaceRefreshing.value = false
 }
 
+function clampDetailPaneWidth(value: number) {
+  return Math.min(DETAIL_PANE_MAX_WIDTH, Math.max(DETAIL_PANE_MIN_WIDTH, Math.round(value)))
+}
+
+function readStoredDetailPaneWidth() {
+  try {
+    const raw = window.localStorage.getItem(DETAIL_PANE_WIDTH_STORAGE_KEY)
+    if (!raw) return DETAIL_PANE_DEFAULT_WIDTH
+    const parsed = Number(raw)
+    return Number.isFinite(parsed) ? clampDetailPaneWidth(parsed) : DETAIL_PANE_DEFAULT_WIDTH
+  } catch {
+    return DETAIL_PANE_DEFAULT_WIDTH
+  }
+}
+
+function saveDetailPaneWidth() {
+  window.localStorage.setItem(DETAIL_PANE_WIDTH_STORAGE_KEY, String(detailPaneWidth.value))
+}
+
+function startDetailResize(event: PointerEvent) {
+  resizeStartX = event.clientX
+  resizeStartWidth = detailPaneWidth.value
+  window.addEventListener('pointermove', handleDetailResize)
+  window.addEventListener('pointerup', stopDetailResize)
+  window.addEventListener('pointercancel', stopDetailResize)
+}
+
+function handleDetailResize(event: PointerEvent) {
+  const nextWidth = resizeStartWidth + resizeStartX - event.clientX
+  detailPaneWidth.value = clampDetailPaneWidth(nextWidth)
+}
+
+function stopDetailResize() {
+  window.removeEventListener('pointermove', handleDetailResize)
+  window.removeEventListener('pointerup', stopDetailResize)
+  window.removeEventListener('pointercancel', stopDetailResize)
+  saveDetailPaneWidth()
+}
+
 async function loadPipelineHealth() {
   pipelineHealthAbortController?.abort()
   const controller = new AbortController()
@@ -861,6 +918,7 @@ onUnmounted(() => {
   stopGridChangePolling()
   pipelineHealthAbortController?.abort()
   pipelineHealthAbortController = null
+  stopDetailResize()
   rowModel.value?.dispose()
   rowModel.value = null
 })
@@ -899,7 +957,7 @@ onUnmounted(() => {
 
     <div v-if="errorMessage" class="error-banner">{{ errorMessage }}</div>
 
-    <section class="procurement-content">
+    <section class="procurement-content" :class="procurementContentClass" :style="selectedRow ? { '--detail-pane-width': `${detailPaneWidth}px` } : undefined">
       <section class="grid-surface procurement-grid-surface" aria-label="Таблица закупок">
         <DataGrid
           v-if="rowModel"
@@ -928,57 +986,65 @@ onUnmounted(() => {
       </section>
 
       <aside v-if="selectedRow" class="procurement-detail-pane" aria-label="Карточка закупки">
-        <div class="procurement-detail-pane__header">
+        <button
+          class="side-pane-resizer"
+          type="button"
+          aria-label="Изменить ширину панели"
+          @pointerdown="startDetailResize"
+        ></button>
+        <header class="side-pane__header procurement-detail-pane__header">
           <div>
             <span>{{ selectedRow.registryNumber }}</span>
             <strong>{{ selectedRow.title || 'Без названия' }}</strong>
           </div>
-          <button type="button" class="procurement-detail-pane__close" aria-label="Закрыть" @click="closeWorkspace">×</button>
+          <button type="button" class="icon-button" aria-label="Закрыть" @click="closeWorkspace">×</button>
+        </header>
+
+        <div class="detail-pane__body procurement-detail-pane__body">
+          <div v-if="workspaceError" class="error-banner">{{ workspaceError }}</div>
+          <div v-if="workspaceLoading" class="procurement-detail-pane__muted">Загружаем карточку</div>
+
+          <template v-if="selectedWorkspace">
+            <dl class="procurement-detail-list">
+              <div><dt>Статус</dt><dd>{{ selectedWorkspace.record.status || '—' }}</dd></div>
+              <div><dt>Заказчик</dt><dd>{{ selectedWorkspace.record.customer_name || '—' }}</dd></div>
+              <div><dt>ИНН</dt><dd>{{ selectedWorkspace.record.customer_inn || '—' }}</dd></div>
+              <div><dt>НМЦК</dt><dd>{{ formatMoney(selectedWorkspace.record.initial_price_value) }}</dd></div>
+              <div><dt>Заявки до</dt><dd>{{ formatDateTime(selectedWorkspace.record.application_deadline_at) }}</dd></div>
+              <div><dt>Детали</dt><dd>{{ formatDateTime(selectedWorkspace.detail_cached_at) }}</dd></div>
+              <div><dt>Наблюдений</dt><dd>{{ selectedWorkspace.changes.observations_count }} / {{ selectedWorkspace.changes.detail_observations_count }}</dd></div>
+              <div><dt>Enrichment</dt><dd>{{ selectedWorkspace.current_enrichment_state.requested_reason || selectedWorkspace.current_enrichment_state.last_error || '—' }}</dd></div>
+            </dl>
+
+            <section class="procurement-detail-section">
+              <h2>Документы</h2>
+              <ul v-if="selectedWorkspace.documents.length">
+                <li v-for="document in selectedWorkspace.documents.slice(0, 12)" :key="document.url || document.title || ''">
+                  <a v-if="document.url" :href="document.url" target="_blank" rel="noreferrer">{{ document.title || document.url }}</a>
+                  <span v-else>{{ document.title }}</span>
+                </li>
+              </ul>
+              <p v-else>Нет документов</p>
+            </section>
+
+            <section class="procurement-detail-section">
+              <h2>Поля ЕИС</h2>
+              <dl class="procurement-detail-list">
+                <div v-for="field in selectedWorkspace.raw_fields.slice(0, 16)" :key="field.name">
+                  <dt>{{ field.name }}</dt>
+                  <dd>{{ field.value }}</dd>
+                </div>
+              </dl>
+            </section>
+          </template>
         </div>
 
-        <div class="procurement-detail-pane__actions">
-          <button type="button" class="procurement-detail-button" :disabled="workspaceRefreshing" @click="refreshWorkspaceLive">
+        <footer class="side-pane__footer procurement-detail-pane__footer">
+          <button type="button" class="secondary-button" :disabled="workspaceRefreshing" @click="refreshWorkspaceLive">
             {{ workspaceRefreshing ? 'Обновляем' : 'Live refresh' }}
           </button>
-          <a v-if="selectedRow.noticeUrl" :href="selectedRow.noticeUrl" target="_blank" rel="noreferrer">ЕИС</a>
-        </div>
-
-        <div v-if="workspaceError" class="error-banner">{{ workspaceError }}</div>
-        <div v-if="workspaceLoading" class="procurement-detail-pane__muted">Загружаем карточку</div>
-
-        <template v-if="selectedWorkspace">
-          <dl class="procurement-detail-list">
-            <div><dt>Статус</dt><dd>{{ selectedWorkspace.record.status || '—' }}</dd></div>
-            <div><dt>Заказчик</dt><dd>{{ selectedWorkspace.record.customer_name || '—' }}</dd></div>
-            <div><dt>ИНН</dt><dd>{{ selectedWorkspace.record.customer_inn || '—' }}</dd></div>
-            <div><dt>НМЦК</dt><dd>{{ formatMoney(selectedWorkspace.record.initial_price_value) }}</dd></div>
-            <div><dt>Заявки до</dt><dd>{{ formatDateTime(selectedWorkspace.record.application_deadline_at) }}</dd></div>
-            <div><dt>Детали</dt><dd>{{ formatDateTime(selectedWorkspace.detail_cached_at) }}</dd></div>
-            <div><dt>Наблюдений</dt><dd>{{ selectedWorkspace.changes.observations_count }} / {{ selectedWorkspace.changes.detail_observations_count }}</dd></div>
-            <div><dt>Enrichment</dt><dd>{{ selectedWorkspace.current_enrichment_state.requested_reason || selectedWorkspace.current_enrichment_state.last_error || '—' }}</dd></div>
-          </dl>
-
-          <section class="procurement-detail-section">
-            <h2>Документы</h2>
-            <ul v-if="selectedWorkspace.documents.length">
-              <li v-for="document in selectedWorkspace.documents.slice(0, 12)" :key="document.url || document.title || ''">
-                <a v-if="document.url" :href="document.url" target="_blank" rel="noreferrer">{{ document.title || document.url }}</a>
-                <span v-else>{{ document.title }}</span>
-              </li>
-            </ul>
-            <p v-else>Нет документов</p>
-          </section>
-
-          <section class="procurement-detail-section">
-            <h2>Поля ЕИС</h2>
-            <dl class="procurement-detail-list">
-              <div v-for="field in selectedWorkspace.raw_fields.slice(0, 16)" :key="field.name">
-                <dt>{{ field.name }}</dt>
-                <dd>{{ field.value }}</dd>
-              </div>
-            </dl>
-          </section>
-        </template>
+          <a v-if="selectedRow.noticeUrl" class="primary-button" :href="selectedRow.noticeUrl" target="_blank" rel="noreferrer">ЕИС</a>
+        </footer>
       </aside>
     </section>
   </section>

@@ -101,6 +101,7 @@ class ProcurementLotsGridCellEdit(BaseModel):
     row_id: str = Field(alias="rowId")
     column_id: str = Field(alias="columnId")
     value: Any = None
+    previous_value: Any = Field(default=None, alias="previousValue")
 
 
 class ProcurementLotsGridEditRequest(BaseModel):

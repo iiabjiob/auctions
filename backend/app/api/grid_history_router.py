@@ -7,10 +7,12 @@ from app.api.deps import get_current_user
 from app.infrastructure.db.database import get_db, get_read_db
 from app.models import UserModel
 from app.schemas.grid_history import GridHistoryMutationRequest, GridHistoryMutationResponse, GridHistoryStatusResponse
-from app.services.auction_grid_state import DEFAULT_GRID_WORKSPACE_ID
+from app.services.auction_grid_state import AUCTION_LOTS_TABLE_ID, DEFAULT_GRID_WORKSPACE_ID
 from app.services.grid_backend_history import get_grid_history_status as get_grid_history_status_service
 from app.services.grid_backend_history import redo_grid_history as redo_grid_history_service
 from app.services.grid_backend_history import undo_grid_history as undo_grid_history_service
+from app.services.grid_state import get_dataset_version
+from app.services.procurement_grid_state import PROCUREMENT_LOTS_TABLE_ID
 
 
 router = APIRouter(prefix="/api/history", tags=["Grid History"])
@@ -38,13 +40,20 @@ async def undo_grid_history(
         return response
     except ValueError as error:
         await session.rollback()
-        raise HTTPException(status_code=400, detail=str(error)) from error
+        version = await _history_dataset_version(
+            session,
+            workspace_id=workspace_id or DEFAULT_GRID_WORKSPACE_ID,
+            table_id=payload.table_id,
+        )
+        return _rejected_history_stack_response(payload, action="undo", dataset_version=version, reason=str(error))
     except LookupError as error:
         await session.rollback()
-        raise HTTPException(status_code=404, detail=str(error)) from error
-    except TimeoutError as error:
-        await session.rollback()
-        raise HTTPException(status_code=504, detail="Grid mutation timed out") from error
+        version = await _history_dataset_version(
+            session,
+            workspace_id=workspace_id or DEFAULT_GRID_WORKSPACE_ID,
+            table_id=payload.table_id,
+        )
+        return _rejected_history_stack_response(payload, action="undo", dataset_version=version, reason=str(error))
     except Exception:
         await session.rollback()
         raise
@@ -72,13 +81,20 @@ async def redo_grid_history(
         return response
     except ValueError as error:
         await session.rollback()
-        raise HTTPException(status_code=400, detail=str(error)) from error
+        version = await _history_dataset_version(
+            session,
+            workspace_id=workspace_id or DEFAULT_GRID_WORKSPACE_ID,
+            table_id=payload.table_id,
+        )
+        return _rejected_history_stack_response(payload, action="redo", dataset_version=version, reason=str(error))
     except LookupError as error:
         await session.rollback()
-        raise HTTPException(status_code=404, detail=str(error)) from error
-    except TimeoutError as error:
-        await session.rollback()
-        raise HTTPException(status_code=504, detail="Grid mutation timed out") from error
+        version = await _history_dataset_version(
+            session,
+            workspace_id=workspace_id or DEFAULT_GRID_WORKSPACE_ID,
+            table_id=payload.table_id,
+        )
+        return _rejected_history_stack_response(payload, action="redo", dataset_version=version, reason=str(error))
     except Exception:
         await session.rollback()
         raise
@@ -128,3 +144,31 @@ def _resolve_history_user_id(request_user_id: str | None, current_user: UserMode
     if request_user_id is not None and request_user_id.strip() and request_user_id.strip() != current_user.id:
         raise HTTPException(status_code=403, detail="Cannot access another user's grid history")
     return current_user.id
+
+
+async def _history_dataset_version(session: AsyncSession, *, workspace_id: str, table_id: str) -> int:
+    if table_id not in {AUCTION_LOTS_TABLE_ID, PROCUREMENT_LOTS_TABLE_ID}:
+        return 0
+    return await get_dataset_version(session, workspace_id, table_id)
+
+
+def _rejected_history_stack_response(
+    payload: GridHistoryMutationRequest,
+    *,
+    action: str,
+    dataset_version: int,
+    reason: str,
+) -> GridHistoryMutationResponse:
+    return GridHistoryMutationResponse(
+        operationId=None,
+        action=action,
+        datasetVersion=dataset_version,
+        revision=str(dataset_version),
+        updatedRows=[],
+        rows=[],
+        committed=[],
+        rejected=[{"rowId": payload.table_id, "reason": reason}],
+        affectedRows=0,
+        affectedCells=0,
+        invalidation={"type": "dataset", "reason": f"history_{action}_rejected"},
+    )

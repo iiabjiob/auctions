@@ -27,13 +27,13 @@ from app.services.auction_scoring import recalculate_record_rating, sync_record_
 from app.services.auction_search import update_record_search_text
 from app.services.auction_workspace import ensure_work_item
 from app.services.grid_state import get_dataset_version
+from app.services.grid_backend_transactions import apply_grid_mutation_lock_timeout
 from app.services.grid_table_registry import (
     auction_field_for_column,
     get_grid_table_definition,
     is_supported_grid_table,
     procurement_field_for_column,
 )
-from app.services.grid_side_effects import enqueue_grid_side_effect_tasks
 from app.services.procurement_calculator import (
     calculator_field_for_column,
     coerce_calculator_input_value,
@@ -268,12 +268,13 @@ async def _apply_loaded_package_history_operation(
 
     dataset_version = int(result.revision)
     changed_fields_by_row = await _operation_changed_fields(session, operation_id, workspace_id=workspace_id, table_id=table_id)
-    updated_rows: list[AuctionLotsGridPullRow | ProcurementLotsGridPullRow] = []
-    for row in result.rows:
-        await _refresh_history_result_row(session, row)
-        row_id = _history_result_row_id(row, table_id=table_id)
-        updated_rows.append(_history_result_pull_row(row, table_id=table_id))
-        await _persist_history_side_effects(session, row, action=action, operation=operation, dataset_version=dataset_version)
+    updated_row_ids = [str(row_id) for row_id in getattr(result, "committed_row_ids", [])]
+    if not updated_row_ids:
+        updated_row_ids = [_history_result_row_id(row, table_id=table_id) for row in result.rows]
+    seen_row_ids: set[str] = set()
+    updated_row_ids = [row_id for row_id in updated_row_ids if not (row_id in seen_row_ids or seen_row_ids.add(row_id))]
+    updated_rows = [_history_result_pull_row(row, table_id=table_id) for row in result.rows]
+    for row_id in updated_row_ids:
         session.add(
             GridChangeEventModel(
                 workspace_id=workspace_id,
@@ -296,15 +297,6 @@ async def _apply_loaded_package_history_operation(
         table_id=table_id,
         user_id=user_id,
         session_id=session_id,
-    )
-    updated_row_ids = [row.id for row in updated_rows]
-    await enqueue_grid_side_effect_tasks(
-        session,
-        operation_id=operation_id,
-        workspace_id=workspace_id,
-        table_id=table_id,
-        row_ids=updated_row_ids,
-        trigger_type=action,
     )
     changed_cell_count = sum(len(fields) for fields in changed_fields_by_row.values())
     return GridHistoryMutationResponse(
@@ -473,6 +465,9 @@ class AuctionGridHistoryRow:
     work_item: AuctionLotWorkItem
     detail_cache: AuctionLotDetailCache | None
     runtime_config: Any
+    row_id: str | None = None
+    row_index: int = 0
+    grid_revision: str | None = None
 
 
 class ProcurementGridHistoryService(GridHistoryServiceBase):
@@ -495,6 +490,7 @@ class ProcurementGridHistoryService(GridHistoryServiceBase):
             return None
         statement = select(GridOperationModel).where(GridOperationModel.id == operation_uuid)
         if with_for_update:
+            await apply_grid_mutation_lock_timeout(session)
             statement = statement.with_for_update()
         return await session.scalar(statement)
 
@@ -555,6 +551,8 @@ class ProcurementGridHistoryService(GridHistoryServiceBase):
         force_unscoped: bool = False,
     ) -> dict[str, ProcurementLotRecord]:
         del workspace_id, table_id, force_unscoped
+        if with_for_update:
+            await apply_grid_mutation_lock_timeout(session)
         rows: dict[str, ProcurementLotRecord] = {}
         for row_id in row_ids:
             source_code, external_id = _parse_row_id(row_id)
@@ -566,7 +564,10 @@ class ProcurementGridHistoryService(GridHistoryServiceBase):
                 statement = statement.with_for_update()
             record = await session.scalar(statement)
             if record is not None:
-                rows[procurement_lot_grid_row_id(record)] = record
+                stable_row_id = procurement_lot_grid_row_id(record)
+                record._grid_row_id = stable_row_id
+                record._grid_row_index = int(record.id or 0)
+                rows[stable_row_id] = record
         return rows
 
     def event_row_id(self, event: GridCellEventModel) -> str:
@@ -605,17 +606,26 @@ class ProcurementGridHistoryService(GridHistoryServiceBase):
 
     def set_row_updated_at(self, row: ProcurementLotRecord, changed_at: datetime) -> None:
         row.updated_at = changed_at
+        row._grid_revision = changed_at.isoformat()
 
     def get_row_id(self, row: ProcurementLotRecord) -> str:
+        grid_row_id = getattr(row, "_grid_row_id", None)
+        if isinstance(grid_row_id, str) and grid_row_id:
+            return grid_row_id
         return procurement_lot_grid_row_id(row)
 
     def get_row_index(self, row: ProcurementLotRecord) -> int:
-        return int(row.id or 0)
+        grid_row_index = getattr(row, "_grid_row_index", None)
+        if isinstance(grid_row_index, int):
+            return grid_row_index
+        return 0
 
     def get_row_revision(self, row: ProcurementLotRecord) -> str:
-        if row.updated_at is None:
-            return str(row.id or "")
-        return row.updated_at.isoformat()
+        grid_revision = getattr(row, "_grid_revision", None)
+        if isinstance(grid_revision, str) and grid_revision:
+            return grid_revision
+        grid_row_id = getattr(row, "_grid_row_id", None)
+        return str(grid_row_id or "")
 
     def normalize_edit_value(self, column_id: str, value: Any) -> Any:
         calculator_field = calculator_field_for_column(column_id)
@@ -648,6 +658,7 @@ class AuctionGridHistoryService(GridHistoryServiceBase):
             return None
         statement = select(GridOperationModel).where(GridOperationModel.id == operation_uuid)
         if with_for_update:
+            await apply_grid_mutation_lock_timeout(session)
             statement = statement.with_for_update()
         return await session.scalar(statement)
 
@@ -708,6 +719,8 @@ class AuctionGridHistoryService(GridHistoryServiceBase):
         force_unscoped: bool = False,
     ) -> dict[str, AuctionGridHistoryRow]:
         del workspace_id, table_id, force_unscoped
+        if with_for_update:
+            await apply_grid_mutation_lock_timeout(session)
         runtime_config = await auction_analysis_config_service.get_runtime_config(session)
         rows: dict[str, AuctionGridHistoryRow] = {}
         for row_id in row_ids:
@@ -727,11 +740,14 @@ class AuctionGridHistoryService(GridHistoryServiceBase):
             )
             if detail_cache is not None:
                 sync_record_from_detail_cache(record, detail_cache)
-            rows[_auction_row_id(record)] = AuctionGridHistoryRow(
+            stable_row_id = _auction_row_id(record)
+            rows[stable_row_id] = AuctionGridHistoryRow(
                 record=record,
                 work_item=await ensure_work_item(session, record),
                 detail_cache=detail_cache,
                 runtime_config=runtime_config,
+                row_id=stable_row_id,
+                row_index=int(record.id or 0),
             )
         return rows
 
@@ -768,17 +784,22 @@ class AuctionGridHistoryService(GridHistoryServiceBase):
     def set_row_updated_at(self, row: AuctionGridHistoryRow, changed_at: datetime) -> None:
         row.record.updated_at = changed_at
         row.work_item.updated_at = changed_at
+        row.grid_revision = changed_at.isoformat()
 
     def get_row_id(self, row: AuctionGridHistoryRow) -> str:
+        if row.row_id:
+            return row.row_id
         return _auction_row_id(row.record)
 
     def get_row_index(self, row: AuctionGridHistoryRow) -> int:
-        return int(row.record.id or 0)
+        if row.row_index:
+            return row.row_index
+        return 0
 
     def get_row_revision(self, row: AuctionGridHistoryRow) -> str:
-        if row.record.updated_at is None:
-            return str(row.record.id or "")
-        return row.record.updated_at.isoformat()
+        if row.grid_revision:
+            return row.grid_revision
+        return row.row_id or ""
 
     def normalize_edit_value(self, column_id: str, value: Any) -> Any:
         try:

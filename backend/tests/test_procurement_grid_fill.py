@@ -5,8 +5,6 @@ from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from fastapi import HTTPException
-
 from app.api.procurement_lots_grid_router import (
     commit_procurement_lots_fill,
     commit_procurement_lots_fill_commit,
@@ -118,16 +116,17 @@ class ProcurementGridFillTests(unittest.IsolatedAsyncioTestCase):
             "app.api.procurement_lots_grid_router.commit_procurement_lot_grid_fill",
             AsyncMock(side_effect=ProcurementGridEditConflictError(base_version=4, current_version=5)),
         ):
-            with self.assertRaises(HTTPException) as context:
-                await commit_procurement_lots_fill(
-                    request,
-                    workspace_id=None,
-                    grid_session_id=None,
-                    session=session,
-                    current_user=SimpleNamespace(id="user-1"),
-                )
+            response = await commit_procurement_lots_fill(
+                request,
+                workspace_id=None,
+                grid_session_id=None,
+                session=session,
+                current_user=SimpleNamespace(id="user-1"),
+            )
 
-        self.assertEqual(context.exception.status_code, 409)
+        self.assertEqual(response.dataset_version, 5)
+        self.assertEqual(response.committed, [])
+        self.assertEqual(response.rejected[0]["columnId"], "quantity")
         self.assertEqual(session.rollback_count, 1)
         self.assertEqual(session.commit_count, 0)
 

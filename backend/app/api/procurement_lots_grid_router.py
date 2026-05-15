@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import asyncio
-
 from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,11 +20,12 @@ from app.services.procurement_grid import get_procurement_lots_grid_histogram, p
 from app.services.procurement_grid_edits import ProcurementGridEditConflictError, commit_procurement_lot_grid_edits
 from app.services.procurement_grid_fill import commit_procurement_lot_grid_fill, commit_procurement_lot_grid_fill_commit
 from app.services.procurement_grid_state import DEFAULT_GRID_WORKSPACE_ID
+from app.services.procurement_grid_state import PROCUREMENT_LOTS_TABLE_ID
 from app.services.grid_backend_history import redo_grid_operation, undo_grid_operation
+from app.services.grid_state import get_dataset_version
 
 
 router = APIRouter(prefix="/api/procurement-lots", tags=["Procurement Lots Grid"])
-GRID_MUTATION_ROUTE_TIMEOUT_SECONDS = 40.0
 
 
 @router.post("/pull", response_model=ProcurementLotsGridPullResponse)
@@ -69,33 +68,24 @@ async def commit_procurement_lots_edits(
     current_user: UserModel = Depends(get_current_user),
 ) -> ProcurementLotsGridEditResponse:
     try:
-        response = await asyncio.wait_for(
-            commit_procurement_lot_grid_edits(
-                session,
-                payload,
-                workspace_id=workspace_id or DEFAULT_GRID_WORKSPACE_ID,
-                user_id=current_user.id,
-                session_id=grid_session_id,
-            ),
-            timeout=GRID_MUTATION_ROUTE_TIMEOUT_SECONDS,
+        response = await commit_procurement_lot_grid_edits(
+            session,
+            payload,
+            workspace_id=workspace_id or DEFAULT_GRID_WORKSPACE_ID,
+            user_id=current_user.id,
+            session_id=grid_session_id,
         )
         await session.rollback()
         return response
     except ProcurementGridEditConflictError as error:
         await session.rollback()
-        raise HTTPException(
-            status_code=409,
-            detail={"message": str(error), "currentDatasetVersion": error.current_version},
-        ) from error
+        return _procurement_rejected_edit_response(payload, dataset_version=error.current_version, reason=str(error))
     except ValueError as error:
         await session.rollback()
         raise HTTPException(status_code=400, detail=str(error)) from error
     except LookupError as error:
         await session.rollback()
         raise HTTPException(status_code=404, detail=str(error)) from error
-    except TimeoutError as error:
-        await session.rollback()
-        raise HTTPException(status_code=504, detail="Grid mutation timed out") from error
     except Exception:
         await session.rollback()
         raise
@@ -110,33 +100,31 @@ async def commit_procurement_lots_fill(
     current_user: UserModel = Depends(get_current_user),
 ) -> ProcurementLotsGridEditResponse:
     try:
-        response = await asyncio.wait_for(
-            commit_procurement_lot_grid_fill(
-                session,
-                payload,
-                workspace_id=workspace_id or DEFAULT_GRID_WORKSPACE_ID,
-                user_id=current_user.id,
-                session_id=grid_session_id,
-            ),
-            timeout=GRID_MUTATION_ROUTE_TIMEOUT_SECONDS,
+        response = await commit_procurement_lot_grid_fill(
+            session,
+            payload,
+            workspace_id=workspace_id or DEFAULT_GRID_WORKSPACE_ID,
+            user_id=current_user.id,
+            session_id=grid_session_id,
         )
         await session.commit()
         return response
     except ProcurementGridEditConflictError as error:
         await session.rollback()
-        raise HTTPException(
-            status_code=409,
-            detail={"message": str(error), "currentDatasetVersion": error.current_version},
-        ) from error
+        return _procurement_rejected_edit_response(
+            ProcurementLotsGridEditRequest(
+                baseVersion=payload.base_version,
+                edits=[{"rowId": "", "columnId": payload.target.column_id, "value": None}],
+            ),
+            dataset_version=error.current_version,
+            reason=str(error),
+        )
     except ValueError as error:
         await session.rollback()
         raise HTTPException(status_code=400, detail=str(error)) from error
     except LookupError as error:
         await session.rollback()
         raise HTTPException(status_code=404, detail=str(error)) from error
-    except TimeoutError as error:
-        await session.rollback()
-        raise HTTPException(status_code=504, detail="Grid mutation timed out") from error
     except Exception:
         await session.rollback()
         raise
@@ -151,15 +139,12 @@ async def commit_procurement_lots_fill_commit(
     current_user: UserModel = Depends(get_current_user),
 ) -> dict[str, object]:
     try:
-        response = await asyncio.wait_for(
-            commit_procurement_lot_grid_fill_commit(
-                session,
-                payload,
-                workspace_id=workspace_id or payload.workspace_id or DEFAULT_GRID_WORKSPACE_ID,
-                user_id=_resolve_grid_user_id(payload.user_id, current_user),
-                session_id=grid_session_id or payload.session_id,
-            ),
-            timeout=GRID_MUTATION_ROUTE_TIMEOUT_SECONDS,
+        response = await commit_procurement_lot_grid_fill_commit(
+            session,
+            payload,
+            workspace_id=workspace_id or payload.workspace_id or DEFAULT_GRID_WORKSPACE_ID,
+            user_id=_resolve_grid_user_id(payload.user_id, current_user),
+            session_id=grid_session_id or payload.session_id,
         )
         await session.commit()
         row_ids = [row.id for row in response.updated_rows]
@@ -176,19 +161,15 @@ async def commit_procurement_lots_fill_commit(
         }
     except ProcurementGridEditConflictError as error:
         await session.rollback()
-        raise HTTPException(
-            status_code=409,
-            detail={"message": str(error), "currentDatasetVersion": error.current_version},
-        ) from error
+        return _procurement_rejected_fill_response(payload, dataset_version=error.current_version, reason=str(error))
     except ValueError as error:
         await session.rollback()
-        raise HTTPException(status_code=400, detail=str(error)) from error
+        version = await get_dataset_version(session, workspace_id or DEFAULT_GRID_WORKSPACE_ID, PROCUREMENT_LOTS_TABLE_ID)
+        return _procurement_rejected_history_response(operation_id, action="undo", dataset_version=version, reason=str(error))
     except LookupError as error:
         await session.rollback()
-        raise HTTPException(status_code=404, detail=str(error)) from error
-    except TimeoutError as error:
-        await session.rollback()
-        raise HTTPException(status_code=504, detail="Grid mutation timed out") from error
+        version = await get_dataset_version(session, workspace_id or DEFAULT_GRID_WORKSPACE_ID, PROCUREMENT_LOTS_TABLE_ID)
+        return _procurement_rejected_history_response(operation_id, action="undo", dataset_version=version, reason=str(error))
     except Exception:
         await session.rollback()
         raise
@@ -218,31 +199,94 @@ async def undo_procurement_lot_grid_operation(
     current_user: UserModel = Depends(get_current_user),
 ):
     try:
-        response = await asyncio.wait_for(
-            undo_grid_operation(
-                session,
-                workspace_id=workspace_id or DEFAULT_GRID_WORKSPACE_ID,
-                table_id="procurement-lots",
-                operation_id=operation_id,
-                user_id=current_user.id,
-                session_id=grid_session_id,
-            ),
-            timeout=GRID_MUTATION_ROUTE_TIMEOUT_SECONDS,
+        response = await undo_grid_operation(
+            session,
+            workspace_id=workspace_id or DEFAULT_GRID_WORKSPACE_ID,
+            table_id="procurement-lots",
+            operation_id=operation_id,
+            user_id=current_user.id,
+            session_id=grid_session_id,
         )
         await session.commit()
         return response
     except ValueError as error:
         await session.rollback()
-        raise HTTPException(status_code=400, detail=str(error)) from error
+        version = await get_dataset_version(session, workspace_id or DEFAULT_GRID_WORKSPACE_ID, PROCUREMENT_LOTS_TABLE_ID)
+        return _procurement_rejected_history_response(operation_id, action="redo", dataset_version=version, reason=str(error))
     except LookupError as error:
         await session.rollback()
-        raise HTTPException(status_code=404, detail=str(error)) from error
-    except TimeoutError as error:
-        await session.rollback()
-        raise HTTPException(status_code=504, detail="Grid mutation timed out") from error
+        version = await get_dataset_version(session, workspace_id or DEFAULT_GRID_WORKSPACE_ID, PROCUREMENT_LOTS_TABLE_ID)
+        return _procurement_rejected_history_response(operation_id, action="redo", dataset_version=version, reason=str(error))
     except Exception:
         await session.rollback()
         raise
+
+
+def _procurement_rejected_edit_response(
+    payload: ProcurementLotsGridEditRequest,
+    *,
+    dataset_version: int,
+    reason: str,
+) -> ProcurementLotsGridEditResponse:
+    return ProcurementLotsGridEditResponse(
+        datasetVersion=dataset_version,
+        updatedRows=[],
+        revision=str(dataset_version),
+        committed=[],
+        rejected=[
+            {"rowId": edit.row_id, "columnId": edit.column_id, "reason": reason}
+            for edit in payload.edits
+        ],
+        invalidation={"type": "dataset", "reason": "edit_rejected"},
+        rows=[],
+    )
+
+
+def _procurement_rejected_fill_response(
+    payload: ProcurementLotsGridFillCommitRequest,
+    *,
+    dataset_version: int,
+    reason: str,
+) -> dict[str, object]:
+    return {
+        "operationId": payload.operation_id,
+        "revision": str(dataset_version),
+        "datasetVersion": dataset_version,
+        "updatedRows": [],
+        "rows": [],
+        "committed": [],
+        "rejected": [
+            {"rowId": row_id, "columnId": column_id, "reason": reason}
+            for row_id in payload.target_row_ids
+            for column_id in payload.fill_columns
+        ],
+        "affectedRowCount": 0,
+        "affectedCellCount": 0,
+        "invalidation": {"type": "dataset", "reason": "fill_rejected"},
+        "warnings": [],
+    }
+
+
+def _procurement_rejected_history_response(
+    operation_id: str,
+    *,
+    action: str,
+    dataset_version: int,
+    reason: str,
+) -> dict[str, object]:
+    return {
+        "operationId": operation_id,
+        "action": action,
+        "revision": str(dataset_version),
+        "datasetVersion": dataset_version,
+        "updatedRows": [],
+        "rows": [],
+        "committed": [],
+        "rejected": [{"rowId": operation_id, "reason": reason}],
+        "affectedRows": 0,
+        "affectedCells": 0,
+        "invalidation": {"type": "dataset", "reason": f"history_{action}_rejected"},
+    }
 
 
 @router.post("/operations/{operation_id}/redo")
@@ -254,16 +298,13 @@ async def redo_procurement_lot_grid_operation(
     current_user: UserModel = Depends(get_current_user),
 ):
     try:
-        response = await asyncio.wait_for(
-            redo_grid_operation(
-                session,
-                workspace_id=workspace_id or DEFAULT_GRID_WORKSPACE_ID,
-                table_id="procurement-lots",
-                operation_id=operation_id,
-                user_id=current_user.id,
-                session_id=grid_session_id,
-            ),
-            timeout=GRID_MUTATION_ROUTE_TIMEOUT_SECONDS,
+        response = await redo_grid_operation(
+            session,
+            workspace_id=workspace_id or DEFAULT_GRID_WORKSPACE_ID,
+            table_id="procurement-lots",
+            operation_id=operation_id,
+            user_id=current_user.id,
+            session_id=grid_session_id,
         )
         await session.commit()
         return response
@@ -273,9 +314,6 @@ async def redo_procurement_lot_grid_operation(
     except LookupError as error:
         await session.rollback()
         raise HTTPException(status_code=404, detail=str(error)) from error
-    except TimeoutError as error:
-        await session.rollback()
-        raise HTTPException(status_code=504, detail="Grid mutation timed out") from error
     except Exception:
         await session.rollback()
         raise

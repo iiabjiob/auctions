@@ -25,7 +25,7 @@ from app.services.auction_scoring import recalculate_record_rating, sync_record_
 from app.services.auction_search import update_record_search_text
 from app.services.auction_workspace import ensure_work_item
 from app.services.grid_backend_history import AuctionGridRevisionService, ProcurementGridRevisionService
-from app.services.grid_side_effects import enqueue_grid_side_effect_tasks
+from app.services.grid_backend_transactions import apply_grid_mutation_lock_timeout
 from app.services.grid_state import clear_redo_grid_operations
 from app.services.grid_table_registry import get_grid_table_definition
 from app.services.procurement_calculator import (
@@ -76,6 +76,9 @@ class AuctionGridEditRow:
     work_item: AuctionLotWorkItem
     detail_cache: AuctionLotDetailCache | None
     runtime_config: Any
+    row_id: str | None = None
+    row_index: int = 0
+    grid_revision: str | None = None
 
 
 class ProcurementGridEditService(GridEditServiceBase):
@@ -103,6 +106,8 @@ class ProcurementGridEditService(GridEditServiceBase):
         *,
         with_for_update: bool = False,
     ) -> dict[str, ProcurementLotRecord]:
+        if with_for_update:
+            await apply_grid_mutation_lock_timeout(session)
         rows: dict[str, ProcurementLotRecord] = {}
         for row_id in row_ids:
             source_code, external_id = _parse_row_id(row_id)
@@ -114,7 +119,10 @@ class ProcurementGridEditService(GridEditServiceBase):
                 statement = statement.with_for_update()
             record = await session.scalar(statement)
             if record is not None:
-                rows[procurement_lot_grid_row_id(record)] = record
+                stable_row_id = procurement_lot_grid_row_id(record)
+                record._grid_row_id = stable_row_id
+                record._grid_row_index = int(record.id or 0)
+                rows[stable_row_id] = record
         return rows
 
     async def ensure_operation_id_available(self, session: AsyncSession, operation_id: str) -> None:
@@ -222,18 +230,27 @@ class ProcurementGridEditService(GridEditServiceBase):
         _sync_procurement_lot_search_text(None, None, row)
 
     def get_row_id(self, row: ProcurementLotRecord) -> str:
+        grid_row_id = getattr(row, "_grid_row_id", None)
+        if isinstance(grid_row_id, str) and grid_row_id:
+            return grid_row_id
         return procurement_lot_grid_row_id(row)
 
     def get_row_index(self, row: ProcurementLotRecord) -> int:
-        return int(row.id or 0)
+        grid_row_index = getattr(row, "_grid_row_index", None)
+        if isinstance(grid_row_index, int):
+            return grid_row_index
+        return 0
 
     def set_row_updated_at(self, row: ProcurementLotRecord, changed_at: datetime) -> None:
         row.updated_at = changed_at
+        row._grid_revision = changed_at.isoformat()
 
     def get_row_revision(self, row: ProcurementLotRecord) -> str:
-        if row.updated_at is None:
-            return str(row.id or "")
-        return row.updated_at.isoformat()
+        grid_revision = getattr(row, "_grid_revision", None)
+        if isinstance(grid_revision, str) and grid_revision:
+            return grid_revision
+        grid_row_id = getattr(row, "_grid_row_id", None)
+        return str(grid_row_id or "")
 
     def normalize_edit_value(self, column_id: str, value: Any) -> Any:
         calculator_field = calculator_field_for_column(column_id)
@@ -278,15 +295,6 @@ class ProcurementGridEditService(GridEditServiceBase):
                     payload={"source": "grid_edit", "changed_fields": _changed_fields_for_row(row_id, request.edits)},
                 )
             )
-        if operation_id is not None:
-            await enqueue_grid_side_effect_tasks(
-                session,
-                operation_id=operation_id,
-                workspace_id=request.workspace_id,
-                table_id=PROCUREMENT_LOTS_TABLE_ID,
-                row_ids=[procurement_lot_grid_row_id(row) for row in rows or []],
-                trigger_type="commit",
-            )
         return None
 
 
@@ -315,6 +323,8 @@ class AuctionGridEditService(GridEditServiceBase):
         *,
         with_for_update: bool = False,
     ) -> dict[str, AuctionGridEditRow]:
+        if with_for_update:
+            await apply_grid_mutation_lock_timeout(session)
         runtime_config = await auction_analysis_config_service.get_runtime_config(session)
         rows: dict[str, AuctionGridEditRow] = {}
         for row_id in row_ids:
@@ -334,11 +344,14 @@ class AuctionGridEditService(GridEditServiceBase):
             )
             if detail_cache is not None:
                 sync_record_from_detail_cache(record, detail_cache)
-            rows[auction_lot_grid_row_id(record)] = AuctionGridEditRow(
+            stable_row_id = auction_lot_grid_row_id(record)
+            rows[stable_row_id] = AuctionGridEditRow(
                 record=record,
                 work_item=await ensure_work_item(session, record),
                 detail_cache=detail_cache,
                 runtime_config=runtime_config,
+                row_id=stable_row_id,
+                row_index=int(record.id or 0),
             )
         return rows
 
@@ -440,19 +453,24 @@ class AuctionGridEditService(GridEditServiceBase):
         update_record_search_text(row.record)
 
     def get_row_id(self, row: AuctionGridEditRow) -> str:
+        if row.row_id:
+            return row.row_id
         return auction_lot_grid_row_id(row.record)
 
     def get_row_index(self, row: AuctionGridEditRow) -> int:
-        return int(row.record.id or 0)
+        if row.row_index:
+            return row.row_index
+        return 0
 
     def set_row_updated_at(self, row: AuctionGridEditRow, changed_at: datetime) -> None:
         row.record.updated_at = changed_at
         row.work_item.updated_at = changed_at
+        row.grid_revision = changed_at.isoformat()
 
     def get_row_revision(self, row: AuctionGridEditRow) -> str:
-        if row.record.updated_at is None:
-            return str(row.record.id or "")
-        return row.record.updated_at.isoformat()
+        if row.grid_revision:
+            return row.grid_revision
+        return row.row_id or ""
 
     def normalize_edit_value(self, column_id: str, value: Any) -> Any:
         try:
@@ -494,15 +512,6 @@ class AuctionGridEditService(GridEditServiceBase):
                     payload={"source": "grid_edit", "changed_fields": _auction_changed_fields_for_row(row_id, request.edits)},
                 )
             )
-        if operation_id is not None:
-            await enqueue_grid_side_effect_tasks(
-                session,
-                operation_id=operation_id,
-                workspace_id=request.workspace_id,
-                table_id=AUCTION_LOTS_TABLE_ID,
-                row_ids=[auction_lot_grid_row_id(row.record) for row in rows or []],
-                trigger_type="commit",
-            )
         return None
 
 
@@ -517,7 +526,7 @@ def procurement_backend_edit_request(
     payload: dict[str, Any] | None = None,
 ) -> GridBackendEditRequest:
     return GridBackendEditRequest(
-        base_revision=str(base_version),
+        base_revision=None,
         base_version=base_version,
         workspace_id=workspace_id,
         user_id=user_id,
@@ -546,7 +555,7 @@ def auction_backend_edit_request(
     payload: dict[str, Any] | None = None,
 ) -> GridBackendEditRequest:
     return GridBackendEditRequest(
-        base_revision=str(base_version),
+        base_revision=None,
         base_version=base_version,
         workspace_id=workspace_id,
         user_id=user_id,

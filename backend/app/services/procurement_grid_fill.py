@@ -201,6 +201,13 @@ async def commit_procurement_lot_grid_backend_fill(
         if error.code == "stale-revision":
             current_version = await get_dataset_version(session, backend_request.workspace_id, PROCUREMENT_LOTS_TABLE_ID)
             raise ProcurementGridEditConflictError(base_version=conflict_base_version or 0, current_version=current_version) from error
+        if error.code == "row-locked":
+            current_version = await get_dataset_version(session, backend_request.workspace_id, PROCUREMENT_LOTS_TABLE_ID)
+            raise ProcurementGridEditConflictError(
+                base_version=conflict_base_version or 0,
+                current_version=current_version,
+                reason=error.message or "Grid row is locked by another operation",
+            ) from error
         if error.status_code == 404:
             raise LookupError(error.message) from error
         raise ValueError(error.message) from error

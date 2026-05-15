@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Awaitable
 from typing import TypeVar
 
+from affino_grid_backend import ApiException
+from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.auction import AuctionLotDetailCache, AuctionLotRecord, AuctionLotWorkItem
@@ -11,7 +13,8 @@ from app.models.procurement import ProcurementLotRecord
 
 
 T = TypeVar("T")
-GRID_PACKAGE_MUTATION_TIMEOUT_SECONDS = 30.0
+GRID_MUTATION_LOCK_TIMEOUT_MS = 1_000
+POSTGRES_LOCK_NOT_AVAILABLE_SQLSTATE = "55P03"
 
 
 async def prepare_session_for_package_transaction(session: AsyncSession) -> None:
@@ -22,8 +25,26 @@ async def prepare_session_for_package_transaction(session: AsyncSession) -> None
 
 
 async def run_package_grid_mutation(awaitable: Awaitable[T]) -> T:
-    async with asyncio.timeout(GRID_PACKAGE_MUTATION_TIMEOUT_SECONDS):
+    try:
         return await awaitable
+    except DBAPIError as error:
+        if is_grid_lock_timeout_error(error):
+            raise ApiException(
+                status_code=409,
+                code="row-locked",
+                message="Grid row is locked by another operation",
+            ) from error
+        raise
+
+
+async def apply_grid_mutation_lock_timeout(session: AsyncSession) -> None:
+    await session.execute(text(f"SET LOCAL lock_timeout = {GRID_MUTATION_LOCK_TIMEOUT_MS}"))
+
+
+def is_grid_lock_timeout_error(error: DBAPIError) -> bool:
+    original = getattr(error, "orig", None)
+    sqlstate = getattr(original, "sqlstate", None) or getattr(original, "pgcode", None)
+    return sqlstate == POSTGRES_LOCK_NOT_AVAILABLE_SQLSTATE
 
 
 async def refresh_package_grid_row(session: AsyncSession, row: object) -> None:
