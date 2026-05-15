@@ -623,6 +623,9 @@ function createGridDataSource(): ProcurementDataSource {
       loading.value = true
       return datasource.pull(request).catch((error: unknown) => {
         loading.value = false
+        if (isAbortLikeError(error)) {
+          return Promise.reject(error)
+        }
         errorMessage.value = error instanceof Error ? error.message : 'Не удалось загрузить закупки'
         throw error
       })
