@@ -961,15 +961,19 @@ function applyProcurementLocalPatches(updates: readonly { rowId: string | number
   if (!updates.length) return false
 
   const rowModelApi = rowModel.value as ProcurementRowModel | null
-  if (!rowModelApi?.patchRows) return false
+  if (!rowModelApi?.applyExternalUpdates) return false
 
-  rowModelApi.patchRows(
-    updates,
+  rowModelApi.applyExternalUpdates(
+    updates.map((update) => ({
+      rowId: update.rowId,
+      data: update.data,
+    })),
     {
-      recomputeSort: false,
-      recomputeFilter: false,
-      recomputeGroup: false,
-      emit: true,
+      recompute: {
+        sort: true,
+        filter: true,
+        group: true,
+      },
     },
   )
 

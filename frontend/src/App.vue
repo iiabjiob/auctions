@@ -3257,7 +3257,7 @@ function applyWorkspaceRows(
 
   if (!mappedUpdates.length) return
   if (options.patchGrid !== false) {
-    applyExternalGridRowUpdates(mappedUpdates)
+    applyExternalGridRowUpdates(mappedUpdates, { recompute: true })
   }
   if (options.refreshSummary !== false) {
     scheduleGridSummaryRefresh()
@@ -3282,7 +3282,10 @@ function applyWorkspaceRows(
   trace.end({ updatedCount: mappedUpdates.length })
 }
 
-function applyExternalGridRowUpdates(rows: readonly GridLotRow[]) {
+function applyExternalGridRowUpdates(
+  rows: readonly GridLotRow[],
+  options: { recompute?: boolean } = {},
+) {
   const api = gridRef.value?.getApi()
   if (!api?.rows.hasExternalUpdateSupport() || !rows.length) return
 
@@ -3290,7 +3293,9 @@ function applyExternalGridRowUpdates(rows: readonly GridLotRow[]) {
     rowId: resolveClientGridRowId(row),
     row,
   }))
-  api.rows.applyExternalUpdates(updates)
+  api.rows.applyExternalUpdates(updates, {
+    recompute: options.recompute === false ? false : true,
+  })
 }
 
 function scheduleGridSummaryRefresh() {
