@@ -1,6 +1,7 @@
 import { apiRequest } from './http'
 
 export type SourceDiagnosticsRange = 'day' | 'week' | 'month' | '3months' | 'all'
+export type SourceDiagnosticsKind = 'all' | 'auction' | 'procurement'
 
 export type SourceDiagnosticsTotals = {
   request_count: number
@@ -41,6 +42,7 @@ export type SourceDiagnosticsErrorBucket = {
 
 export type SourceDiagnosticsSource = {
   code: string
+  kind: 'auction' | 'procurement'
   title: string
   website: string
   totals: SourceDiagnosticsTotals
@@ -59,6 +61,15 @@ export type SourceDiagnosticsResponse = {
   timeline: SourceDiagnosticsBucket[]
 }
 
-export function fetchSourceDiagnostics(range: SourceDiagnosticsRange) {
-  return apiRequest<SourceDiagnosticsResponse>(`/health/source-diagnostics?range=${encodeURIComponent(range)}`)
+export function fetchSourceDiagnostics(
+  range: SourceDiagnosticsRange,
+  options?: {
+    kind?: SourceDiagnosticsKind
+    source?: string | null
+  },
+) {
+  const params = new URLSearchParams({ range })
+  if (options?.kind) params.set('kind', options.kind)
+  if (options?.source) params.set('source', options.source)
+  return apiRequest<SourceDiagnosticsResponse>(`/health/source-diagnostics?${params.toString()}`)
 }

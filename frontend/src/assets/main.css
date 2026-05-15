@@ -615,6 +615,75 @@
   font-size: 0.95em;
 }
 
+.route-page {
+  grid-row: 1 / -1;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  gap: 12px;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 24px 0 28px;
+}
+
+.route-page__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 24px 28px 0;
+}
+
+.route-page__header h1 {
+  margin: 6px 0 8px;
+  color: var(--color-text-strong);
+}
+
+.route-page__header p {
+  margin: 0;
+  max-width: 76ch;
+  color: var(--color-text-muted);
+  line-height: 1.55;
+}
+
+.route-page__actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.route-page__meta {
+  margin: 0;
+  padding: 0 28px;
+  color: var(--color-text-soft);
+  font-size: 12px;
+}
+
+.route-page__state {
+  padding: 14px 28px 0;
+  color: var(--color-text-muted);
+}
+
+.route-card {
+  margin: 0 28px;
+  padding: 20px;
+  border: 1px solid var(--color-border);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(250, 251, 253, 0.96) 100%);
+  box-shadow: 0 18px 42px rgba(37, 52, 71, 0.08);
+  min-width: 0;
+}
+
+.route-page__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 0 28px 24px;
+}
+
 html,
 body,
 #app {
@@ -1008,6 +1077,7 @@ h2 {
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+  min-width: 0;
 }
 
 .analysis-config-section__hint {
@@ -1020,6 +1090,7 @@ h2 {
 .analysis-config-editor {
   display: grid;
   gap: 12px;
+  min-width: 0;
 }
 
 .analysis-config-rule {
@@ -1029,6 +1100,7 @@ h2 {
   border: 1px solid var(--color-border);
   border-radius: 12px;
   background: var(--color-surface-subtle);
+  min-width: 0;
 }
 
 .analysis-config-rule__row {
@@ -1036,6 +1108,7 @@ h2 {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 12px;
   align-items: end;
+  min-width: 0;
 }
 
 .analysis-config-rule__remove {
@@ -1046,12 +1119,14 @@ h2 {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
+  min-width: 0;
 }
 
 .interest-profile-panel,
 .interest-profile-list {
   display: grid;
   gap: 12px;
+  min-width: 0;
 }
 
 .interest-profile-panel {
@@ -1059,6 +1134,7 @@ h2 {
   border: 1px solid var(--color-border);
   border-radius: 14px;
   background: linear-gradient(135deg, var(--color-surface-subtle), var(--color-surface));
+  min-width: 0;
 }
 
 .interest-profile-panel--telegram {
@@ -1074,6 +1150,7 @@ h2 {
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+  min-width: 0;
 }
 
 .interest-profile-panel h3,
@@ -1096,6 +1173,7 @@ h2 {
   border: 1px solid var(--color-border);
   border-radius: 12px;
   background: var(--color-surface);
+  min-width: 0;
 }
 
 .interest-profile-preset-row {
@@ -1103,6 +1181,7 @@ h2 {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 12px;
   align-items: end;
+  min-width: 0;
 }
 
 .interest-profile-connect-note {
@@ -1120,6 +1199,7 @@ h2 {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
+  min-width: 0;
 }
 
 .secondary-button--danger {
@@ -1599,6 +1679,7 @@ input[type='range'] {
 
 .app-tooltip,
 .lot-name-tooltip,
+.source-diagnostics-chart-tooltip,
 .rating-info-tooltip {
   border: 1px solid var(--color-tooltip-border);
   border-radius: var(--radius-sm);
@@ -1612,6 +1693,11 @@ input[type='range'] {
 .lot-name-tooltip {
   max-width: min(460px, calc(100vw - 24px));
   padding: 8px 10px;
+}
+
+.source-diagnostics-chart-tooltip {
+  max-width: min(300px, calc(100vw - 24px));
+  padding: 12px 14px;
 }
 
 .side-pane {

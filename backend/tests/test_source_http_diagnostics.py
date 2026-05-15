@@ -6,10 +6,12 @@ from datetime import UTC, datetime
 from sqlalchemy.dialects import postgresql
 
 from app.models.auction import AuctionSourceHttpExchange
+from app.models.procurement import ProcurementSourceHttpExchange
 from app.services.source_http_diagnostics import (
     begin_source_http_diagnostics,
     collect_source_http_diagnostics,
     get_source_diagnostics,
+    persist_procurement_source_http_diagnostics,
     persist_source_http_diagnostics,
     record_source_http_exchange,
 )
@@ -70,6 +72,35 @@ class SourceHttpDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(session.added[0].ok)
         self.assertEqual(session.added[0].error_type, "RuntimeError")
 
+    async def test_persist_adds_procurement_exchange_models(self) -> None:
+        class FakeSession:
+            def __init__(self) -> None:
+                self.added = []
+
+            def add_all(self, values) -> None:  # noqa: ANN001
+                self.added.extend(values)
+
+        token = begin_source_http_diagnostics()
+        record_source_http_exchange(
+            source_code="zakupki",
+            operation="search",
+            method="GET",
+            url="https://zakupki.gov.ru/search",
+            started_at=datetime(2026, 5, 13, 10, 0, tzinfo=UTC),
+            completed_at=datetime(2026, 5, 13, 10, 0, 1, tzinfo=UTC),
+            status_code=200,
+            request_bytes=128,
+            response_bytes=4096,
+        )
+        events = collect_source_http_diagnostics(token)
+        session = FakeSession()
+
+        await persist_procurement_source_http_diagnostics(session, events)
+
+        self.assertEqual(len(session.added), 1)
+        self.assertIsInstance(session.added[0], ProcurementSourceHttpExchange)
+        self.assertEqual(session.added[0].source_code, "zakupki")
+
     async def test_diagnostics_queries_compile_for_postgres(self) -> None:
         class CompileOnlySession:
             async def execute(self, statement):  # noqa: ANN001
@@ -93,7 +124,7 @@ class _EmptyResult:
             error_count=0,
             inbound_bytes=0,
             outbound_bytes=0,
-            average_duration_ms=None,
+            duration_sum_ms=0,
         )
 
     def all(self):

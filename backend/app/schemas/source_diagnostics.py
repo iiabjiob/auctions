@@ -60,6 +60,7 @@ class SourceDiagnosticsSource(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     code: str
+    kind: Literal["auction", "procurement"]
     title: str
     website: str
     totals: SourceDiagnosticsTotals

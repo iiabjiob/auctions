@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Literal
 
 from app.infrastructure.db.database import get_db
 from app.schemas.source_diagnostics import DiagnosticsRange, SourceDiagnosticsResponse
@@ -14,6 +15,8 @@ router = APIRouter(prefix="/api/v1/health", tags=["Health"])
 @router.get("/source-diagnostics", response_model=SourceDiagnosticsResponse)
 async def get_source_exchange_diagnostics(
     range: DiagnosticsRange = Query(default="day"),
+    kind: Literal["all", "auction", "procurement"] = Query(default="all"),
+    source: str | None = Query(default=None),
     session: AsyncSession = Depends(get_db),
 ) -> SourceDiagnosticsResponse:
-    return await get_source_diagnostics(session, range_name=range)
+    return await get_source_diagnostics(session, range_name=range, kind=kind, source_code=source)
