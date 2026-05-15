@@ -1,6 +1,5 @@
 <script setup lang="ts">
-import { computed, h, nextTick, onMounted, onUnmounted, reactive, ref, shallowRef, watch } from 'vue'
-import type { ComponentPublicInstance } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, shallowRef, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import {
@@ -12,10 +11,6 @@ import {
   UiMenuTrigger,
 } from '@affino/menu-vue'
 import {
-  defineDataGridColumnMenu,
-  defineDataGridColumns,
-  type DataGridAppColumnFilterOptions,
-  type DataGridAppFilterValueNormalizationContext,
   type DataGridCellStyleResolver,
   type DataGridExposed,
   type DataGridFocusAnchor,
@@ -35,7 +30,6 @@ import {
   type DataSourceBackedRowModel,
 } from '@affino/datagrid-vue'
 import { normalizeDatasourceInvalidation } from '@affino/datagrid-server-client'
-import { createDialogFocusOrchestrator, useDialogController } from '@affino/dialog-vue'
 import { ApiRequestError as ApiClientRequestError } from './api/http'
 import { fetchLotDecisionReport } from './api/decisionReports'
 import {
@@ -57,6 +51,13 @@ import { belongsToSelectedLotMedia, isImageDocument, isLockedTbankrotImageUrl, i
 import { hasGridFilterModel } from './app/gridFilters'
 import { renderHelpMarkdown } from './app/markdown'
 import {
+  type AnalysisConfigDraft,
+  type AnalysisConfigDraftRule,
+  type InterestProfileDraft,
+  type PresetDialogMode,
+  useAppUiState,
+} from './app/useAppUiState'
+import {
   clampDetailPaneWidth,
   persistServerFilters as persistStoredServerFilters,
   readStoredDetailPaneWidth,
@@ -77,8 +78,6 @@ import {
 } from './api/userInterestProfiles'
 import { createTelegramConnectToken } from './api/telegram'
 import AuthLoginScreen from './components/AuthLoginScreen.vue'
-import AnalysisSignalTooltip from './components/AnalysisSignalTooltip.vue'
-import LotNameCell from './components/LotNameCell.vue'
 import RatingInfoTooltip from './components/RatingInfoTooltip.vue'
 import AuctionWorkspace from './components/AuctionWorkspace.vue'
 import ProcurementTenderGrid from './components/ProcurementTenderGrid.vue'
@@ -92,13 +91,13 @@ import {
 import { AUCTION_GRID_EDITABLE_COLUMN_IDS } from './datagrid/auctionGridEdits'
 import {
   catalogAdvancedFilterOptions,
-  catalogColumnMenuOptions,
   catalogGridStatePersistence,
   catalogLoadingSkeletonColumns,
   catalogQuickFilter,
   catalogRowModelPrefetchOptions,
   catalogVirtualizationOptions,
 } from './datagrid/auctionGridUiConfig'
+import { createAuctionColumnMenuOptions, createAuctionGridColumns } from './datagrid/auctionGridColumns'
 import { useAuthStore } from './stores/auth'
 import { workspaceDataGridTheme } from './theme/dataGridTheme'
 import type { ActionRecommendation, DecisionLevel, LotDecisionReport } from './types/decisionReport'
@@ -754,28 +753,6 @@ type AnalysisConfigResponse = {
   updated_at: string
 }
 
-type AnalysisConfigDraftRule = {
-  id: number
-  category: string
-  keywordsText: string
-}
-
-type AnalysisConfigDraft = {
-  categoryRules: AnalysisConfigDraftRule[]
-  exclusionKeywordsText: string
-  highRiskKeywordsText: string
-  mediumRiskKeywordsText: string
-  mediumRiskCategoriesText: string
-}
-
-type PresetDialogMode = 'create' | 'update' | 'delete'
-type InterestProfileDraft = {
-  name: string
-  minRating: number
-  telegramEnabled: boolean
-  isActive: boolean
-}
-
 type ServerQuickFiltersState = {
   period: DatasetPeriod
   source: string
@@ -804,17 +781,12 @@ const presets = ref<FilterPreset[]>([])
 const userInterestProfiles = ref<UserInterestProfile[]>([])
 const analysisConfig = ref<AnalysisConfigResponse | null>(null)
 const auctionPipelineHealth = ref<AuctionPipelineHealthResponse | null>(null)
-const selectedPresetId = ref('')
-const presetDialogMode = ref<PresetDialogMode>('create')
-const presetNameDraft = ref('')
-const telegramPresetIdDraft = ref('')
 const interestProfileDraft = reactive<InterestProfileDraft>({
   name: '',
   minRating: 0,
   telegramEnabled: true,
   isActive: true,
 })
-const mobileRailOpen = ref(false)
 const loading = ref(false)
 const presetsLoading = ref(false)
 const interestProfilesLoading = ref(false)
@@ -991,535 +963,41 @@ const analysisConfigDraft = reactive<AnalysisConfigDraft>(emptyAnalysisConfigDra
 const authStore = useAuthStore()
 const { accessToken, currentUser, isAuthenticated, isRestoring } = storeToRefs(authStore)
 const route = useRoute()
-const presetDialogTriggerRef = ref<HTMLElement | null>(null)
-const presetDialogRef = ref<HTMLDivElement | null>(null)
-const presetDialogInitialRef = ref<HTMLElement | null>(null)
-const presetDialogFocus = createDialogFocusOrchestrator({
-  dialog: () => presetDialogRef.value,
-  initialFocus: () => presetDialogInitialRef.value,
-  returnFocus: () => presetDialogTriggerRef.value,
-})
-const presetDialog = useDialogController({
-  focusOrchestrator: presetDialogFocus,
-})
-const interestProfilesDialogTriggerRef = ref<HTMLElement | null>(null)
-const interestProfilesDialogRef = ref<HTMLDivElement | null>(null)
-const interestProfilesDialogInitialRef = ref<HTMLElement | null>(null)
-const interestProfilesDialogFocus = createDialogFocusOrchestrator({
-  dialog: () => interestProfilesDialogRef.value,
-  initialFocus: () => interestProfilesDialogInitialRef.value,
-  returnFocus: () => interestProfilesDialogTriggerRef.value,
-})
-const interestProfilesDialog = useDialogController({
-  focusOrchestrator: interestProfilesDialogFocus,
-})
-const analysisConfigDialogTriggerRef = ref<HTMLElement | null>(null)
-const analysisConfigDialogRef = ref<HTMLDivElement | null>(null)
-const analysisConfigDialogInitialRef = ref<HTMLElement | null>(null)
-const analysisConfigDialogFocus = createDialogFocusOrchestrator({
-  dialog: () => analysisConfigDialogRef.value,
-  initialFocus: () => analysisConfigDialogInitialRef.value,
-  returnFocus: () => analysisConfigDialogTriggerRef.value,
-})
-const analysisConfigDialog = useDialogController({
-  focusOrchestrator: analysisConfigDialogFocus,
-})
+const {
+  selectedPresetId,
+  presetDialogMode,
+  presetNameDraft,
+  telegramPresetIdDraft,
+  mobileRailOpen,
+  presetsMenuRef,
+  accountMenuRef,
+  presetsMenuOpen,
+  accountMenuOpen,
+  presetDialogTriggerRef,
+  presetDialogRef,
+  presetDialogInitialRef,
+  presetDialog,
+  interestProfilesDialogTriggerRef,
+  interestProfilesDialogRef,
+  interestProfilesDialogInitialRef,
+  interestProfilesDialog,
+  analysisConfigDialogTriggerRef,
+  analysisConfigDialogRef,
+  analysisConfigDialogInitialRef,
+  analysisConfigDialog,
+  setPresetDialogInitialRef,
+  setInterestProfilesDialogInitialRef,
+  setAnalysisConfigDialogInitialRef,
+  closeMobileRail,
+  toggleMobileRail,
+} = useAppUiState()
 let analysisConfigRuleSeed = 0
 
 const loadingSkeletonColumns = catalogLoadingSkeletonColumns
 const loadingSkeletonRows = computed(() => Array.from({ length: loadingSkeletonVisibleRows.value }, (_, index) => index))
 const loadingSkeletonTemplate = catalogLoadingSkeletonColumns.map((column) => `${column.width}px`).join(' ')
-
-function normalizePercentFilterValue(context: DataGridAppFilterValueNormalizationContext) {
-  const value = context.value
-  if (value === null || value === undefined || value === '') return value
-
-  const parsed = Number(String(value).trim().replace(/\s+/g, '').replace('%', '').replace(',', '.'))
-  if (!Number.isFinite(parsed)) return value
-  return String(parsed / 100)
-}
-
-const predicateFilterOnly = { valueSet: false } satisfies DataGridAppColumnFilterOptions
-const percentPredicateFilter = {
-  valueSet: false,
-  normalizeValue: normalizePercentFilterValue,
-} satisfies DataGridAppColumnFilterOptions
-
-const columns = defineDataGridColumns<GridLotRow>()([
-  {
-    key: 'ratingScore',
-    label: 'Рейтинг',
-    dataType: 'number',
-    initialState: { width: 96 },
-    presentation: { align: 'right', headerAlign: 'right' },
-    capabilities: { sortable: true, filterable: true, aggregatable: true },
-    filter: predicateFilterOnly,
-  },
-  {
-    key: 'analysisLabel',
-    label: 'Сигнал',
-    initialState: { width: 176 },
-    capabilities: { sortable: true, filterable: true },
-    cellRenderer: ({ row }) => {
-      if (!row) return ''
-
-      const reasons = Array.isArray(row.analysisReasons) ? row.analysisReasons : []
-      const pill = h(
-        'span',
-        {
-          class: ['analysis-pill', `analysis-pill--${row.analysisColor || 'yellow'}`],
-        },
-        row.analysisLabel,
-      )
-      return reasons.length
-        ? h(
-            AnalysisSignalTooltip,
-            {
-              reasons,
-            },
-            {
-              default: () => pill,
-            },
-          )
-        : pill
-    },
-  },
-  { key: 'analysisCategory', label: 'Категория', initialState: { width: 168 } },
-  {
-    key: 'isNew',
-    label: 'Новый',
-    dataType: 'boolean',
-    initialState: { width: 88 },
-    capabilities: { sortable: true, filterable: true },
-  },
-  { key: 'sourceTitle', label: 'Площадка', initialState: { width: 120 }, filter: predicateFilterOnly },
-  { key: 'auctionNumber', label: 'Аукцион', initialState: { width: 120 }, filter: predicateFilterOnly },
-  {
-    key: 'publicationDate',
-    label: 'Дата публикации',
-    dataType: 'datetime',
-    initialState: { width: 160 },
-    presentation: {
-      format: {
-        dateTime: {
-          locale: 'ru-RU',
-          day: '2-digit',
-          month: '2-digit',
-          year: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit',
-        },
-      },
-    },
-    capabilities: { sortable: true, filterable: true },
-    filter: predicateFilterOnly,
-  },
-  { key: 'lotNumber', label: 'Лот', initialState: { width: 76 }, filter: predicateFilterOnly },
-  {
-    key: 'lotName',
-    label: 'Наименование',
-    initialState: { width: 430 },
-    filter: predicateFilterOnly,
-    cellInteraction: {
-      click: true,
-      keyboard: ['enter'],
-      role: 'button',
-      label: ({ row }) => (row ? `Открыть ${row.lotName}` : 'Открыть лот'),
-      onInvoke: ({ row }) => {
-        if (row) void openLotDetails(row)
-      },
-    },
-    cellRenderer: ({ displayValue, row }) =>
-      row
-        ? h(LotNameCell, {
-            row,
-            label: String(displayValue || 'Без названия'),
-            onOpen: (lot: unknown) => void openLotDetails(lot as GridLotRow),
-          })
-        : String(displayValue || 'Без названия'),
-  },
-  {
-    key: 'location',
-    label: 'Локация',
-    initialState: { width: 220 },
-    capabilities: { sortable: true, filterable: true },
-    filter: predicateFilterOnly,
-  },
-  {
-    key: 'initialPrice',
-    label: 'Начальная цена',
-    dataType: 'currency',
-    initialState: { width: 150 },
-    presentation: {
-      align: 'right',
-      headerAlign: 'right',
-      format: {
-        number: {
-          locale: 'ru-RU',
-          style: 'currency',
-          currency: 'RUB',
-          maximumFractionDigits: 2,
-        },
-      },
-    },
-    capabilities: { sortable: true, filterable: true, aggregatable: true },
-    filter: predicateFilterOnly,
-    cellRenderer: ({ row }) => formatCurrency(row?.initialPrice ?? null),
-  },
-  {
-    key: 'price',
-    label: 'Текущая цена',
-    dataType: 'currency',
-    initialState: { width: 150 },
-    presentation: {
-      align: 'right',
-      headerAlign: 'right',
-      format: {
-        number: {
-          locale: 'ru-RU',
-          style: 'currency',
-          currency: 'RUB',
-          maximumFractionDigits: 2,
-        },
-      },
-    },
-    capabilities: { sortable: true, filterable: true, aggregatable: true },
-    filter: predicateFilterOnly,
-    cellRenderer: ({ row }) => formatCurrency(row?.price ?? null),
-  },
-  {
-    key: 'minimumPrice',
-    label: 'Мин. цена',
-    dataType: 'currency',
-    initialState: { width: 150 },
-    presentation: {
-      align: 'right',
-      headerAlign: 'right',
-      format: {
-        number: {
-          locale: 'ru-RU',
-          style: 'currency',
-          currency: 'RUB',
-          maximumFractionDigits: 2,
-        },
-      },
-    },
-    capabilities: { sortable: true, filterable: true, aggregatable: true },
-    filter: predicateFilterOnly,
-    cellRenderer: ({ row }) => formatCurrency(row?.minimumPrice ?? null),
-  },
-  {
-    key: 'marketValue',
-    label: 'Рынок',
-    dataType: 'currency',
-    initialState: { width: 150 },
-    presentation: {
-      align: 'right',
-      headerAlign: 'right',
-      format: { number: { locale: 'ru-RU', style: 'currency', currency: 'RUB', maximumFractionDigits: 2 } },
-    },
-    capabilities: { sortable: true, filterable: true, editable: true },
-    filter: predicateFilterOnly,
-    cellRenderer: ({ row }) => formatCurrency(row?.marketValue ?? null),
-  },
-  {
-    key: 'platformFee',
-    label: 'Комиссия ЭТП',
-    dataType: 'currency',
-    initialState: { width: 150 },
-    presentation: {
-      align: 'right',
-      headerAlign: 'right',
-      format: { number: { locale: 'ru-RU', style: 'currency', currency: 'RUB', maximumFractionDigits: 2 } },
-    },
-    capabilities: { sortable: true, filterable: true, editable: true },
-    filter: predicateFilterOnly,
-    cellRenderer: ({ row }) => formatCurrency(row?.platformFee ?? null),
-  },
-  {
-    key: 'deliveryCost',
-    label: 'Доставка',
-    dataType: 'currency',
-    initialState: { width: 132 },
-    presentation: {
-      align: 'right',
-      headerAlign: 'right',
-      format: { number: { locale: 'ru-RU', style: 'currency', currency: 'RUB', maximumFractionDigits: 2 } },
-    },
-    capabilities: { sortable: true, filterable: true, editable: true },
-    filter: predicateFilterOnly,
-    cellRenderer: ({ row }) => formatCurrency(row?.deliveryCost ?? null),
-  },
-  {
-    key: 'dismantlingCost',
-    label: 'Демонтаж',
-    dataType: 'currency',
-    initialState: { width: 138 },
-    presentation: {
-      align: 'right',
-      headerAlign: 'right',
-      format: { number: { locale: 'ru-RU', style: 'currency', currency: 'RUB', maximumFractionDigits: 2 } },
-    },
-    capabilities: { sortable: true, filterable: true, editable: true },
-    filter: predicateFilterOnly,
-    cellRenderer: ({ row }) => formatCurrency(row?.dismantlingCost ?? null),
-  },
-  {
-    key: 'repairCost',
-    label: 'Ремонт',
-    dataType: 'currency',
-    initialState: { width: 132 },
-    presentation: {
-      align: 'right',
-      headerAlign: 'right',
-      format: { number: { locale: 'ru-RU', style: 'currency', currency: 'RUB', maximumFractionDigits: 2 } },
-    },
-    capabilities: { sortable: true, filterable: true, editable: true },
-    filter: predicateFilterOnly,
-    cellRenderer: ({ row }) => formatCurrency(row?.repairCost ?? null),
-  },
-  {
-    key: 'storageCost',
-    label: 'Хранение',
-    dataType: 'currency',
-    initialState: { width: 138 },
-    presentation: {
-      align: 'right',
-      headerAlign: 'right',
-      format: { number: { locale: 'ru-RU', style: 'currency', currency: 'RUB', maximumFractionDigits: 2 } },
-    },
-    capabilities: { sortable: true, filterable: true, editable: true },
-    filter: predicateFilterOnly,
-    cellRenderer: ({ row }) => formatCurrency(row?.storageCost ?? null),
-  },
-  {
-    key: 'legalCost',
-    label: 'Юрист',
-    dataType: 'currency',
-    initialState: { width: 124 },
-    presentation: {
-      align: 'right',
-      headerAlign: 'right',
-      format: { number: { locale: 'ru-RU', style: 'currency', currency: 'RUB', maximumFractionDigits: 2 } },
-    },
-    capabilities: { sortable: true, filterable: true, editable: true },
-    filter: predicateFilterOnly,
-    cellRenderer: ({ row }) => formatCurrency(row?.legalCost ?? null),
-  },
-  {
-    key: 'otherCosts',
-    label: 'Прочие',
-    dataType: 'currency',
-    initialState: { width: 124 },
-    presentation: {
-      align: 'right',
-      headerAlign: 'right',
-      format: { number: { locale: 'ru-RU', style: 'currency', currency: 'RUB', maximumFractionDigits: 2 } },
-    },
-    capabilities: { sortable: true, filterable: true, editable: true },
-    filter: predicateFilterOnly,
-    cellRenderer: ({ row }) => formatCurrency(row?.otherCosts ?? null),
-  },
-  {
-    key: 'targetProfit',
-    label: 'Целевая прибыль',
-    dataType: 'currency',
-    initialState: { width: 168 },
-    presentation: {
-      align: 'right',
-      headerAlign: 'right',
-      format: { number: { locale: 'ru-RU', style: 'currency', currency: 'RUB', maximumFractionDigits: 2 } },
-    },
-    capabilities: { sortable: true, filterable: true, editable: true },
-    filter: predicateFilterOnly,
-    cellRenderer: ({ row }) => formatCurrency(row?.targetProfit ?? null),
-  },
-  {
-    key: 'totalExpenses',
-    label: 'Все расходы',
-    dataType: 'currency',
-    formula: 'platformFee + deliveryCost + dismantlingCost + repairCost + storageCost + legalCost + otherCosts',
-    initialState: { width: 152 },
-    presentation: {
-      align: 'right',
-      headerAlign: 'right',
-      format: { number: { locale: 'ru-RU', style: 'currency', currency: 'RUB', maximumFractionDigits: 2 } },
-    },
-    capabilities: { sortable: true, filterable: true },
-    filter: predicateFilterOnly,
-    cellRenderer: ({ row }) => formatCurrency(row?.totalExpenses ?? null),
-  },
-  {
-    key: 'fullEntryCost',
-    label: 'Полная стоимость входа',
-    dataType: 'currency',
-    formula: 'price + totalExpenses',
-    initialState: { width: 198 },
-    presentation: {
-      align: 'right',
-      headerAlign: 'right',
-      format: { number: { locale: 'ru-RU', style: 'currency', currency: 'RUB', maximumFractionDigits: 2 } },
-    },
-    capabilities: { sortable: true, filterable: true },
-    filter: predicateFilterOnly,
-    cellRenderer: ({ row }) => formatCurrency(row?.fullEntryCost ?? null),
-  },
-  {
-    key: 'potentialProfit',
-    label: 'Потенциальная прибыль',
-    dataType: 'currency',
-    formula: 'marketValue - fullEntryCost',
-    initialState: { width: 188 },
-    presentation: {
-      align: 'right',
-      headerAlign: 'right',
-      format: { number: { locale: 'ru-RU', style: 'currency', currency: 'RUB', maximumFractionDigits: 2 } },
-    },
-    capabilities: { sortable: true, filterable: true },
-    filter: predicateFilterOnly,
-    cellRenderer: ({ row }) => formatCurrency(row?.potentialProfit ?? null),
-  },
-  {
-    key: 'roiValue',
-    label: 'ROI',
-    dataType: 'number',
-    formula: 'potentialProfit / fullEntryCost',
-    initialState: { width: 100 },
-    presentation: { align: 'right', headerAlign: 'right', format: { number: { locale: 'ru-RU', style: 'percent', maximumFractionDigits: 1 } } },
-    capabilities: { sortable: true, filterable: true },
-    filter: percentPredicateFilter,
-    cellRenderer: ({ row }) => formatApiPercent(row?.roiValue),
-  },
-  {
-    key: 'marketDiscount',
-    label: 'Дисконт к рынку',
-    dataType: 'number',
-    formula: '1 - price / marketValue',
-    initialState: { width: 146 },
-    presentation: { align: 'right', headerAlign: 'right', format: { number: { locale: 'ru-RU', style: 'percent', maximumFractionDigits: 1 } } },
-    capabilities: { sortable: true, filterable: true },
-    filter: percentPredicateFilter,
-    cellRenderer: ({ row }) => formatApiPercent(row?.marketDiscount),
-  },
-  {
-    key: 'formulaMaxPurchasePrice',
-    label: 'Макс. цена покупки',
-    dataType: 'currency',
-    formula: 'marketValue - totalExpenses - targetProfit',
-    initialState: { width: 176 },
-    presentation: {
-      align: 'right',
-      headerAlign: 'right',
-      format: { number: { locale: 'ru-RU', style: 'currency', currency: 'RUB', maximumFractionDigits: 2 } },
-    },
-    capabilities: { sortable: true, filterable: true },
-    filter: predicateFilterOnly,
-    cellRenderer: ({ row }) => formatCurrency(row?.formulaMaxPurchasePrice ?? null),
-  },
-  {
-    key: 'excludeFromAnalysis',
-    label: 'Исключить',
-    dataType: 'boolean',
-    initialState: { width: 112 },
-    capabilities: { sortable: true, filterable: true, editable: true },
-    filter: predicateFilterOnly,
-  },
-  {
-    key: 'exclusionReason',
-    label: 'Причина исключения',
-    initialState: { width: 188 },
-    capabilities: { sortable: true, filterable: true, editable: true },
-    filter: predicateFilterOnly,
-  },
-  { key: 'status', label: 'Статус', initialState: { width: 170 }, filter: predicateFilterOnly },
-  { key: 'organizer', label: 'Организатор', initialState: { width: 240 }, filter: predicateFilterOnly },
-  {
-    key: 'applicationDeadline',
-    label: 'Прием заявок до',
-    dataType: 'datetime',
-    initialState: { width: 180 },
-    presentation: {
-      format: {
-        dateTime: {
-          locale: 'ru-RU',
-          day: '2-digit',
-          month: '2-digit',
-          year: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit',
-        },
-      },
-    },
-    capabilities: { sortable: true, filterable: true },
-    filter: predicateFilterOnly,
-  },
-  {
-    key: 'auctionDate',
-    label: 'Дата торгов',
-    dataType: 'datetime',
-    initialState: { width: 170 },
-    presentation: {
-      format: {
-        dateTime: {
-          locale: 'ru-RU',
-          day: '2-digit',
-          month: '2-digit',
-          year: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit',
-        },
-      },
-    },
-    capabilities: { sortable: true, filterable: true },
-    filter: predicateFilterOnly,
-  },
-  {
-    key: 'lastSeenAt',
-    label: 'Последнее наблюдение',
-    dataType: 'datetime',
-    initialState: { width: 190 },
-    presentation: {
-      format: {
-        dateTime: {
-          locale: 'ru-RU',
-          day: '2-digit',
-          month: '2-digit',
-          year: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit',
-        },
-      },
-    },
-    capabilities: { sortable: true, filterable: true },
-    filter: predicateFilterOnly,
-  },
-  {
-    key: 'lifecycleStatus',
-    label: 'Актуальность',
-    initialState: { width: 148 },
-    capabilities: { sortable: true, filterable: true },
-    cellRenderer: ({ row }) =>
-      row
-        ? h(
-            'span',
-            {
-              class: ['status-chip', `status-chip--${lifecycleStatusTone(row.lifecycleStatus)}`],
-              title: buildLifecycleStatusTooltip(row),
-            },
-            formatLifecycleStatus(row.lifecycleStatus),
-          )
-        : '',
-  },
-])
-
-const columnMenuOptions = defineDataGridColumnMenu({
-  ...catalogColumnMenuOptions,
-  columns: Object.fromEntries(
-    columns
-      .filter((column) => 'filter' in column && column.filter?.valueSet === false)
-      .map((column) => [String(column.key), { hide: ['filter'] }]),
-  ),
-})
+const columns = createAuctionGridColumns(openLotDetails)
+const columnMenuOptions = createAuctionColumnMenuOptions(columns)
 
 function resolveClientGridRowId(row: Pick<GridLotRow, 'id'>) {
   return row.id
@@ -1582,10 +1060,6 @@ const currentUserInitials = computed(() => {
 })
 
 const selectedPreset = computed(() => presets.value.find((preset) => preset.id === selectedPresetId.value) ?? null)
-const presetsMenuRef = ref<InstanceType<typeof UiMenu> | null>(null)
-const accountMenuRef = ref<InstanceType<typeof UiMenu> | null>(null)
-const presetsMenuOpen = computed(() => presetsMenuRef.value?.controller.state.value.open === true)
-const accountMenuOpen = computed(() => accountMenuRef.value?.controller.state.value.open === true)
 const activeInterestProfiles = computed(() => userInterestProfiles.value.filter((profile) => profile.is_active))
 const interestProfileSummary = computed(() => {
   if (interestProfilesLoading.value) return 'Загрузка'
@@ -3197,18 +2671,6 @@ function sortUserInterestProfiles(items: UserInterestProfile[]) {
   })
 }
 
-function setPresetDialogInitialRef(element: Element | ComponentPublicInstance | null) {
-  presetDialogInitialRef.value = element as HTMLElement | null
-}
-
-function setInterestProfilesDialogInitialRef(element: Element | ComponentPublicInstance | null) {
-  interestProfilesDialogInitialRef.value = element as HTMLElement | null
-}
-
-function setAnalysisConfigDialogInitialRef(element: Element | ComponentPublicInstance | null) {
-  analysisConfigDialogInitialRef.value = element as HTMLElement | null
-}
-
 function createAnalysisConfigDraftRule(category = '', keywords: string[] = []): AnalysisConfigDraftRule {
   analysisConfigRuleSeed += 1
   return {
@@ -3316,10 +2778,6 @@ function openInterestProfilesDialog(event?: Event) {
   resetInterestProfileDraft()
   interestProfilesDialog.open('trigger')
   void loadUserInterestProfiles()
-}
-
-function toggleMobileRail() {
-  mobileRailOpen.value = !mobileRailOpen.value
 }
 
 function resetInterestProfileDraft() {
@@ -3466,10 +2924,6 @@ async function removeInterestProfile(profile: UserInterestProfile) {
   } finally {
     interestProfilesSaving.value = false
   }
-}
-
-function closeMobileRail() {
-  mobileRailOpen.value = false
 }
 
 async function submitAnalysisConfigDialog() {
