@@ -12,10 +12,12 @@ import {
 import {
   createDataSourceBackedRowModel,
   type DataGridDataSource,
+  type DataGridExternalRowUpdate,
   type DataGridDataSourceRowEntry,
   type DataGridFilterSnapshot,
   type DataSourceBackedRowModel,
 } from '@affino/datagrid-vue'
+import { normalizeDatasourceInvalidation } from '@affino/datagrid-server-client'
 import { PROCUREMENT_GRID_EDITABLE_COLUMN_IDS } from '@/datagrid/procurementGridEdits'
 import {
   createProcurementServerDatasource,
@@ -876,18 +878,19 @@ function applyProcurementGridChangeFeedResponse(response: GridChangeFeedResponse
     return true
   }
 
-  for (const change of response.changes) {
-    const invalidation = resolveGridChangeInvalidation(change.payload)
-    if (invalidation && applyProcurementInvalidation(invalidation, response.datasetVersion)) {
-      latestDatasetVersion.value = response.datasetVersion
-      return true
-    }
-  }
-
   const rowIds = collectGridChangeRowIds(response)
   if (rowIds.length && applyProcurementInvalidation({ type: 'rows', rowIds, reason: 'change_feed' }, response.datasetVersion)) {
     latestDatasetVersion.value = response.datasetVersion
     return true
+  }
+
+  for (const change of response.changes) {
+    const invalidation = normalizeDatasourceInvalidation(change.payload.invalidation ?? change.payload)
+    if (!invalidation) continue
+    if (applyProcurementInvalidation(invalidation, response.datasetVersion)) {
+      latestDatasetVersion.value = response.datasetVersion
+      return true
+    }
   }
 
   return false
@@ -908,13 +911,6 @@ function collectProcurementChangeFeedRows(response: GridChangeFeedResponse) {
   return rows
 }
 
-function resolveGridChangeInvalidation(payload: Record<string, unknown>) {
-  const invalidation = payload.invalidation
-  if (invalidation && typeof invalidation === 'object') return invalidation
-  if (typeof payload.type === 'string') return payload
-  return null
-}
-
 function collectGridChangeRowIds(response: GridChangeFeedResponse) {
   const rowIds = new Set<string>()
   for (const change of response.changes) {
@@ -930,7 +926,7 @@ function applyProcurementHistoryRows(rows: readonly GridHistoryRowSnapshot<Procu
   if (!rows.length) return false
 
   const revision = allocateRowRevision()
-  const entries: DataGridDataSourceRowEntry<ProcurementGridRow>[] = []
+  const entries: DataGridExternalRowUpdate<ProcurementGridRow>[] = []
   for (const snapshot of rows) {
     const row = extractHistorySnapshotRow(snapshot)
     const mapped = isProcurementApiHistoryRow(row)
@@ -940,20 +936,18 @@ function applyProcurementHistoryRows(rows: readonly GridHistoryRowSnapshot<Procu
         : null
     if (!mapped) continue
     entries.push({
-      index: typeof snapshot.index === 'number' && Number.isFinite(snapshot.index) ? Math.max(0, Math.trunc(snapshot.index)) : 0,
       rowId: mapped.id,
       row: mapped,
+      index: typeof snapshot.index === 'number' && Number.isFinite(snapshot.index) ? Math.max(0, Math.trunc(snapshot.index)) : 0,
     })
   }
 
   if (!entries.length) return false
-  const datasource = rowModel.value?.dataSource as ServerPushDataSource | undefined
-  const applied = datasource?.applyRowSnapshots?.(entries) === true
-  if (!applied) return false
+  void rowModel.value?.applyExternalUpdates?.(entries, { recompute: true })
   for (const entry of entries) {
-    if (selectedRow.value?.id === entry.row.id) {
-      selectedRow.value = entry.row
-    }
+    const nextRow = entry.row
+    if (!nextRow) continue
+    if (selectedRow.value?.id === nextRow.id) selectedRow.value = nextRow
   }
   return true
 }

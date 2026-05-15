@@ -35,6 +35,7 @@ import {
   type DataGridDataSourcePushListener,
   type DataSourceBackedRowModel,
 } from '@affino/datagrid-vue'
+import { normalizeDatasourceInvalidation } from '@affino/datagrid-server-client'
 import { createDialogFocusOrchestrator, useDialogController } from '@affino/dialog-vue'
 import { ApiRequestError as ApiClientRequestError } from './api/http'
 import { fetchLotDecisionReport } from './api/decisionReports'
@@ -600,6 +601,9 @@ type GridSelectionSnapshot = ReturnType<GridApi['selection']['getSnapshot']>
 
 type CatalogDataSource = DataGridDataSource<GridLotRow>
 type CatalogAuctionServerDataSource = AuctionServerDatasource<ApiLotRow, GridLotRow>
+  & {
+    applyInvalidation?: (invalidation: unknown, options?: { datasetVersion?: unknown }) => void
+  }
 
 type CatalogRowModel = DataSourceBackedRowModel<GridLotRow> & {
   patchRows?: (updates: readonly { rowId: string | number; data: Partial<GridLotRow> }[]) => void | Promise<void>
@@ -2885,8 +2889,7 @@ function applyAuctionMutationResult(result: GridHistoryMutationResponse<ApiLotRo
   if (applyAuctionHistoryRows(rows)) return true
 
   if (result.invalidation) {
-    emitCatalogInvalidation(result.invalidation, result.datasetVersion)
-    return true
+    return applyAuctionInvalidation(result.invalidation, result.datasetVersion)
   }
 
   return false
@@ -2940,20 +2943,21 @@ function applyAuctionGridChangeFeedResponse(response: GridChangeFeedResponse) {
     return true
   }
 
-  for (const change of response.changes) {
-    const invalidation = resolveGridChangeInvalidation(change.payload)
-    if (invalidation) {
-      emitCatalogInvalidation(invalidation, response.datasetVersion)
+  const rowIds = collectGridChangeRowIds(response)
+  if (rowIds.length) {
+    if (applyAuctionInvalidation({ type: 'rows', rowIds, reason: 'change_feed' }, response.datasetVersion)) {
       latestAuctionGridDatasetVersion.value = response.datasetVersion
       return true
     }
   }
 
-  const rowIds = collectGridChangeRowIds(response)
-  if (rowIds.length) {
-    emitCatalogInvalidation({ type: 'rows', rowIds, reason: 'change_feed' }, response.datasetVersion)
-    latestAuctionGridDatasetVersion.value = response.datasetVersion
-    return true
+  for (const change of response.changes) {
+    const invalidation = normalizeDatasourceInvalidation(change.payload.invalidation ?? change.payload)
+    if (!invalidation) continue
+    if (applyAuctionInvalidation(invalidation, response.datasetVersion)) {
+      latestAuctionGridDatasetVersion.value = response.datasetVersion
+      return true
+    }
   }
 
   return false
@@ -2972,13 +2976,6 @@ function collectAuctionChangeFeedRows(response: GridChangeFeedResponse) {
     }
   }
   return rows
-}
-
-function resolveGridChangeInvalidation(payload: Record<string, unknown>) {
-  const invalidation = payload.invalidation
-  if (invalidation && typeof invalidation === 'object') return invalidation
-  if (typeof payload.type === 'string') return payload
-  return null
 }
 
 function collectGridChangeRowIds(response: GridChangeFeedResponse) {
@@ -3008,14 +3005,18 @@ function applyAuctionHistoryRows(rows: readonly GridHistoryRowSnapshot<ApiLotRow
 
   if (apiRows.length) {
     applyWorkspaceRows(apiRows, { refreshSummary: false, patchGrid: false })
-    emitCatalogRowEntriesUpsert(buildAuctionHistoryRowEntries(rows))
+    const entries = buildAuctionHistoryRowEntries(rows)
+    void catalogRowModel.value?.applyExternalUpdates?.(entries, { recompute: true })
+    emitCatalogRowEntriesUpsert(entries as unknown as DataGridDataSourceRowEntry<GridLotRow>[])
     syncSelectedWorkDraftFromGridRows(apiRows)
     return true
   }
 
   if (!gridRows.length) return false
   rememberLoadedRows(gridRows)
-  emitCatalogRowEntriesUpsert(buildAuctionHistoryRowEntries(rows))
+  const entries = buildAuctionHistoryRowEntries(rows)
+  void catalogRowModel.value?.applyExternalUpdates?.(entries, { recompute: true })
+  emitCatalogRowEntriesUpsert(entries as unknown as DataGridDataSourceRowEntry<GridLotRow>[])
   for (const row of gridRows) {
     if (selectedLot.value?.id === row.id) {
       selectedLot.value = row
@@ -3026,7 +3027,7 @@ function applyAuctionHistoryRows(rows: readonly GridHistoryRowSnapshot<ApiLotRow
 }
 
 function buildAuctionHistoryRowEntries(rows: readonly GridHistoryRowSnapshot<ApiLotRow>[]) {
-  const entries: DataGridDataSourceRowEntry<GridLotRow>[] = []
+  const entries: DataGridExternalRowUpdate<GridLotRow>[] = []
   for (const snapshot of rows) {
     const rowId = resolveHistorySnapshotRowId(snapshot)
     const row = rowId ? gridRowsById.value.get(String(rowId)) : null
@@ -3088,23 +3089,17 @@ function emitCatalogRowEntriesUpsert(rows: readonly DataGridDataSourceRowEntry<G
   }
 }
 
-function emitCatalogInvalidation(invalidation: unknown, datasetVersion: number | null | undefined) {
-  if (!catalogDataSourceListeners.size) return
-
-  const event = {
-    type: 'invalidate' as const,
-    datasetVersion: datasetVersion ?? latestAuctionGridDatasetVersion.value,
-    invalidation,
-  } as Parameters<DataGridDataSourcePushListener<GridLotRow>>[0]
-  for (const listener of catalogDataSourceListeners) {
-    listener(event)
-  }
-}
-
 function subscribeAuctionHistoryStatus() {
   auctionHistoryStatusUnsubscribe?.()
   const source = auctionServerDataSource as unknown as HistoryStatusSource
   auctionHistoryStatusUnsubscribe = source.subscribeHistoryStatus?.(updateAuctionHistoryState) ?? null
+}
+
+function applyAuctionInvalidation(invalidation: unknown, datasetVersion: number | null | undefined) {
+  const normalized = normalizeDatasourceInvalidation(invalidation)
+  if (!normalized) return false
+  auctionServerDataSource.applyInvalidation?.(normalized, { datasetVersion: datasetVersion ?? undefined })
+  return true
 }
 
 function resolveCatalogReloadRange() {
