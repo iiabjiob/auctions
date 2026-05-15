@@ -606,7 +606,16 @@ type CatalogAuctionServerDataSource = AuctionServerDatasource<ApiLotRow, GridLot
   }
 
 type CatalogRowModel = DataSourceBackedRowModel<GridLotRow> & {
-  patchRows?: (updates: readonly { rowId: string | number; data: Partial<GridLotRow> }[]) => void | Promise<void>
+  patchRows?: (
+    updates: readonly { rowId: string | number; data: Partial<GridLotRow> }[],
+    options?: {
+      recomputeSort?: boolean
+      recomputeFilter?: boolean
+      recomputeGroup?: boolean
+      emit?: boolean
+      signal?: AbortSignal | null
+    },
+  ) => void | Promise<void>
   dataSource: CatalogDataSource
 }
 
@@ -2808,7 +2817,10 @@ function createCatalogDataSource(): CatalogDataSource {
         throw new Error('Auction grid datasource does not support edits')
       }
       const result = await commitEdits(request)
-      applyAuctionMutationResult(result as GridHistoryMutationResponse<ApiLotRow>)
+      applyAuctionCommitResult(
+        result as GridHistoryMutationResponse<ApiLotRow>,
+        Array.isArray(request.edits) ? request.edits : [],
+      )
       if (!result.rejected?.length) {
         errorMessage.value = ''
       }
@@ -2833,17 +2845,13 @@ function createCatalogRowModel(): CatalogRowModel {
     rowCacheLimit: CATALOG_ROW_CACHE_LIMIT,
     prefetch: catalogRowModelPrefetchOptions,
   }) as CatalogRowModel
-  if (typeof rowModel.patchRows !== 'function') {
-    rowModel.patchRows = async (updates) => {
-      if (!updates.length) return
-      const commitEdits = rowModel.dataSource.commitEdits
-      if (typeof commitEdits !== 'function') return
-      const result = await commitEdits({
-        edits: updates,
-      }) as GridHistoryMutationResponse<ApiLotRow> | undefined
-      if (!result || hasAuctionMutationFastPayload(result) || result.rejected?.length) return
-      applyAuctionPatchUpdates(updates)
-    }
+  rowModel.patchRows = async (updates) => {
+    if (!updates.length) return
+    const commitEdits = rowModel.dataSource.commitEdits
+    if (typeof commitEdits !== 'function') return
+    await commitEdits({
+      edits: updates,
+    })
   }
   return rowModel
 }
@@ -2895,10 +2903,6 @@ function applyAuctionMutationResult(result: GridHistoryMutationResponse<ApiLotRo
   return false
 }
 
-function hasAuctionMutationFastPayload(result: GridHistoryMutationResponse<ApiLotRow>) {
-  return Boolean(result.rows?.length || result.updatedRows?.length || result.invalidation)
-}
-
 function applyAuctionPatchUpdates(updates: readonly { rowId: string | number; data: Partial<GridLotRow> }[]) {
   const entries: DataGridDataSourceRowEntry<GridLotRow>[] = []
   for (const update of updates) {
@@ -2932,6 +2936,26 @@ function applyAuctionPatchUpdates(updates: readonly { rowId: string | number; da
 
   emitCatalogRowEntriesUpsert(entries)
   return entries.length > 0
+}
+
+function applyAuctionCommitResult(
+  result: GridHistoryMutationResponse<ApiLotRow> | null | undefined,
+  edits: readonly { rowId: string | number; data: Partial<GridLotRow> }[],
+) {
+  if (!result) return false
+  updateAuctionHistoryState(result)
+  if (typeof result.datasetVersion === 'number') {
+    latestAuctionGridDatasetVersion.value = result.datasetVersion
+  }
+
+  const rows = result.rows?.length ? result.rows : result.updatedRows ?? []
+  if (rows.length && applyAuctionHistoryRows(rows)) return true
+
+  if (edits.length) {
+    return applyAuctionPatchUpdates(edits)
+  }
+
+  return false
 }
 
 function applyAuctionGridChangeFeedResponse(response: GridChangeFeedResponse) {
@@ -2992,62 +3016,25 @@ function collectGridChangeRowIds(response: GridChangeFeedResponse) {
 function applyAuctionHistoryRows(rows: readonly GridHistoryRowSnapshot<ApiLotRow>[]) {
   if (!rows.length) return false
 
-  const apiRows: ApiLotRow[] = []
-  const gridRows: GridLotRow[] = []
+  const updatesByRowId = new Map<string, { rowId: string | number; data: Partial<GridLotRow> }>()
   for (const snapshot of rows) {
     const row = extractHistorySnapshotRow(snapshot)
     if (isAuctionApiHistoryRow(row)) {
-      apiRows.push(row)
+      const mapped = mapApiRow(row)
+      updatesByRowId.set(mapped.id, {
+        rowId: mapped.id,
+        data: mapped,
+      })
     } else if (isAuctionGridHistoryRow(row)) {
-      gridRows.push(row)
+      updatesByRowId.set(row.id, {
+        rowId: row.id,
+        data: row,
+      })
     }
   }
 
-  if (apiRows.length) {
-    applyWorkspaceRows(apiRows, { refreshSummary: false, patchGrid: false })
-    const entries = buildAuctionHistoryRowEntries(rows)
-    void catalogRowModel.value?.applyExternalUpdates?.(entries, { recompute: true })
-    emitCatalogRowEntriesUpsert(entries as unknown as DataGridDataSourceRowEntry<GridLotRow>[])
-    syncSelectedWorkDraftFromGridRows(apiRows)
-    return true
-  }
-
-  if (!gridRows.length) return false
-  rememberLoadedRows(gridRows)
-  const entries = buildAuctionHistoryRowEntries(rows)
-  void catalogRowModel.value?.applyExternalUpdates?.(entries, { recompute: true })
-  emitCatalogRowEntriesUpsert(entries as unknown as DataGridDataSourceRowEntry<GridLotRow>[])
-  for (const row of gridRows) {
-    if (selectedLot.value?.id === row.id) {
-      selectedLot.value = row
-    }
-    rememberGridWorkSnapshot(row)
-  }
-  return true
-}
-
-function buildAuctionHistoryRowEntries(rows: readonly GridHistoryRowSnapshot<ApiLotRow>[]) {
-  const entries: DataGridExternalRowUpdate<GridLotRow>[] = []
-  for (const snapshot of rows) {
-    const rowId = resolveHistorySnapshotRowId(snapshot)
-    const row = rowId ? gridRowsById.value.get(String(rowId)) : null
-    if (!row) continue
-    entries.push({
-      index: typeof snapshot.index === 'number' && Number.isFinite(snapshot.index) ? Math.max(0, Math.trunc(snapshot.index)) : 0,
-      rowId: row.id,
-      row,
-    })
-  }
-  return entries
-}
-
-function resolveHistorySnapshotRowId(snapshot: GridHistoryRowSnapshot<ApiLotRow>) {
-  if (typeof snapshot.rowId === 'string' || typeof snapshot.rowId === 'number') return snapshot.rowId
-  if (typeof snapshot.id === 'string' || typeof snapshot.id === 'number') return snapshot.id
-  const row = extractHistorySnapshotRow(snapshot)
-  if (isAuctionApiHistoryRow(row)) return row.row_id
-  if (isAuctionGridHistoryRow(row)) return row.id
-  return null
+  const updates = [...updatesByRowId.values()]
+  return applyAuctionPatchUpdates(updates)
 }
 
 function extractHistorySnapshotRow<TApiRow>(snapshot: GridHistoryRowSnapshot<TApiRow>) {

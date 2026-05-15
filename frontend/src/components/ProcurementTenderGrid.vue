@@ -216,7 +216,16 @@ type ProcurementWorkspaceRefreshResponse = {
 type ProcurementDataSource = DataGridDataSource<ProcurementGridRow>
 
 type ProcurementRowModel = DataSourceBackedRowModel<ProcurementGridRow> & {
-  patchRows?: (updates: readonly { rowId: string | number; data: Partial<ProcurementGridRow> }[]) => void | Promise<void>
+  patchRows?: (
+    updates: readonly { rowId: string | number; data: Partial<ProcurementGridRow> }[],
+    options?: {
+      recomputeSort?: boolean
+      recomputeFilter?: boolean
+      recomputeGroup?: boolean
+      emit?: boolean
+      signal?: AbortSignal | null
+    },
+  ) => void | Promise<void>
   dataSource: ProcurementDataSource
 }
 type ProcurementServerGridDataSource = ProcurementServerDatasource<ProcurementApiRow, ProcurementGridRow>
@@ -620,7 +629,11 @@ function createGridDataSource(): ProcurementDataSource {
       if (typeof (result as { datasetVersion?: unknown }).datasetVersion === 'number') {
         latestDatasetVersion.value = (result as { datasetVersion: number }).datasetVersion
       }
-      if (!result.rejected?.length) {
+      const localApplied = applyProcurementCommitResult(
+        result as GridHistoryMutationResponse<ProcurementApiRow>,
+        Array.isArray(request.edits) ? request.edits : [],
+      )
+      if (!localApplied && !result.rejected?.length) {
         await refreshGrid()
       }
       if (!result.rejected?.length) {
@@ -833,6 +846,54 @@ function applyProcurementMutationResult(result: GridHistoryMutationResponse<Proc
   return false
 }
 
+function applyProcurementCommitResult(
+  result: GridHistoryMutationResponse<ProcurementApiRow> | null | undefined,
+  edits: readonly { rowId: string | number; data: Partial<ProcurementGridRow> }[],
+) {
+  if (!result) return false
+  updateHistoryState(result)
+  if (typeof result.datasetVersion === 'number') {
+    latestDatasetVersion.value = result.datasetVersion
+  }
+
+  const rows = result.rows?.length ? result.rows : result.updatedRows ?? []
+  if (rows.length && applyProcurementHistoryRows(rows)) return true
+
+  if (edits.length) {
+    return applyProcurementLocalPatches(edits)
+  }
+
+  return false
+}
+
+function applyProcurementLocalPatches(updates: readonly { rowId: string | number; data: Partial<ProcurementGridRow> }[]) {
+  if (!updates.length) return false
+
+  const rowModelApi = rowModel.value as ProcurementRowModel | null
+  if (!rowModelApi?.patchRows) return false
+
+  rowModelApi.patchRows(
+    updates,
+    {
+      recomputeSort: false,
+      recomputeFilter: false,
+      recomputeGroup: false,
+      emit: true,
+    },
+  )
+
+  for (const update of updates) {
+    if (selectedRow.value?.id === String(update.rowId)) {
+      selectedRow.value = {
+        ...selectedRow.value,
+        ...update.data,
+      }
+    }
+  }
+
+  return true
+}
+
 function applyProcurementInvalidation(invalidation: unknown, datasetVersion: number | null | undefined) {
   const datasource = rowModel.value?.dataSource as ServerPushDataSource | undefined
   const applyInvalidation = datasource?.applyInvalidation
@@ -898,8 +959,7 @@ function applyProcurementHistoryRows(rows: readonly GridHistoryRowSnapshot<Procu
   if (!rows.length) return false
 
   const revision = allocateRowRevision()
-  const entries: DataGridExternalRowUpdate<ProcurementGridRow>[] = []
-  const entriesByRowId = new Map<string, DataGridExternalRowUpdate<ProcurementGridRow>>()
+  const updatesByRowId = new Map<string, { rowId: string | number; data: Partial<ProcurementGridRow> }>()
   for (const snapshot of rows) {
     const row = extractHistorySnapshotRow(snapshot)
     const mapped = isProcurementApiHistoryRow(row)
@@ -908,22 +968,14 @@ function applyProcurementHistoryRows(rows: readonly GridHistoryRowSnapshot<Procu
         ? row
         : null
     if (!mapped) continue
-    entriesByRowId.set(mapped.id, {
+    updatesByRowId.set(mapped.id, {
       rowId: mapped.id,
-      row: mapped,
-      index: typeof snapshot.index === 'number' && Number.isFinite(snapshot.index) ? Math.max(0, Math.trunc(snapshot.index)) : 0,
+      data: mapped,
     })
   }
 
-  entries.push(...entriesByRowId.values())
-  if (!entries.length) return false
-  void rowModel.value?.applyExternalUpdates?.(entries, { recompute: true })
-  for (const entry of entries) {
-    const nextRow = entry.row
-    if (!nextRow) continue
-    if (selectedRow.value?.id === nextRow.id) selectedRow.value = nextRow
-  }
-  return true
+  const updates = [...updatesByRowId.values()]
+  return applyProcurementLocalPatches(updates)
 }
 
 function allocateRowRevision() {
