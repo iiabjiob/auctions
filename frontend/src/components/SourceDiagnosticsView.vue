@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppTooltip from './AppTooltip.vue'
 import {
@@ -8,6 +8,14 @@ import {
   type SourceDiagnosticsRange,
   type SourceDiagnosticsResponse,
 } from '@/api/sourceDiagnostics'
+
+const props = defineProps<{
+  mobileRailOpen: boolean
+}>()
+
+const emit = defineEmits<{
+  (event: 'toggle-mobile-rail'): void
+}>()
 
 const rangeOptions: Array<{ label: string; value: SourceDiagnosticsRange }> = [
   { label: 'День', value: 'day' },
@@ -39,6 +47,8 @@ const diagnostics = ref<SourceDiagnosticsResponse | null>(null)
 const isLoading = ref(false)
 const errorMessage = ref<string | null>(null)
 const isHydrated = ref(false)
+const copyState = ref<'idle' | 'copied' | 'error'>('idle')
+let copyResetTimer: number | null = null
 
 const chartBuckets = computed(() => diagnostics.value?.timeline ?? [])
 const maxTimelineRequests = computed(() => Math.max(1, ...chartBuckets.value.map((bucket) => bucket.request_count)))
@@ -159,6 +169,42 @@ async function loadDiagnostics() {
   }
 }
 
+async function copyJsonToClipboard() {
+  if (!prettyJson.value || prettyJson.value === 'null') {
+    copyState.value = 'error'
+    return
+  }
+
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(prettyJson.value)
+    } else {
+      const textarea = document.createElement('textarea')
+      textarea.value = prettyJson.value
+      textarea.setAttribute('readonly', 'true')
+      textarea.style.position = 'fixed'
+      textarea.style.top = '-9999px'
+      textarea.style.left = '-9999px'
+      document.body.appendChild(textarea)
+      textarea.select()
+      const copied = document.execCommand('copy')
+      document.body.removeChild(textarea)
+      if (!copied) throw new Error('copy_failed')
+    }
+
+    copyState.value = 'copied'
+    if (copyResetTimer !== null) {
+      window.clearTimeout(copyResetTimer)
+    }
+    copyResetTimer = window.setTimeout(() => {
+      copyState.value = 'idle'
+      copyResetTimer = null
+    }, 1600)
+  } catch {
+    copyState.value = 'error'
+  }
+}
+
 async function syncAndLoad() {
   await syncRoute()
   await loadDiagnostics()
@@ -172,6 +218,13 @@ onMounted(async () => {
   syncStateFromRoute()
   isHydrated.value = true
   await loadDiagnostics()
+})
+
+onUnmounted(() => {
+  if (copyResetTimer !== null) {
+    window.clearTimeout(copyResetTimer)
+    copyResetTimer = null
+  }
 })
 
 watch(selectedRange, () => {
@@ -198,7 +251,19 @@ watch(selectedKind, () => {
   <section class="source-diagnostics" aria-label="Диагностика обмена с площадками">
     <div class="source-diagnostics__main">
       <header class="source-diagnostics__header">
-        <div>
+        <div class="source-diagnostics__header-title">
+          <button
+            class="app-mobile-menu-button"
+            type="button"
+            aria-label="Открыть меню"
+            :aria-expanded="mobileRailOpen"
+            @click="emit('toggle-mobile-rail')"
+          >
+            <span></span>
+            <span></span>
+            <span></span>
+          </button>
+
           <span class="eyebrow">Диагностика · {{ kindLabels[selectedKind] }}</span>
           <h1>Обмен с площадками</h1>
           <p>
@@ -399,10 +464,18 @@ watch(selectedKind, () => {
 
     <section class="source-diagnostics__json" aria-label="JSON">
       <header>
-        <h2>JSON</h2>
-        <button type="button" @click="loadDiagnostics" :disabled="isLoading">
-          {{ isLoading ? 'Обновление...' : 'Обновить' }}
-        </button>
+        <div class="source-diagnostics__json-title">
+          <h2>JSON</h2>
+          <p>Полный ответ диагностики</p>
+        </div>
+        <div class="source-diagnostics__json-actions">
+          <button type="button" @click="copyJsonToClipboard" :disabled="!diagnostics || isLoading">
+            {{ copyState === 'copied' ? 'Скопировано' : copyState === 'error' ? 'Не скопировано' : 'Copy to clipboard' }}
+          </button>
+          <button type="button" @click="loadDiagnostics" :disabled="isLoading">
+            {{ isLoading ? 'Обновление...' : 'Обновить' }}
+          </button>
+        </div>
       </header>
       <pre>{{ prettyJson }}</pre>
     </section>
@@ -412,6 +485,7 @@ watch(selectedKind, () => {
 <style scoped>
 .source-diagnostics {
   display: grid;
+  grid-row: 1 / -1;
   grid-template-columns: minmax(0, 1fr) minmax(360px, 42vw);
   min-height: 100%;
   height: 100%;
@@ -429,7 +503,8 @@ watch(selectedKind, () => {
   flex-direction: column;
   gap: 16px;
   min-width: 0;
-  overflow: auto;
+  min-height: 0;
+  overflow: visible;
   padding-right: 2px;
 }
 
@@ -444,6 +519,12 @@ watch(selectedKind, () => {
 .source-diagnostics__header h1 {
   margin: 4px 0;
   font-size: 28px;
+}
+
+.source-diagnostics__header-title {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
 }
 
 .source-diagnostics__header p {
@@ -700,6 +781,26 @@ watch(selectedKind, () => {
   min-width: 0;
 }
 
+.source-diagnostics__json-title {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.source-diagnostics__json-title p {
+  margin: 0;
+  color: #607067;
+  font-size: 12px;
+}
+
+.source-diagnostics__json-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .source-diagnostics__source h2,
 .source-diagnostics__source h3,
 .source-diagnostics__json h2 {
@@ -796,10 +897,11 @@ watch(selectedKind, () => {
   .source-diagnostics {
     display: flex;
     flex-direction: column;
-    height: auto;
+    height: 100%;
     min-height: 100%;
-    overflow: visible;
+    overflow: auto;
     padding: 16px;
+    -webkit-overflow-scrolling: touch;
   }
 
   .source-diagnostics__main {
@@ -810,8 +912,16 @@ watch(selectedKind, () => {
     flex-direction: column;
   }
 
+  .source-diagnostics__header-title {
+    width: 100%;
+  }
+
   .source-diagnostics__header h1 {
     font-size: 24px;
+  }
+
+  .source-diagnostics__header .app-mobile-menu-button {
+    margin-bottom: 6px;
   }
 
   .source-diagnostics__header p {
@@ -897,6 +1007,10 @@ watch(selectedKind, () => {
     white-space: pre;
     word-break: normal;
     overflow-wrap: normal;
+  }
+
+  .source-diagnostics__json {
+    display: none;
   }
 }
 </style>

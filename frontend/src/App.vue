@@ -3362,7 +3362,11 @@ onUnmounted(() => {
         <article class="help-document" v-html="helpDocumentHtml"></article>
       </section>
 
-      <SourceDiagnosticsView v-else-if="isDiagnosticsModule" />
+      <SourceDiagnosticsView
+        v-else-if="isDiagnosticsModule"
+        :mobile-rail-open="mobileRailOpen"
+        @toggle-mobile-rail="toggleMobileRail"
+      />
 
       <ProcurementTenderGrid
         v-else
