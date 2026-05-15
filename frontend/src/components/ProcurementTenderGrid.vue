@@ -245,13 +245,6 @@ type GridHistoryMutationResponse<TApiRow> = GridHistoryStatusLike & {
   rejected?: readonly unknown[]
 }
 
-type CommitEditsResultLike = {
-  rows?: readonly unknown[] | null
-  updatedRows?: readonly unknown[] | null
-  invalidation?: unknown
-  rejected?: readonly unknown[] | null
-}
-
 type ServerPushDataSource = ProcurementDataSource & {
   applyRowSnapshots?: (rows: readonly DataGridDataSourceRowEntry<ProcurementGridRow>[]) => boolean
   applyInvalidation?: (invalidation: unknown, options?: { datasetVersion?: unknown }) => void
@@ -595,9 +588,7 @@ function createGridRowModel(): ProcurementRowModel {
   if (typeof model.patchRows !== 'function') {
     model.patchRows = async (updates) => {
       if (!updates.length) return
-      const result = await datasource.commitEdits?.({ edits: updates }) as GridHistoryMutationResponse<ProcurementApiRow> | undefined
-      if (!result || result.rejected?.length || hasProcurementMutationFastPayload(result)) return
-      await rowModel.value?.refresh('manual')
+      await datasource.commitEdits?.({ edits: updates })
     }
   }
   return model
@@ -625,9 +616,11 @@ function createGridDataSource(): ProcurementDataSource {
         throw new Error('Procurement grid datasource does not support edits')
       }
       const result = await commitEdits(request)
-      const mutationResult = result as unknown as GridHistoryMutationResponse<ProcurementApiRow>
-      applyProcurementMutationResult(mutationResult)
-      if (result && !result.rejected?.length && !hasProcurementMutationFastPayload(result)) {
+      updateHistoryState(result as unknown as GridHistoryStatusLike)
+      if (typeof (result as { datasetVersion?: unknown }).datasetVersion === 'number') {
+        latestDatasetVersion.value = (result as { datasetVersion: number }).datasetVersion
+      }
+      if (!result.rejected?.length) {
         await refreshGrid()
       }
       if (!result.rejected?.length) {
@@ -838,10 +831,6 @@ function applyProcurementMutationResult(result: GridHistoryMutationResponse<Proc
   }
 
   return false
-}
-
-function hasProcurementMutationFastPayload(result: CommitEditsResultLike) {
-  return Boolean(result.rows?.length || result.updatedRows?.length || result.invalidation)
 }
 
 function applyProcurementInvalidation(invalidation: unknown, datasetVersion: number | null | undefined) {
