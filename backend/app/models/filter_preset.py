@@ -11,10 +11,11 @@ from app.infrastructure.db.database import Base
 
 class FilterPresetModel(Base):
     __tablename__ = "filter_presets"
-    __table_args__ = (UniqueConstraint("owner_user_id", "name", name="uq_filter_presets_owner_name"),)
+    __table_args__ = (UniqueConstraint("owner_user_id", "scope", "name", name="uq_filter_presets_owner_scope_name"),)
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     owner_user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    scope: Mapped[str] = mapped_column(String(32), nullable=False, default="auction", server_default="auction", index=True)
     name: Mapped[str] = mapped_column(String(160), nullable=False)
     filters: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     grid_view: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

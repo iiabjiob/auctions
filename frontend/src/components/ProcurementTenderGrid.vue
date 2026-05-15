@@ -356,6 +356,27 @@ const procurementContentClass = computed(() => ({
   'procurement-content--with-detail': Boolean(selectedRow.value),
 }))
 
+const procurementSummaryFields = computed(() => {
+  if (!selectedWorkspace.value) return []
+  const workspace = selectedWorkspace.value
+  return [
+    { label: 'Статус', value: workspace.record.status || '—' },
+    { label: 'Заказчик', value: workspace.record.customer_name || '—' },
+    { label: 'ИНН', value: workspace.record.customer_inn || '—' },
+    { label: 'НМЦК', value: formatMoney(workspace.record.initial_price_value) },
+    { label: 'Заявки до', value: formatDateTime(workspace.record.application_deadline_at) },
+    { label: 'Детали', value: formatDateTime(workspace.detail_cached_at) },
+    {
+      label: 'Наблюдений',
+      value: `${workspace.changes.observations_count} / ${workspace.changes.detail_observations_count}`,
+    },
+    {
+      label: 'Enrichment',
+      value: workspace.current_enrichment_state.requested_reason || workspace.current_enrichment_state.last_error || '—',
+    },
+  ]
+})
+
 const gridStatus = computed(() => {
   if (errorMessage.value) return errorMessage.value
   if (loading.value && !loadedOnce.value) return 'Загружаем закупки'
@@ -490,7 +511,7 @@ async function loadPresets() {
   presetsLoading.value = true
   presetDialogError.value = ''
   try {
-    presets.value = sortPresets(await apiRequest<FilterPreset[]>('/filter-presets', { auth: true }))
+    presets.value = sortPresets(await apiRequest<FilterPreset[]>('/procurements/filter-presets', { auth: true }))
     if (selectedPresetId.value && !presets.value.some((preset) => preset.id === selectedPresetId.value)) {
       selectedPresetId.value = ''
     }
@@ -552,7 +573,7 @@ async function submitPresetDialog() {
   presetDialogError.value = ''
   try {
     if (presetDialogMode.value === 'update' && selectedPreset.value) {
-      const preset = await apiRequest<FilterPreset>(`/filter-presets/${selectedPreset.value.id}`, {
+      const preset = await apiRequest<FilterPreset>(`/procurements/filter-presets/${selectedPreset.value.id}`, {
         auth: true,
         method: 'PATCH',
         body: JSON.stringify(buildPresetPayload(nextName)),
@@ -561,7 +582,7 @@ async function submitPresetDialog() {
       selectedPresetId.value = preset.id
       await applyPresetById(preset.id)
     } else {
-      const preset = await apiRequest<FilterPreset>('/filter-presets', {
+      const preset = await apiRequest<FilterPreset>('/procurements/filter-presets', {
         auth: true,
         method: 'POST',
         body: JSON.stringify(buildPresetPayload(nextName)),
@@ -583,7 +604,7 @@ async function confirmDeletePreset() {
   presetDialogSaving.value = true
   presetDialogError.value = ''
   try {
-    await apiRequest(`/filter-presets/${selectedPreset.value.id}`, {
+    await apiRequest(`/procurements/filter-presets/${selectedPreset.value.id}`, {
       auth: true,
       method: 'DELETE',
     })
@@ -1540,7 +1561,7 @@ onUnmounted(() => {
         />
       </section>
 
-      <aside v-if="selectedRow" class="procurement-detail-pane" aria-label="Карточка закупки">
+      <aside v-if="selectedRow" class="side-pane side-pane--detail procurement-detail-pane" aria-label="Карточка закупки">
         <button
           class="side-pane-resizer"
           type="button"
@@ -1560,18 +1581,16 @@ onUnmounted(() => {
           <div v-if="workspaceLoading" class="procurement-detail-pane__muted">Загружаем карточку</div>
 
           <template v-if="selectedWorkspace">
-            <dl class="procurement-detail-list">
-              <div><dt>Статус</dt><dd>{{ selectedWorkspace.record.status || '—' }}</dd></div>
-              <div><dt>Заказчик</dt><dd>{{ selectedWorkspace.record.customer_name || '—' }}</dd></div>
-              <div><dt>ИНН</dt><dd>{{ selectedWorkspace.record.customer_inn || '—' }}</dd></div>
-              <div><dt>НМЦК</dt><dd>{{ formatMoney(selectedWorkspace.record.initial_price_value) }}</dd></div>
-              <div><dt>Заявки до</dt><dd>{{ formatDateTime(selectedWorkspace.record.application_deadline_at) }}</dd></div>
-              <div><dt>Детали</dt><dd>{{ formatDateTime(selectedWorkspace.detail_cached_at) }}</dd></div>
-              <div><dt>Наблюдений</dt><dd>{{ selectedWorkspace.changes.observations_count }} / {{ selectedWorkspace.changes.detail_observations_count }}</dd></div>
-              <div><dt>Enrichment</dt><dd>{{ selectedWorkspace.current_enrichment_state.requested_reason || selectedWorkspace.current_enrichment_state.last_error || '—' }}</dd></div>
-            </dl>
+            <section class="detail-section procurement-detail-section procurement-detail-section--summary">
+              <dl class="detail-list detail-list--dense procurement-detail-list">
+                <template v-for="field in procurementSummaryFields" :key="field.label">
+                  <dt>{{ field.label }}</dt>
+                  <dd>{{ field.value }}</dd>
+                </template>
+              </dl>
+            </section>
 
-            <section class="procurement-detail-section">
+            <section class="detail-section procurement-detail-section">
               <h2>Документы</h2>
               <ul v-if="selectedWorkspace.documents.length">
                 <li v-for="document in selectedWorkspace.documents.slice(0, 12)" :key="document.url || document.title || ''">
@@ -1582,13 +1601,13 @@ onUnmounted(() => {
               <p v-else>Нет документов</p>
             </section>
 
-            <section class="procurement-detail-section">
+            <section class="detail-section procurement-detail-section">
               <h2>Поля ЕИС</h2>
-              <dl class="procurement-detail-list">
-                <div v-for="field in selectedWorkspace.raw_fields.slice(0, 16)" :key="field.name">
+              <dl class="detail-list detail-list--dense procurement-detail-list">
+                <template v-for="field in selectedWorkspace.raw_fields.slice(0, 16)" :key="field.name">
                   <dt>{{ field.name }}</dt>
                   <dd>{{ field.value }}</dd>
-                </div>
+                </template>
               </dl>
             </section>
           </template>

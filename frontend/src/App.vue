@@ -1633,7 +1633,7 @@ async function loadPresets() {
 
   presetsLoading.value = true
   try {
-    presets.value = sortPresets(await fetchJson<FilterPreset[]>('/api/v1/filter-presets'))
+    presets.value = sortPresets(await fetchJson<FilterPreset[]>('/api/v1/auctions/filter-presets'))
     if (selectedPresetId.value && !presets.value.some((preset) => preset.id === selectedPresetId.value)) {
       selectedPresetId.value = ''
     }
@@ -1957,7 +1957,7 @@ async function submitPresetDialog() {
 
   if (presetDialogMode.value === 'update' && selectedPreset.value) {
     try {
-      const preset = await fetchJson<FilterPreset>(`/api/v1/filter-presets/${selectedPreset.value.id}`, {
+      const preset = await fetchJson<FilterPreset>(`/api/v1/auctions/filter-presets/${selectedPreset.value.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(buildPresetPayload(nextName)),
@@ -1973,7 +1973,7 @@ async function submitPresetDialog() {
   }
 
   try {
-    const preset = await fetchJson<FilterPreset>('/api/v1/filter-presets', {
+    const preset = await fetchJson<FilterPreset>('/api/v1/auctions/filter-presets', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(buildPresetPayload(nextName)),
@@ -2013,7 +2013,7 @@ async function confirmDeletePreset() {
   if (!selectedPreset.value) return
 
   try {
-    await fetchJson(`/api/v1/filter-presets/${selectedPreset.value.id}`, {
+    await fetchJson(`/api/v1/auctions/filter-presets/${selectedPreset.value.id}`, {
       method: 'DELETE',
     })
     presets.value = presets.value.filter((preset) => preset.id !== selectedPreset.value?.id)

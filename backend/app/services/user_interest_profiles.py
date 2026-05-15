@@ -40,7 +40,7 @@ class UserInterestProfileService:
     ) -> UserInterestProfileResponse:
         name = payload.name.strip()
         if not name:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Profile name is required.")
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Profile name is required.")
         await self._ensure_name_available(session, user.id, name)
         profile = UserInterestProfileModel(
             id=f"uip_{uuid4().hex[:24]}",
@@ -57,7 +57,9 @@ class UserInterestProfileService:
         )
         session.add(profile)
         await session.flush()
-        await _enqueue_existing_notifications_for_preset(session, preset)
+        if profile.source_filter_preset_id:
+            preset = await self._get_owned_preset(session, user.id, profile.source_filter_preset_id)
+            await _enqueue_existing_notifications_for_preset(session, preset)
         await session.commit()
         await session.refresh(profile)
         return UserInterestProfileResponse.model_validate(profile, from_attributes=True)
@@ -71,7 +73,7 @@ class UserInterestProfileService:
         preset = await self._get_owned_preset(session, user.id, payload.preset_id)
         name = (payload.name or preset.name).strip()
         if not name:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Profile name is required.")
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Profile name is required.")
         await self._ensure_name_available(session, user.id, name)
         profile_payload = build_profile_payload_from_filter_preset(preset.filters, preset.grid_view)
         min_rating = payload.min_rating
@@ -112,7 +114,7 @@ class UserInterestProfileService:
             next_name = str(updates["name"]).strip()
             if not next_name:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail="Profile name is required.",
                 )
             if next_name != profile.name:

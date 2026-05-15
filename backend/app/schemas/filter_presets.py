@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
+
+PresetScope = Literal["auction", "procurement"]
 
 
 class FilterPresetBase(BaseModel):
@@ -25,5 +28,6 @@ class FilterPresetUpdate(BaseModel):
 
 class FilterPresetResponse(FilterPresetBase):
     id: str
+    scope: PresetScope
     created_at: datetime | None = None
     updated_at: datetime | None = None

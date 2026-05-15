@@ -8,10 +8,11 @@ from app.api.v1.health.pipeline_router import router as health_pipeline_router
 from app.api.v1.health.source_diagnostics_router import router as source_diagnostics_router
 from app.api.v1.auth.router import router as auth_router
 from app.api.v1.auctions.router import router as auctions_router
-from app.api.v1.filter_presets.router import router as filter_presets_router
+from app.api.v1.auctions.filter_presets_router import router as auction_filter_presets_router
 from app.api.v1.telegram.router import router as telegram_router
 from app.api.v1.user_interest_profiles.router import router as user_interest_profiles_router
 from app.api.v1.procurements.router import router as procurements_router
+from app.api.v1.procurements.filter_presets_router import router as procurement_filter_presets_router
 from app.api.auction_lots_grid_router import router as auction_lots_grid_router
 from app.api.procurement_lots_grid_router import router as procurement_lots_grid_router
 from app.api.grid_changes_router import router as grid_changes_router
@@ -105,7 +106,8 @@ app.include_router(health_router)
 app.include_router(health_pipeline_router)
 app.include_router(source_diagnostics_router)
 app.include_router(auth_router)
-app.include_router(filter_presets_router)
+app.include_router(auction_filter_presets_router)
+app.include_router(procurement_filter_presets_router)
 app.include_router(user_interest_profiles_router)
 app.include_router(telegram_router)
 app.include_router(auctions_router)

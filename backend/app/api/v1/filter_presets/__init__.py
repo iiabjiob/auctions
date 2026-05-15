@@ -1,3 +1,5 @@
-from app.api.v1.filter_presets.router import router
+"""Legacy filter preset router package.
 
-__all__ = ["router"]
+Kept only for migration compatibility while domain-specific preset routers live
+under auctions/procurements.
+"""

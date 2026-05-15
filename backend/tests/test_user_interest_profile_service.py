@@ -54,6 +54,9 @@ class FakeSession:
     async def commit(self) -> None:
         self.commits += 1
 
+    async def flush(self) -> None:
+        return None
+
     async def refresh(self, obj: object) -> None:
         self.refreshed.append(obj)
 
@@ -84,6 +87,7 @@ def make_preset(**overrides: object) -> FilterPresetModel:
     values = {
         "id": "preset_1",
         "owner_user_id": "user-1",
+        "scope": "auction",
         "name": "BMW cars",
         "filters": {
             "minPrice": "2000000",

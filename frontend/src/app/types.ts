@@ -598,6 +598,7 @@ export type DatasetPeriod = 'week' | 'month' | 'year'
 export type FilterPreset = {
   id: string
   name: string
+  scope: 'auction' | 'procurement'
   filters: ServerQuickFiltersState
   grid_view: unknown | null
   is_favorite: boolean
