@@ -8,7 +8,6 @@ import {
   type DataGridCellStyleResolver,
   type DataGridExposed,
   type DataGridHistoryProp,
-  type DataGridSelectionSnapshot,
 } from '@affino/datagrid-vue-app'
 import {
   createDataSourceBackedRowModel,
@@ -520,6 +519,10 @@ const hasAppliedFilters = computed(
 )
 const canUpdatePreset = computed(() => Boolean(selectedPreset.value) && hasAppliedFilters.value)
 
+type GridSelectionSnapshot = NonNullable<
+  ReturnType<NonNullable<ReturnType<DataGridExposed<ProcurementGridRow>['getApi']>>['selection']['getSnapshot']>
+>
+
 function createFirstCellSelectionSnapshot() {
   const api = gridRef.value?.getApi()
   const runtime = gridRef.value?.getRuntime()
@@ -550,7 +553,7 @@ function createFirstCellSelectionSnapshot() {
     ],
     activeRangeIndex: 0,
     activeCell: point,
-  } satisfies DataGridSelectionSnapshot<ProcurementGridRow>
+  } satisfies GridSelectionSnapshot
 }
 
 async function focusFirstCell() {
@@ -561,7 +564,7 @@ async function focusFirstCell() {
   const snapshot = createFirstCellSelectionSnapshot()
   if (!snapshot) return false
 
-  api.selection.setSelectionSnapshot(snapshot)
+  api.selection.setSnapshot(snapshot)
   await nextTick()
 
   const anchor = gridRef.value?.captureFocusAnchor({

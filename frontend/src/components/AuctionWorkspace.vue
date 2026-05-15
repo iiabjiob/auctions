@@ -3,7 +3,6 @@ import { nextTick, ref, watch, type PropType } from 'vue'
 import {
   DataGrid,
   type DataGridExposed,
-  type DataGridSelectionSnapshot,
 } from '@affino/datagrid-vue-app'
 
 const props = defineProps({
@@ -41,6 +40,10 @@ const emit = defineEmits<{
 const gridRef = ref<DataGridExposed<unknown> | null>(null)
 const initialFocusApplied = ref(false)
 
+type GridSelectionSnapshot = NonNullable<
+  ReturnType<NonNullable<ReturnType<DataGridExposed<unknown>['getApi']>>['selection']['getSnapshot']>
+>
+
 function createFirstCellSelectionSnapshot() {
   const api = gridRef.value?.getApi()
   const runtime = gridRef.value?.getRuntime()
@@ -71,7 +74,7 @@ function createFirstCellSelectionSnapshot() {
     ],
     activeRangeIndex: 0,
     activeCell: point,
-  } satisfies DataGridSelectionSnapshot<unknown>
+  } satisfies GridSelectionSnapshot
 }
 
 async function focusFirstCell() {
@@ -82,7 +85,7 @@ async function focusFirstCell() {
   const snapshot = createFirstCellSelectionSnapshot()
   if (!snapshot) return false
 
-  api.selection.setSelectionSnapshot(snapshot)
+  api.selection.setSnapshot(snapshot)
   await nextTick()
 
   const anchor = gridRef.value?.captureFocusAnchor({
