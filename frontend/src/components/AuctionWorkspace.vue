@@ -1,9 +1,28 @@
 <script setup lang="ts">
-import { nextTick, ref, watch, type PropType } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch, type PropType } from 'vue'
 import {
   DataGrid,
+  type DataGridAdvancedFilterProp,
+  type DataGridAppColumnInput,
+  type DataGridCellStyleResolver,
+  type DataGridColumnLayoutProp,
+  type DataGridColumnMenuProp,
   type DataGridExposed,
+  type DataGridHistoryProp,
+  type DataGridQuickFilterProp,
+  type DataGridStatePersistenceProp,
+  type DataGridThemeProp,
+  type DataGridVirtualizationProp,
 } from '@affino/datagrid-vue-app'
+import type { DataGridRowModel } from '@affino/datagrid-vue'
+import {
+  registerGridFocusPersistence,
+  restoreStoredGridFocusAnchor,
+} from '@/datagrid/gridFocusPersistence'
+
+const AUCTION_GRID_FOCUS_ANCHOR_STORAGE_KEY = 'auction-grid-focus-anchor-v1'
+
+type GridCellEditablePredicate = (context: { column: { key: string } }) => boolean
 
 const props = defineProps({
   loading: { type: Boolean, required: true },
@@ -18,19 +37,19 @@ const props = defineProps({
     type: Array as PropType<ReadonlyArray<number>>,
     required: true,
   },
-  rowModel: { type: Object as PropType<any>, required: true },
-  columns: { type: Array as PropType<ReadonlyArray<any>>, required: true },
-  gridColumnWidths: { type: Object as PropType<any>, required: true },
-  workspaceDataGridTheme: { type: Object as PropType<any>, required: true },
-  isGridCellEditable: { type: Function as PropType<any>, required: true },
-  editableGridCellStyle: { type: Function as PropType<any>, required: true },
-  catalogVirtualizationOptions: { type: Object as PropType<any>, required: true },
-  advancedFilterOptions: { type: Object as PropType<any>, required: true },
-  quickFilter: { type: Object as PropType<any>, required: true },
-  gridStatePersistence: { type: Object as PropType<any>, required: true },
-  columnMenuOptions: { type: Object as PropType<any>, required: true },
-  columnLayoutOptions: { type: Object as PropType<any>, required: true },
-  auctionGridHistoryOptions: { type: Object as PropType<any>, required: true },
+  rowModel: { type: Object as PropType<object>, required: true },
+  columns: { type: Array as PropType<ReadonlyArray<unknown>>, required: true },
+  gridColumnWidths: { type: Object as PropType<Readonly<Record<string, number | null>>>, required: true },
+  workspaceDataGridTheme: { type: Object as PropType<DataGridThemeProp>, required: true },
+  isGridCellEditable: { type: Function as PropType<GridCellEditablePredicate>, required: true },
+  editableGridCellStyle: { type: Function as PropType<DataGridCellStyleResolver>, required: true },
+  catalogVirtualizationOptions: { type: [Object, Boolean] as PropType<DataGridVirtualizationProp>, required: true },
+  advancedFilterOptions: { type: [Object, Boolean] as PropType<DataGridAdvancedFilterProp>, required: true },
+  quickFilter: { type: [Object, Boolean] as PropType<DataGridQuickFilterProp>, required: true },
+  gridStatePersistence: { type: Object as PropType<DataGridStatePersistenceProp>, required: true },
+  columnMenuOptions: { type: [Object, Boolean] as PropType<DataGridColumnMenuProp>, required: true },
+  columnLayoutOptions: { type: [Object, Boolean] as PropType<DataGridColumnLayoutProp>, required: true },
+  auctionGridHistoryOptions: { type: Object as PropType<DataGridHistoryProp>, required: true },
 })
 
 const emit = defineEmits<{
@@ -39,6 +58,8 @@ const emit = defineEmits<{
 
 const gridRef = ref<DataGridExposed<unknown> | null>(null)
 const initialFocusApplied = ref(false)
+const rowModelForGrid = computed(() => props.rowModel as DataGridRowModel<unknown>)
+const columnsForGrid = computed(() => props.columns as readonly DataGridAppColumnInput<unknown>[])
 
 type GridSelectionSnapshot = NonNullable<
   ReturnType<NonNullable<ReturnType<DataGridExposed<unknown>['getApi']>>['selection']['getSnapshot']>
@@ -101,16 +122,31 @@ async function focusFirstCell() {
   }) ?? false
 }
 
+async function restoreGridFocus() {
+  return restoreStoredGridFocusAnchor(gridRef, AUCTION_GRID_FOCUS_ANCHOR_STORAGE_KEY)
+}
+
 watch(
   () => props.rowModel && (props.catalogGridHasLoadedOnce || !props.loading || props.allRowsLength > 0),
   async (ready) => {
     if (!ready || initialFocusApplied.value) return
-    if (await focusFirstCell()) {
+    if (await restoreGridFocus() || await focusFirstCell()) {
       initialFocusApplied.value = true
     }
   },
   { immediate: true, flush: 'post' },
 )
+
+let cleanupGridFocusPersistence: (() => void) | null = null
+
+onMounted(() => {
+  cleanupGridFocusPersistence = registerGridFocusPersistence(gridRef, AUCTION_GRID_FOCUS_ANCHOR_STORAGE_KEY)
+})
+
+onUnmounted(() => {
+  cleanupGridFocusPersistence?.()
+  cleanupGridFocusPersistence = null
+})
 
 defineExpose({
   getApi: () => gridRef.value?.getApi(),
@@ -164,8 +200,8 @@ defineExpose({
       v-else-if="rowModel"
       v-show="catalogGridHasLoadedOnce || !loading || allRowsLength > 0"
       ref="gridRef"
-      :row-model="rowModel"
-      :columns="columns"
+      :row-model="rowModelForGrid"
+      :columns="columnsForGrid"
       :column-widths="gridColumnWidths"
       :base-row-height="26"
       :theme="workspaceDataGridTheme"

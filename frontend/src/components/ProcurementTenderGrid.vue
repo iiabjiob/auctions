@@ -12,7 +12,6 @@ import {
 import {
   createDataSourceBackedRowModel,
   type DataGridDataSource,
-  type DataGridExternalRowUpdate,
   type DataGridDataSourceRowEntry,
   type DataGridFilterSnapshot,
   type DataSourceBackedRowModel,
@@ -23,6 +22,10 @@ import AffinoCombobox from '@/components/AffinoCombobox.vue'
 import { sanitizeGridSavedView } from '@/app/persistence'
 import type { FilterPreset } from '@/app/types'
 import { PROCUREMENT_GRID_EDITABLE_COLUMN_IDS } from '@/datagrid/procurementGridEdits'
+import {
+  registerGridFocusPersistence,
+  restoreStoredGridFocusAnchor,
+} from '@/datagrid/gridFocusPersistence'
 import {
   PROCUREMENT_ADVANCED_FILTER_OPTIONS,
   PROCUREMENT_COLUMN_LAYOUT_OPTIONS,
@@ -299,6 +302,7 @@ type HistoryStatusSource = {
 }
 
 const GRID_COLUMN_WIDTHS_STORAGE_KEY = 'procurement-grid-column-widths-v1'
+const GRID_FOCUS_ANCHOR_STORAGE_KEY = 'procurement-grid-focus-anchor-v1'
 const DETAIL_PANE_WIDTH_STORAGE_KEY = 'procurement-detail-pane-width'
 const PROCUREMENT_LOTS_TABLE_ID = 'procurement-lots'
 const SERVER_ROW_MODEL_INITIAL_FETCH_SIZE = 160
@@ -312,6 +316,7 @@ const PROCUREMENT_FILTER_SYNC_DELAY_MS = 400
 
 const gridRef = ref<DataGridExposed<ProcurementGridRow> | null>(null)
 const initialFocusApplied = ref(false)
+let cleanupGridFocusPersistence: (() => void) | null = null
 const workspaceRef = ref<HTMLElement | null>(null)
 const rowModel = shallowRef<ProcurementRowModel | null>(null)
 const datasourceRef = shallowRef<ProcurementServerGridDataSource | null>(null)
@@ -580,11 +585,15 @@ async function focusFirstCell() {
   }) ?? false
 }
 
+async function restoreGridFocus() {
+  return restoreStoredGridFocusAnchor(gridRef, GRID_FOCUS_ANCHOR_STORAGE_KEY)
+}
+
 watch(
   () => rowModel.value && (loadedOnce.value || !loading.value || total.value > 0),
   async (ready) => {
     if (!ready || initialFocusApplied.value) return
-    if (await focusFirstCell()) {
+    if (await restoreGridFocus() || await focusFirstCell()) {
       initialFocusApplied.value = true
     }
   },
@@ -1532,6 +1541,7 @@ onMounted(() => {
   void loadPresets()
   subscribeHistoryStatus()
   void loadPipelineHealth()
+  cleanupGridFocusPersistence = registerGridFocusPersistence(gridRef, GRID_FOCUS_ANCHOR_STORAGE_KEY)
   document.addEventListener('visibilitychange', handleGridVisibilityChange)
 })
 
@@ -1540,6 +1550,8 @@ watch(filters, () => {
 }, { deep: true })
 
 onUnmounted(() => {
+  cleanupGridFocusPersistence?.()
+  cleanupGridFocusPersistence = null
   historyStatusUnsubscribe?.()
   historyStatusUnsubscribe = null
   document.removeEventListener('visibilitychange', handleGridVisibilityChange)

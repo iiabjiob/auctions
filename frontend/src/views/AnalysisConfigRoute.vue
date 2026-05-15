@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, reactive, ref, watch } from 'vue'
+import { computed, h, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   DataGrid,
@@ -20,6 +20,10 @@ import {
   updateAnalysisConfig,
   type AnalysisConfigSource,
 } from '@/api/analysisConfig'
+import {
+  persistGridFocusAnchor,
+  restoreStoredGridFocusAnchor,
+} from '@/datagrid/gridFocusPersistence'
 import type {
   AnalysisConfigResponse,
   OwnerScoringProfile,
@@ -88,6 +92,7 @@ const sourceTabLabels: Record<AnalysisConfigSource, string> = {
 
 const ACTIVE_SOURCE_STORAGE_KEY = 'analysis-config-active-source-v1'
 const ACTIVE_EDITOR_SECTION_STORAGE_KEY_PREFIX = 'analysis-config-active-section-v1'
+const GRID_FOCUS_ANCHOR_STORAGE_KEY_PREFIX = 'analysis-config-grid-focus-anchor-v1'
 
 const route = useRoute()
 const router = useRouter()
@@ -124,6 +129,7 @@ const hasPriorityConflicts = computed(() => hasDuplicatePriorities(activeState.v
 const categoryGridRef = ref<DataGridExposed<AnalysisConfigDraftRule> | null>(null)
 const dictionaryGridRef = ref<DataGridExposed<AnalysisConfigDictionaryRow> | null>(null)
 let preserveCategoryPriorityOnNextGridChange = false
+let cleanupGridFocusPersistence: (() => void) | null = null
 
 const gridHistory = {
   enabled: true,
@@ -266,6 +272,34 @@ function createGridStatePersistence(
     restoreOnReady: true,
     debounceMs: 250,
   }
+}
+
+function getGridFocusAnchorStorageKey(source: AnalysisConfigSource, section: AnalysisConfigEditorSection) {
+  return `${GRID_FOCUS_ANCHOR_STORAGE_KEY_PREFIX}:${source}:${section}`
+}
+
+function getActiveGridFocusTarget() {
+  const section = activeEditorSection.value
+  return {
+    section,
+    key: getGridFocusAnchorStorageKey(activeSource.value, section),
+    ref: section === 'categories' ? categoryGridRef : dictionaryGridRef,
+  }
+}
+
+function persistActiveGridFocusAnchor() {
+  const target = getActiveGridFocusTarget()
+  persistGridFocusAnchor(target.ref, target.key)
+}
+
+async function restoreActiveGridFocusAnchor() {
+  const target = getActiveGridFocusTarget()
+  await nextTick()
+  return restoreStoredGridFocusAnchor(target.ref, target.key, {
+    preventScroll: true,
+    scrollIntoView: false,
+    retries: 6,
+  })
 }
 
 function applyConfigToDraft(source: AnalysisConfigSource, config: AnalysisConfigResponse) {
@@ -785,16 +819,51 @@ watch(
   { immediate: true },
 )
 
-function switchTab(source: AnalysisConfigSource) {
+watch(
+  () => [activeSource.value, activeEditorSection.value, activeLoading.value] as const,
+  ([, , loading]) => {
+    if (!loading) void restoreActiveGridFocusAnchor()
+  },
+  { immediate: true, flush: 'post' },
+)
+
+onMounted(() => {
+  const save = () => {
+    persistActiveGridFocusAnchor()
+  }
+  const saveOnHidden = () => {
+    if (document.visibilityState === 'hidden') save()
+  }
+  window.addEventListener('pagehide', save)
+  window.addEventListener('beforeunload', save)
+  document.addEventListener('visibilitychange', saveOnHidden)
+  cleanupGridFocusPersistence = () => {
+    save()
+    window.removeEventListener('pagehide', save)
+    window.removeEventListener('beforeunload', save)
+    document.removeEventListener('visibilitychange', saveOnHidden)
+  }
+})
+
+onUnmounted(() => {
+  cleanupGridFocusPersistence?.()
+  cleanupGridFocusPersistence = null
+})
+
+async function switchTab(source: AnalysisConfigSource) {
   syncActiveGrid()
+  persistActiveGridFocusAnchor()
   tabs.select(source)
+  await restoreActiveGridFocusAnchor()
 }
 
-function switchEditorSection(section: AnalysisConfigEditorSection) {
+async function switchEditorSection(section: AnalysisConfigEditorSection) {
   if (activeEditorSection.value === section) return
   syncActiveGrid()
+  persistActiveGridFocusAnchor()
   activeEditorSections[activeSource.value] = section
   persistEditorSection(activeSource.value, section)
+  await restoreActiveGridFocusAnchor()
 }
 </script>
 
