@@ -523,7 +523,7 @@ const canUpdatePreset = computed(() => Boolean(selectedPreset.value) && hasAppli
 function createFirstCellSelectionSnapshot() {
   const api = gridRef.value?.getApi()
   const runtime = gridRef.value?.getRuntime()
-  if (!api?.selection.hasSelectionSupport() || !runtime) return null
+  if (!api?.selection.hasSupport() || !runtime) return null
 
   const firstRow = runtime.getBodyRowAtIndex(0)
   const firstColumn = runtime.columnSnapshot.value.visibleColumns[0]
@@ -556,7 +556,7 @@ function createFirstCellSelectionSnapshot() {
 async function focusFirstCell() {
   const api = gridRef.value?.getApi()
   const runtime = gridRef.value?.getRuntime()
-  if (!api?.selection.hasSelectionSupport() || !runtime) return false
+  if (!api?.selection.hasSupport() || !runtime) return false
 
   const snapshot = createFirstCellSelectionSnapshot()
   if (!snapshot) return false
