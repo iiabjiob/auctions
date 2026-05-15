@@ -20,12 +20,14 @@ import {
   type DataGridCellStyleResolver,
   type DataGridExposed,
   type DataGridFocusAnchor,
+  type DataGridHistoryProp,
   type DataGridSavedViewSnapshot,
 } from '@affino/datagrid-vue-app'
 import {
   createDataSourceBackedRowModel,
   type DataGridColumnHistogram,
   type DataGridDataSource,
+  type DataGridDataSourceRowEntry,
   type DataGridExternalRowUpdate,
   type DataGridFilterSnapshot,
   type DataGridSetStateOptions,
@@ -604,6 +606,34 @@ type CatalogRowModel = DataSourceBackedRowModel<GridLotRow> & {
   dataSource: CatalogDataSource
 }
 
+type GridHistoryStatusLike = {
+  canUndo?: boolean
+  canRedo?: boolean
+  latestUndoOperationId?: string | null
+  latestRedoOperationId?: string | null
+  datasetVersion?: number | null
+}
+
+type GridHistoryRowSnapshot<TApiRow> = {
+  id?: string | number
+  rowId?: string | number
+  index?: number
+  row?: TApiRow | GridLotRow | unknown
+}
+
+type GridHistoryMutationResponse<TApiRow> = GridHistoryStatusLike & {
+  operationId?: string | null
+  action?: 'undo' | 'redo'
+  rows?: GridHistoryRowSnapshot<TApiRow>[]
+  updatedRows?: GridHistoryRowSnapshot<TApiRow>[]
+  invalidation?: unknown
+  rejected?: readonly unknown[]
+}
+
+type HistoryStatusSource = {
+  subscribeHistoryStatus?: (listener: (status: GridHistoryStatusLike) => void) => () => void
+}
+
 type DatasetPeriod = 'week' | 'month' | 'year'
 
 type FilterPreset = {
@@ -813,6 +843,13 @@ const catalogGridHasLoadedOnce = ref(false)
 const catalogQueryPlaceholderVisible = ref(false)
 const gridRowRevision = ref(0)
 const latestAuctionGridDatasetVersion = ref<number | null>(null)
+const auctionHistoryState = reactive({
+  canUndo: false,
+  canRedo: false,
+  latestUndoOperationId: null as string | null,
+  latestRedoOperationId: null as string | null,
+  datasetVersion: null as number | null,
+})
 const loadingSkeletonVisibleRows = ref(LOADING_SKELETON_MIN_ROWS)
 let resizeStartX = 0
 let resizeStartWidth = 0
@@ -847,6 +884,7 @@ let auctionGridChangesRefreshTimer: ReturnType<typeof window.setTimeout> | null 
 let auctionGridChangesPolling = false
 let auctionGridChangesRefreshInFlight = false
 let gridSurfaceResizeObserver: ResizeObserver | null = null
+let auctionHistoryStatusUnsubscribe: (() => void) | null = null
 
 const DEFAULT_SERVER_FILTERS: ServerQuickFiltersState = {
   period: 'month',
@@ -2474,11 +2512,22 @@ function createAuctionServerCatalogDataSource(): CatalogAuctionServerDataSource 
 
 const auctionServerDataSource = createAuctionServerCatalogDataSource()
 
-const auctionGridHistoryOptions = {
-  enabled: true,
-  shortcuts: 'grid' as const,
-  controls: true,
-}
+const auctionGridHistoryOptions = computed<DataGridHistoryProp>(() => {
+  const canUndo = auctionHistoryState.canUndo
+  const canRedo = auctionHistoryState.canRedo
+  return {
+    enabled: true,
+    shortcuts: 'grid',
+    controls: true,
+    adapter: {
+      captureSnapshot: () => null,
+      recordIntentTransaction: () => undefined,
+      canUndo: () => canUndo,
+      canRedo: () => canRedo,
+      runHistoryAction: runAuctionGridHistoryAction,
+    },
+  }
+})
 
 function rememberLoadedRows(rows: GridLotRow[], options: { trackLoadedRows?: boolean } = {}) {
   const trackLoadedRows = options.trackLoadedRows !== false
@@ -2755,6 +2804,7 @@ function createCatalogDataSource(): CatalogDataSource {
         throw new Error('Auction grid datasource does not support edits')
       }
       const result = await commitEdits(request)
+      applyAuctionMutationResult(result as GridHistoryMutationResponse<ApiLotRow>)
       if (!result.rejected?.length) {
         errorMessage.value = ''
       }
@@ -2784,30 +2834,277 @@ function createCatalogRowModel(): CatalogRowModel {
       if (!updates.length) return
       const commitEdits = rowModel.dataSource.commitEdits
       if (typeof commitEdits !== 'function') return
-      await commitEdits({
+      const result = await commitEdits({
         edits: updates,
-      })
-      await rowModel.refresh('manual')
+      }) as GridHistoryMutationResponse<ApiLotRow> | undefined
+      if (!result || hasAuctionMutationFastPayload(result) || result.rejected?.length) return
+      applyAuctionPatchUpdates(updates)
     }
   }
   return rowModel
 }
 
-function emitCatalogRowsUpsert(rows: readonly GridLotRow[], total: number, startIndex: number) {
-  if (!catalogDataSourceListeners.size) return
+async function runAuctionGridHistoryAction(direction: 'undo' | 'redo') {
+  const result = await postAuctionServerGridJson<GridHistoryMutationResponse<ApiLotRow>>(
+    `/api/history/${direction}`,
+    { table_id: 'auction-lots' },
+  )
+  if (applyAuctionMutationResult(result)) {
+    errorMessage.value = ''
+    return result.operationId ?? null
+  }
 
-  const event = {
-    type: 'upsert' as const,
-    total,
-    rows: rows.map((row, index) => ({
+  await catalogRowModel.value?.refresh('manual')
+  errorMessage.value = ''
+  return result.operationId ?? null
+}
+
+function updateAuctionHistoryState(status: GridHistoryStatusLike | null | undefined) {
+  if (!status) return
+  if (typeof status.canUndo === 'boolean') auctionHistoryState.canUndo = status.canUndo
+  if (typeof status.canRedo === 'boolean') auctionHistoryState.canRedo = status.canRedo
+  if (typeof status.latestUndoOperationId !== 'undefined') {
+    auctionHistoryState.latestUndoOperationId = status.latestUndoOperationId ?? null
+  }
+  if (typeof status.latestRedoOperationId !== 'undefined') {
+    auctionHistoryState.latestRedoOperationId = status.latestRedoOperationId ?? null
+  }
+  if (typeof status.datasetVersion !== 'undefined') {
+    auctionHistoryState.datasetVersion = typeof status.datasetVersion === 'number' ? status.datasetVersion : null
+  }
+}
+
+function applyAuctionMutationResult(result: GridHistoryMutationResponse<ApiLotRow> | null | undefined) {
+  if (!result) return false
+  updateAuctionHistoryState(result)
+  if (typeof result.datasetVersion === 'number') {
+    latestAuctionGridDatasetVersion.value = result.datasetVersion
+  }
+
+  const rows = result.rows?.length ? result.rows : result.updatedRows ?? []
+  if (applyAuctionHistoryRows(rows)) return true
+
+  if (result.invalidation) {
+    emitCatalogInvalidation(result.invalidation, result.datasetVersion)
+    return true
+  }
+
+  return false
+}
+
+function hasAuctionMutationFastPayload(result: GridHistoryMutationResponse<ApiLotRow>) {
+  return Boolean(result.rows?.length || result.updatedRows?.length || result.invalidation)
+}
+
+function applyAuctionPatchUpdates(updates: readonly { rowId: string | number; data: Partial<GridLotRow> }[]) {
+  const entries: DataGridDataSourceRowEntry<GridLotRow>[] = []
+  for (const update of updates) {
+    const rowId = String(update.rowId)
+    const existing = gridRowsById.value.get(rowId)
+    if (!existing) continue
+
+    const patched = recomputeGridEconomyFields({
+      ...existing,
+      ...update.data,
+      id: existing.id,
+      rowRevision: existing.rowRevision,
+    })
+    gridRowsById.value.set(patched.id, patched)
+
+    const rowIndex = allRows.value.findIndex((row) => row.id === patched.id)
+    if (rowIndex >= 0) {
+      allRows.value[rowIndex] = patched
+    }
+    if (selectedLot.value?.id === patched.id) {
+      selectedLot.value = patched
+    }
+    rememberGridWorkSnapshot(patched)
+
+    entries.push({
+      index: rowIndex >= 0 ? rowIndex : 0,
+      row: patched,
+      rowId: patched.id,
+    })
+  }
+
+  emitCatalogRowEntriesUpsert(entries)
+  return entries.length > 0
+}
+
+function applyAuctionGridChangeFeedResponse(response: GridChangeFeedResponse) {
+  if (response.hasMore) return false
+
+  const rows = collectAuctionChangeFeedRows(response)
+  if (applyAuctionHistoryRows(rows)) {
+    latestAuctionGridDatasetVersion.value = response.datasetVersion
+    return true
+  }
+
+  for (const change of response.changes) {
+    const invalidation = resolveGridChangeInvalidation(change.payload)
+    if (invalidation) {
+      emitCatalogInvalidation(invalidation, response.datasetVersion)
+      latestAuctionGridDatasetVersion.value = response.datasetVersion
+      return true
+    }
+  }
+
+  const rowIds = collectGridChangeRowIds(response)
+  if (rowIds.length) {
+    emitCatalogInvalidation({ type: 'rows', rowIds, reason: 'change_feed' }, response.datasetVersion)
+    latestAuctionGridDatasetVersion.value = response.datasetVersion
+    return true
+  }
+
+  return false
+}
+
+function collectAuctionChangeFeedRows(response: GridChangeFeedResponse) {
+  const rows: GridHistoryRowSnapshot<ApiLotRow>[] = []
+  for (const change of response.changes) {
+    const payload = change.payload
+    const payloadRows = payload.rows ?? payload.updatedRows
+    if (Array.isArray(payloadRows)) {
+      rows.push(...payloadRows as GridHistoryRowSnapshot<ApiLotRow>[])
+    }
+    if (payload.row && typeof payload.row === 'object') {
+      rows.push({ rowId: change.rowId ?? undefined, row: payload.row })
+    }
+  }
+  return rows
+}
+
+function resolveGridChangeInvalidation(payload: Record<string, unknown>) {
+  const invalidation = payload.invalidation
+  if (invalidation && typeof invalidation === 'object') return invalidation
+  if (typeof payload.type === 'string') return payload
+  return null
+}
+
+function collectGridChangeRowIds(response: GridChangeFeedResponse) {
+  const rowIds = new Set<string>()
+  for (const change of response.changes) {
+    if (change.type === 'invalidation') continue
+    if (typeof change.rowId === 'string' && change.rowId.trim()) {
+      rowIds.add(change.rowId)
+    }
+  }
+  return [...rowIds]
+}
+
+function applyAuctionHistoryRows(rows: readonly GridHistoryRowSnapshot<ApiLotRow>[]) {
+  if (!rows.length) return false
+
+  const apiRows: ApiLotRow[] = []
+  const gridRows: GridLotRow[] = []
+  for (const snapshot of rows) {
+    const row = extractHistorySnapshotRow(snapshot)
+    if (isAuctionApiHistoryRow(row)) {
+      apiRows.push(row)
+    } else if (isAuctionGridHistoryRow(row)) {
+      gridRows.push(row)
+    }
+  }
+
+  if (apiRows.length) {
+    applyWorkspaceRows(apiRows, { refreshSummary: false, patchGrid: false })
+    emitCatalogRowEntriesUpsert(buildAuctionHistoryRowEntries(rows))
+    syncSelectedWorkDraftFromGridRows(apiRows)
+    return true
+  }
+
+  if (!gridRows.length) return false
+  rememberLoadedRows(gridRows)
+  emitCatalogRowEntriesUpsert(buildAuctionHistoryRowEntries(rows))
+  for (const row of gridRows) {
+    if (selectedLot.value?.id === row.id) {
+      selectedLot.value = row
+    }
+    rememberGridWorkSnapshot(row)
+  }
+  return true
+}
+
+function buildAuctionHistoryRowEntries(rows: readonly GridHistoryRowSnapshot<ApiLotRow>[]) {
+  const entries: DataGridDataSourceRowEntry<GridLotRow>[] = []
+  for (const snapshot of rows) {
+    const rowId = resolveHistorySnapshotRowId(snapshot)
+    const row = rowId ? gridRowsById.value.get(String(rowId)) : null
+    if (!row) continue
+    entries.push({
+      index: typeof snapshot.index === 'number' && Number.isFinite(snapshot.index) ? Math.max(0, Math.trunc(snapshot.index)) : 0,
+      rowId: row.id,
+      row,
+    })
+  }
+  return entries
+}
+
+function resolveHistorySnapshotRowId(snapshot: GridHistoryRowSnapshot<ApiLotRow>) {
+  if (typeof snapshot.rowId === 'string' || typeof snapshot.rowId === 'number') return snapshot.rowId
+  if (typeof snapshot.id === 'string' || typeof snapshot.id === 'number') return snapshot.id
+  const row = extractHistorySnapshotRow(snapshot)
+  if (isAuctionApiHistoryRow(row)) return row.row_id
+  if (isAuctionGridHistoryRow(row)) return row.id
+  return null
+}
+
+function extractHistorySnapshotRow<TApiRow>(snapshot: GridHistoryRowSnapshot<TApiRow>) {
+  if (snapshot && typeof snapshot === 'object' && 'row' in snapshot) {
+    return snapshot.row
+  }
+  return snapshot
+}
+
+function isAuctionApiHistoryRow(value: unknown): value is ApiLotRow {
+  return Boolean(value && typeof value === 'object' && typeof (value as { row_id?: unknown }).row_id === 'string')
+}
+
+function isAuctionGridHistoryRow(value: unknown): value is GridLotRow {
+  return Boolean(value && typeof value === 'object' && typeof (value as { id?: unknown }).id === 'string' && 'lotName' in value)
+}
+
+function emitCatalogRowsUpsert(rows: readonly GridLotRow[], total: number, startIndex: number) {
+  emitCatalogRowEntriesUpsert(
+    rows.map((row, index) => ({
       index: startIndex + index,
       row,
       rowId: row.id,
     })),
+    total,
+  )
+}
+
+function emitCatalogRowEntriesUpsert(rows: readonly DataGridDataSourceRowEntry<GridLotRow>[], total?: number) {
+  if (!catalogDataSourceListeners.size || !rows.length) return
+
+  const event = {
+    type: 'upsert' as const,
+    ...(typeof total === 'number' ? { total } : {}),
+    rows,
   }
   for (const listener of catalogDataSourceListeners) {
     listener(event)
   }
+}
+
+function emitCatalogInvalidation(invalidation: unknown, datasetVersion: number | null | undefined) {
+  if (!catalogDataSourceListeners.size) return
+
+  const event = {
+    type: 'invalidate' as const,
+    datasetVersion: datasetVersion ?? latestAuctionGridDatasetVersion.value,
+    invalidation,
+  } as Parameters<DataGridDataSourcePushListener<GridLotRow>>[0]
+  for (const listener of catalogDataSourceListeners) {
+    listener(event)
+  }
+}
+
+function subscribeAuctionHistoryStatus() {
+  auctionHistoryStatusUnsubscribe?.()
+  const source = auctionServerDataSource as unknown as HistoryStatusSource
+  auctionHistoryStatusUnsubscribe = source.subscribeHistoryStatus?.(updateAuctionHistoryState) ?? null
 }
 
 function resolveCatalogReloadRange() {
@@ -3415,7 +3712,9 @@ async function pollAuctionGridChanges() {
     const response = await auctionServerDataSource.getChangesSinceVersion({ sinceVersion }) as GridChangeFeedResponse
     const currentVersion = latestAuctionGridDatasetVersion.value ?? 0
     if (response.changes.length > 0 || response.datasetVersion > currentVersion) {
-      scheduleAuctionGridChangeRefresh()
+      if (!applyAuctionGridChangeFeedResponse(response)) {
+        scheduleAuctionGridChangeRefresh()
+      }
     }
   } catch (error) {
     if (isAuthenticated.value && !document.hidden) {
@@ -4379,6 +4678,13 @@ function resetCatalogState() {
   selectedWorkspace.value = null
   resetDecisionReportState()
   detailStatus.value = ''
+  updateAuctionHistoryState({
+    canUndo: false,
+    canRedo: false,
+    latestUndoOperationId: null,
+    latestRedoOperationId: null,
+    datasetVersion: null,
+  })
   errorMessage.value = ''
   lastLoadedAt.value = null
   detailLoading.value = false
@@ -4590,6 +4896,7 @@ watch(isAuthenticated, (authenticated) => {
 })
 
 onMounted(() => {
+  subscribeAuctionHistoryStatus()
   if (isAuthenticated.value) {
     if (isAuctionsModule.value) {
       void loadLots()
@@ -4610,6 +4917,8 @@ onMounted(() => {
   document.addEventListener('visibilitychange', handleAuctionGridVisibilityChange)
 })
 onUnmounted(() => {
+  auctionHistoryStatusUnsubscribe?.()
+  auctionHistoryStatusUnsubscribe = null
   detailAbortController?.abort()
   detailAbortController = null
   catalogSoftRefreshAbortController?.abort()

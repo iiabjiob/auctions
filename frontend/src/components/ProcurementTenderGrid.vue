@@ -7,10 +7,12 @@ import {
   type DataGridAppColumnFilterOptions,
   type DataGridCellStyleResolver,
   type DataGridExposed,
+  type DataGridHistoryProp,
 } from '@affino/datagrid-vue-app'
 import {
   createDataSourceBackedRowModel,
   type DataGridDataSource,
+  type DataGridDataSourceRowEntry,
   type DataGridFilterSnapshot,
   type DataSourceBackedRowModel,
 } from '@affino/datagrid-vue'
@@ -217,6 +219,39 @@ type ProcurementRowModel = DataSourceBackedRowModel<ProcurementGridRow> & {
 }
 type ProcurementServerGridDataSource = ProcurementServerDatasource<ProcurementApiRow, ProcurementGridRow>
 
+type GridHistoryStatusLike = {
+  canUndo?: boolean
+  canRedo?: boolean
+  latestUndoOperationId?: string | null
+  latestRedoOperationId?: string | null
+  datasetVersion?: number | null
+}
+
+type GridHistoryRowSnapshot<TApiRow> = {
+  id?: string | number
+  rowId?: string | number
+  index?: number
+  row?: TApiRow | ProcurementGridRow | unknown
+}
+
+type GridHistoryMutationResponse<TApiRow> = GridHistoryStatusLike & {
+  operationId?: string | null
+  action?: 'undo' | 'redo'
+  rows?: GridHistoryRowSnapshot<TApiRow>[]
+  updatedRows?: GridHistoryRowSnapshot<TApiRow>[]
+  invalidation?: unknown
+  rejected?: readonly unknown[]
+}
+
+type ServerPushDataSource = ProcurementDataSource & {
+  applyRowSnapshots?: (rows: readonly DataGridDataSourceRowEntry<ProcurementGridRow>[]) => boolean
+  applyInvalidation?: (invalidation: unknown, options?: { datasetVersion?: unknown }) => void
+}
+
+type HistoryStatusSource = {
+  subscribeHistoryStatus?: (listener: (status: GridHistoryStatusLike) => void) => () => void
+}
+
 const GRID_COLUMN_WIDTHS_STORAGE_KEY = 'procurement-grid-column-widths-v1'
 const DETAIL_PANE_WIDTH_STORAGE_KEY = 'procurement-detail-pane-width'
 const PROCUREMENT_LOTS_TABLE_ID = 'procurement-lots'
@@ -234,6 +269,13 @@ const rowModel = shallowRef<ProcurementRowModel | null>(null)
 const datasourceRef = shallowRef<ProcurementServerGridDataSource | null>(null)
 const rowRevision = ref(0)
 const latestDatasetVersion = ref<number | null>(null)
+const historyState = reactive({
+  canUndo: false,
+  canRedo: false,
+  latestUndoOperationId: null as string | null,
+  latestRedoOperationId: null as string | null,
+  datasetVersion: null as number | null,
+})
 const pipelineHealth = ref<ProcurementPipelineHealthResponse | null>(null)
 const loadedOnce = ref(false)
 const loading = ref(false)
@@ -267,6 +309,7 @@ let pipelineHealthAbortController: AbortController | null = null
 let workspaceAbortController: AbortController | null = null
 let resizeStartX = 0
 let resizeStartWidth = 0
+let historyStatusUnsubscribe: (() => void) | null = null
 
 const procurementContentClass = computed(() => ({
   'procurement-content--with-detail': Boolean(selectedRow.value),
@@ -518,10 +561,7 @@ function createDatasource(): ProcurementServerGridDataSource {
     getFilters: buildServerFilters,
     hasFilterModel,
     mapRow,
-    allocateRowRevision() {
-      rowRevision.value += 1
-      return rowRevision.value
-    },
+    allocateRowRevision,
     onPullCompleted({ total: nextTotal, datasetVersion, summary: nextSummary }) {
       latestDatasetVersion.value = datasetVersion
       total.value = nextTotal
@@ -546,8 +586,9 @@ function createGridRowModel(): ProcurementRowModel {
   if (typeof model.patchRows !== 'function') {
     model.patchRows = async (updates) => {
       if (!updates.length) return
-      await datasource.commitEdits?.({ edits: updates })
-      await model.refresh('manual')
+      const result = await datasource.commitEdits?.({ edits: updates }) as GridHistoryMutationResponse<ProcurementApiRow> | undefined
+      if (!result || hasProcurementMutationFastPayload(result) || result.rejected?.length) return
+      applyProcurementPatchUpdates(updates)
     }
   }
   return model
@@ -575,6 +616,7 @@ function createGridDataSource(): ProcurementDataSource {
         throw new Error('Procurement grid datasource does not support edits')
       }
       const result = await commitEdits(request)
+      applyProcurementMutationResult(result as GridHistoryMutationResponse<ProcurementApiRow>)
       if (!result.rejected?.length) {
         errorMessage.value = ''
       }
@@ -583,11 +625,22 @@ function createGridDataSource(): ProcurementDataSource {
   }
 }
 
-const procurementGridHistoryOptions = {
-  enabled: true,
-  shortcuts: 'grid' as const,
-  controls: true,
-}
+const procurementGridHistoryOptions = computed<DataGridHistoryProp>(() => {
+  const canUndo = historyState.canUndo
+  const canRedo = historyState.canRedo
+  return {
+    enabled: true,
+    shortcuts: 'grid',
+    controls: true,
+    adapter: {
+      captureSnapshot: () => null,
+      recordIntentTransaction: () => undefined,
+      canUndo: () => canUndo,
+      canRedo: () => canRedo,
+      runHistoryAction: runProcurementGridHistoryAction,
+    },
+  }
+})
 
 function mapRow(row: ProcurementApiRow, revision: number): ProcurementGridRow {
   const inputs = row.calculatorInputs ?? {}
@@ -727,6 +780,210 @@ function stopDetailResize() {
   saveDetailPaneWidth()
 }
 
+async function runProcurementGridHistoryAction(direction: 'undo' | 'redo') {
+  const result = await props.postJson<GridHistoryMutationResponse<ProcurementApiRow>>(
+    `/api/history/${direction}`,
+    { table_id: PROCUREMENT_LOTS_TABLE_ID },
+  )
+  if (applyProcurementMutationResult(result)) {
+    errorMessage.value = ''
+    return result.operationId ?? null
+  }
+
+  await rowModel.value?.refresh('manual')
+  errorMessage.value = ''
+  return result.operationId ?? null
+}
+
+function updateHistoryState(status: GridHistoryStatusLike | null | undefined) {
+  if (!status) return
+  if (typeof status.canUndo === 'boolean') historyState.canUndo = status.canUndo
+  if (typeof status.canRedo === 'boolean') historyState.canRedo = status.canRedo
+  if (typeof status.latestUndoOperationId !== 'undefined') {
+    historyState.latestUndoOperationId = status.latestUndoOperationId ?? null
+  }
+  if (typeof status.latestRedoOperationId !== 'undefined') {
+    historyState.latestRedoOperationId = status.latestRedoOperationId ?? null
+  }
+  if (typeof status.datasetVersion !== 'undefined') {
+    historyState.datasetVersion = typeof status.datasetVersion === 'number' ? status.datasetVersion : null
+  }
+}
+
+function applyProcurementMutationResult(result: GridHistoryMutationResponse<ProcurementApiRow> | null | undefined) {
+  if (!result) return false
+  updateHistoryState(result)
+  if (typeof result.datasetVersion === 'number') {
+    latestDatasetVersion.value = result.datasetVersion
+  }
+
+  const rows = result.rows?.length ? result.rows : result.updatedRows ?? []
+  if (applyProcurementHistoryRows(rows)) return true
+
+  if (result.invalidation) {
+    return applyProcurementInvalidation(result.invalidation, result.datasetVersion)
+  }
+
+  return false
+}
+
+function hasProcurementMutationFastPayload(result: GridHistoryMutationResponse<ProcurementApiRow>) {
+  return Boolean(result.rows?.length || result.updatedRows?.length || result.invalidation)
+}
+
+function applyProcurementPatchUpdates(updates: readonly { rowId: string | number; data: Partial<ProcurementGridRow> }[]) {
+  const current = selectedRow.value
+  if (!current) return false
+  const revision = allocateRowRevision()
+  const entries: DataGridDataSourceRowEntry<ProcurementGridRow>[] = []
+  for (const update of updates) {
+    if (String(update.rowId) !== current.id) continue
+    const row = {
+      ...current,
+      ...update.data,
+      id: current.id,
+      rowRevision: revision,
+    }
+    entries.push({
+      index: 0,
+      rowId: row.id,
+      row,
+    })
+  }
+
+  if (!entries.length) return false
+  const datasource = rowModel.value?.dataSource as ServerPushDataSource | undefined
+  const applied = datasource?.applyRowSnapshots?.(entries) === true
+  if (!applied) return false
+  selectedRow.value = entries[entries.length - 1]?.row ?? selectedRow.value
+  return true
+}
+
+function applyProcurementInvalidation(invalidation: unknown, datasetVersion: number | null | undefined) {
+  const datasource = rowModel.value?.dataSource as ServerPushDataSource | undefined
+  const applyInvalidation = datasource?.applyInvalidation
+  if (typeof applyInvalidation !== 'function') return false
+  applyInvalidation.call(datasource, invalidation, { datasetVersion })
+  return true
+}
+
+function applyProcurementGridChangeFeedResponse(response: GridChangeFeedResponse) {
+  if (response.hasMore) return false
+
+  const rows = collectProcurementChangeFeedRows(response)
+  if (applyProcurementHistoryRows(rows)) {
+    latestDatasetVersion.value = response.datasetVersion
+    return true
+  }
+
+  for (const change of response.changes) {
+    const invalidation = resolveGridChangeInvalidation(change.payload)
+    if (invalidation && applyProcurementInvalidation(invalidation, response.datasetVersion)) {
+      latestDatasetVersion.value = response.datasetVersion
+      return true
+    }
+  }
+
+  const rowIds = collectGridChangeRowIds(response)
+  if (rowIds.length && applyProcurementInvalidation({ type: 'rows', rowIds, reason: 'change_feed' }, response.datasetVersion)) {
+    latestDatasetVersion.value = response.datasetVersion
+    return true
+  }
+
+  return false
+}
+
+function collectProcurementChangeFeedRows(response: GridChangeFeedResponse) {
+  const rows: GridHistoryRowSnapshot<ProcurementApiRow>[] = []
+  for (const change of response.changes) {
+    const payload = change.payload
+    const payloadRows = payload.rows ?? payload.updatedRows
+    if (Array.isArray(payloadRows)) {
+      rows.push(...payloadRows as GridHistoryRowSnapshot<ProcurementApiRow>[])
+    }
+    if (payload.row && typeof payload.row === 'object') {
+      rows.push({ rowId: change.rowId ?? undefined, row: payload.row })
+    }
+  }
+  return rows
+}
+
+function resolveGridChangeInvalidation(payload: Record<string, unknown>) {
+  const invalidation = payload.invalidation
+  if (invalidation && typeof invalidation === 'object') return invalidation
+  if (typeof payload.type === 'string') return payload
+  return null
+}
+
+function collectGridChangeRowIds(response: GridChangeFeedResponse) {
+  const rowIds = new Set<string>()
+  for (const change of response.changes) {
+    if (change.type === 'invalidation') continue
+    if (typeof change.rowId === 'string' && change.rowId.trim()) {
+      rowIds.add(change.rowId)
+    }
+  }
+  return [...rowIds]
+}
+
+function applyProcurementHistoryRows(rows: readonly GridHistoryRowSnapshot<ProcurementApiRow>[]) {
+  if (!rows.length) return false
+
+  const revision = allocateRowRevision()
+  const entries: DataGridDataSourceRowEntry<ProcurementGridRow>[] = []
+  for (const snapshot of rows) {
+    const row = extractHistorySnapshotRow(snapshot)
+    const mapped = isProcurementApiHistoryRow(row)
+      ? mapRow(row, revision)
+      : isProcurementGridHistoryRow(row)
+        ? row
+        : null
+    if (!mapped) continue
+    entries.push({
+      index: typeof snapshot.index === 'number' && Number.isFinite(snapshot.index) ? Math.max(0, Math.trunc(snapshot.index)) : 0,
+      rowId: mapped.id,
+      row: mapped,
+    })
+  }
+
+  if (!entries.length) return false
+  const datasource = rowModel.value?.dataSource as ServerPushDataSource | undefined
+  const applied = datasource?.applyRowSnapshots?.(entries) === true
+  if (!applied) return false
+  for (const entry of entries) {
+    if (selectedRow.value?.id === entry.row.id) {
+      selectedRow.value = entry.row
+    }
+  }
+  return true
+}
+
+function allocateRowRevision() {
+  rowRevision.value += 1
+  return rowRevision.value
+}
+
+function extractHistorySnapshotRow<TApiRow>(snapshot: GridHistoryRowSnapshot<TApiRow>) {
+  if (snapshot && typeof snapshot === 'object' && 'row' in snapshot) {
+    return snapshot.row
+  }
+  return snapshot
+}
+
+function isProcurementApiHistoryRow(value: unknown): value is ProcurementApiRow {
+  return Boolean(value && typeof value === 'object' && typeof (value as { id?: unknown }).id === 'string' && 'externalId' in value)
+}
+
+function isProcurementGridHistoryRow(value: unknown): value is ProcurementGridRow {
+  return Boolean(value && typeof value === 'object' && typeof (value as { id?: unknown }).id === 'string' && 'rowRevision' in value)
+}
+
+function subscribeHistoryStatus() {
+  historyStatusUnsubscribe?.()
+  const source = datasourceRef.value as unknown as HistoryStatusSource | null
+  historyStatusUnsubscribe = source?.subscribeHistoryStatus?.(updateHistoryState) ?? null
+}
+
 async function loadPipelineHealth() {
   pipelineHealthAbortController?.abort()
   const controller = new AbortController()
@@ -790,7 +1047,9 @@ async function pollGridChanges() {
     const response = await datasource.getChangesSinceVersion({ sinceVersion }) as GridChangeFeedResponse
     const currentVersion = latestDatasetVersion.value ?? 0
     if (response.changes.length > 0 || response.datasetVersion > currentVersion) {
-      scheduleGridChangeRefresh()
+      if (!applyProcurementGridChangeFeedResponse(response)) {
+        scheduleGridChangeRefresh()
+      }
     }
   } catch (error) {
     if (!document.hidden) {
@@ -909,11 +1168,14 @@ function emptySummary(total: number): ProcurementServerGridSummary {
 
 onMounted(() => {
   rowModel.value = createGridRowModel()
+  subscribeHistoryStatus()
   void loadPipelineHealth()
   document.addEventListener('visibilitychange', handleGridVisibilityChange)
 })
 
 onUnmounted(() => {
+  historyStatusUnsubscribe?.()
+  historyStatusUnsubscribe = null
   document.removeEventListener('visibilitychange', handleGridVisibilityChange)
   stopGridChangePolling()
   pipelineHealthAbortController?.abort()
