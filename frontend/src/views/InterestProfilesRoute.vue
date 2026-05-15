@@ -1,9 +1,20 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { computed, onMounted } from 'vue'
 
 const props = defineProps<{
   bindings: any
 }>()
+
+const selectedTelegramPreset = computed(() =>
+  props.bindings.telegramPresets.value.find((preset: any) => preset.id === props.bindings.telegramPresetIdDraft.value) ?? null,
+)
+const selectedTelegramPresetFilters = computed(() =>
+  selectedTelegramPreset.value ? props.bindings.telegramPresetFilterChips(selectedTelegramPreset.value) : [],
+)
+
+function profilePreset(profile: any) {
+  return props.bindings.telegramPresets.value.find((preset: any) => preset.id === profile.source_filter_preset_id) ?? null
+}
 
 onMounted(() => {
   void props.bindings.loadTelegramPresets()
@@ -71,6 +82,17 @@ onMounted(() => {
               Подключить
             </button>
           </div>
+
+          <div v-if="selectedTelegramPreset" class="interest-profile-filter-summary">
+            <div class="interest-profile-filter-summary__header">
+              <span>{{ bindings.telegramPresetLabel(selectedTelegramPreset) }}</span>
+            </div>
+            <div class="interest-profile-filter-chips" aria-label="Фильтры выбранного среза">
+              <span v-for="chip in selectedTelegramPresetFilters" :key="chip.label" class="interest-profile-filter-chip">
+                {{ chip.label }}
+              </span>
+            </div>
+          </div>
         </section>
       </div>
 
@@ -85,6 +107,11 @@ onMounted(() => {
             <div>
               <h3>{{ profile.name }}</h3>
               <p>{{ bindings.interestProfileNote(profile) }}</p>
+              <div v-if="profilePreset(profile)" class="interest-profile-filter-chips interest-profile-filter-chips--compact" aria-label="Фильтры подключенного среза">
+                <span v-for="chip in bindings.telegramPresetFilterChips(profilePreset(profile))" :key="chip.label" class="interest-profile-filter-chip">
+                  {{ chip.label }}
+                </span>
+              </div>
             </div>
             <div class="interest-profile-card__actions">
               <button class="secondary-button" type="button" @click="void bindings.toggleInterestProfileActive(profile)">

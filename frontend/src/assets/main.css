@@ -1301,6 +1301,55 @@ h2 {
   min-width: 0;
 }
 
+.interest-profile-filter-summary {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-border);
+  min-width: 0;
+}
+
+.interest-profile-filter-summary__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--color-text-strong);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.interest-profile-filter-summary__header span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.interest-profile-filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.interest-profile-filter-chips--compact {
+  margin-top: 8px;
+}
+
+.interest-profile-filter-chip {
+  max-width: 100%;
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-subtle);
+  color: var(--color-text);
+  font-size: 12px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
 .interest-profile-connect-note {
   color: var(--color-text-strong) !important;
   font-weight: 600;

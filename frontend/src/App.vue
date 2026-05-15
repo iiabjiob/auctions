@@ -1691,6 +1691,184 @@ function telegramPresetLabel(preset: FilterPreset) {
   return `${preset.scope === 'procurement' ? 'Тендер' : 'Торги'} · ${preset.name}`
 }
 
+type TelegramPresetFilterChip = {
+  label: string
+}
+
+const TELEGRAM_PRESET_PERIOD_LABELS: Record<DatasetPeriod, string> = {
+  week: 'Неделя',
+  month: 'Месяц',
+  year: 'Год',
+}
+
+const TELEGRAM_PRESET_COLUMN_LABELS: Record<string, string> = {
+  __shortlist: 'Shortlist',
+  analysisColor: 'Анализ',
+  assignee: 'Ответственный',
+  category: 'Категория',
+  finalDecision: 'Решение',
+  initialPrice: 'НМЦК',
+  isNew: 'Новые',
+  law: 'Закон',
+  price: 'Цена',
+  ratingScore: 'Рейтинг',
+  score: 'Оценка',
+  source: 'Площадка',
+  status: 'Статус',
+  workflowStatus: 'Этап',
+}
+
+const TELEGRAM_PRESET_OPERATOR_LABELS: Record<string, string> = {
+  contains: 'содержит',
+  startsWith: 'начинается с',
+  endsWith: 'заканчивается на',
+  equals: '=',
+  notEquals: '!=',
+  gt: '>',
+  gte: '>=',
+  lt: '<',
+  lte: '<=',
+  isEmpty: 'пусто',
+  notEmpty: 'заполнено',
+  isNull: 'пусто',
+  notNull: 'заполнено',
+}
+
+function formatTelegramPresetValue(value: unknown): string {
+  if (value === true) return 'да'
+  if (value === false) return 'нет'
+  if (value === null || value === undefined || value === '') return '—'
+  if (typeof value === 'number') return Number.isFinite(value) ? value.toLocaleString('ru-RU') : '—'
+  if (Array.isArray(value)) return value.map(formatTelegramPresetValue).join(', ')
+  return String(value)
+}
+
+function addTelegramPresetChip(chips: TelegramPresetFilterChip[], seen: Set<string>, label: string) {
+  const normalized = label.trim()
+  if (!normalized || seen.has(normalized)) return
+  seen.add(normalized)
+  chips.push({ label: normalized })
+}
+
+function getTelegramPresetColumnLabel(key: string) {
+  return TELEGRAM_PRESET_COLUMN_LABELS[key] ?? key
+}
+
+function formatTelegramPresetCondition(condition: Record<string, unknown>) {
+  const key = String(condition.key ?? condition.field ?? '').trim()
+  if (!key) return ''
+
+  const operator = String(condition.operator ?? 'equals')
+  const column = getTelegramPresetColumnLabel(key)
+  if (operator === 'isEmpty' || operator === 'isNull' || operator === 'notEmpty' || operator === 'notNull') {
+    return `${column}: ${TELEGRAM_PRESET_OPERATOR_LABELS[operator] ?? operator}`
+  }
+
+  const operatorLabel = TELEGRAM_PRESET_OPERATOR_LABELS[operator] ?? operator
+  return `${column} ${operatorLabel} ${formatTelegramPresetValue(condition.value)}`
+}
+
+function collectTelegramPresetExpressionChips(
+  expression: unknown,
+  chips: TelegramPresetFilterChip[],
+  seen: Set<string>,
+) {
+  if (!expression || typeof expression !== 'object') return
+  const node = expression as Record<string, unknown>
+  if (node.kind === 'condition') {
+    addTelegramPresetChip(chips, seen, formatTelegramPresetCondition(node))
+    return
+  }
+  if (node.kind === 'not') {
+    const before = chips.length
+    collectTelegramPresetExpressionChips(node.child, chips, seen)
+    if (chips.length > before) {
+      const lastChip = chips[chips.length - 1]
+      if (lastChip) {
+        chips[chips.length - 1] = { label: `Не ${lastChip.label}` }
+      }
+    }
+    return
+  }
+  if (node.kind === 'group' && Array.isArray(node.children)) {
+    node.children.forEach((child) => collectTelegramPresetExpressionChips(child, chips, seen))
+  }
+}
+
+function collectTelegramPresetGridFilterChips(
+  filterModel: unknown,
+  chips: TelegramPresetFilterChip[],
+  seen: Set<string>,
+) {
+  if (!filterModel || typeof filterModel !== 'object') return
+  const snapshot = filterModel as Record<string, unknown>
+  const quickFilter = snapshot.quickFilter as Record<string, unknown> | undefined
+  if (typeof quickFilter?.query === 'string' && quickFilter.query.trim()) {
+    addTelegramPresetChip(chips, seen, `Поиск: ${quickFilter.query.trim()}`)
+  }
+
+  const columnFilters = snapshot.columnFilters
+  if (columnFilters && typeof columnFilters === 'object') {
+    for (const [key, entry] of Object.entries(columnFilters as Record<string, unknown>)) {
+      if (Array.isArray(entry) && entry.length) {
+        addTelegramPresetChip(chips, seen, `${getTelegramPresetColumnLabel(key)}: ${entry.slice(0, 4).map(formatTelegramPresetValue).join(', ')}${entry.length > 4 ? ` +${entry.length - 4}` : ''}`)
+        continue
+      }
+      if (!entry || typeof entry !== 'object') continue
+      const filter = entry as Record<string, unknown>
+      if (filter.kind === 'valueSet' && Array.isArray(filter.tokens) && filter.tokens.length) {
+        addTelegramPresetChip(chips, seen, `${getTelegramPresetColumnLabel(key)}: ${filter.tokens.slice(0, 4).map(formatTelegramPresetValue).join(', ')}${filter.tokens.length > 4 ? ` +${filter.tokens.length - 4}` : ''}`)
+      } else if (filter.kind === 'predicate') {
+        addTelegramPresetChip(chips, seen, formatTelegramPresetCondition({ ...filter, key }))
+      }
+    }
+  }
+
+  collectTelegramPresetExpressionChips(snapshot.advancedExpression, chips, seen)
+}
+
+function getTelegramPresetGridFilterModel(preset: FilterPreset) {
+  const savedView = preset.grid_view as Record<string, unknown> | null
+  const state = savedView?.state as Record<string, unknown> | undefined
+  const rows = state?.rows as Record<string, unknown> | undefined
+  const snapshot = rows?.snapshot as Record<string, unknown> | undefined
+  return snapshot?.filterModel ?? null
+}
+
+function telegramPresetFilterChips(preset: FilterPreset): TelegramPresetFilterChip[] {
+  const chips: TelegramPresetFilterChip[] = []
+  const seen = new Set<string>()
+  const filters = (preset.filters ?? {}) as Record<string, unknown>
+
+  if (preset.scope === 'procurement') {
+    if (typeof filters.source === 'string' && filters.source && filters.source !== 'all') addTelegramPresetChip(chips, seen, `Площадка: ${filters.source}`)
+    if (typeof filters.law === 'string' && filters.law) addTelegramPresetChip(chips, seen, `Закон: ${filters.law}`)
+    if (typeof filters.status === 'string' && filters.status) addTelegramPresetChip(chips, seen, `Статус содержит ${filters.status}`)
+    if (typeof filters.workflowStatus === 'string' && filters.workflowStatus) addTelegramPresetChip(chips, seen, `Этап: ${filters.workflowStatus}`)
+    if (typeof filters.assignee === 'string' && filters.assignee) addTelegramPresetChip(chips, seen, `Ответственный: ${filters.assignee}`)
+    if (typeof filters.category === 'string' && filters.category) addTelegramPresetChip(chips, seen, `Категория: ${filters.category}`)
+    if (typeof filters.minPrice === 'string' && filters.minPrice.trim()) addTelegramPresetChip(chips, seen, `НМЦК от ${filters.minPrice.trim()}`)
+    if (typeof filters.maxPrice === 'string' && filters.maxPrice.trim()) addTelegramPresetChip(chips, seen, `НМЦК до ${filters.maxPrice.trim()}`)
+    if (typeof filters.minScore === 'number' && filters.minScore > 0) addTelegramPresetChip(chips, seen, `Оценка >= ${filters.minScore}`)
+    if (filters.onlyNew === true) addTelegramPresetChip(chips, seen, 'Только новые')
+  } else {
+    const auctionFilters = sanitizeServerFilters(preset.filters, DEFAULT_SERVER_FILTERS)
+    addTelegramPresetChip(chips, seen, `Период: ${TELEGRAM_PRESET_PERIOD_LABELS[auctionFilters.period]}`)
+    if (auctionFilters.includeArchived) addTelegramPresetChip(chips, seen, 'С архивом')
+    if (auctionFilters.source && auctionFilters.source !== 'all') addTelegramPresetChip(chips, seen, `Площадка: ${auctionFilters.source}`)
+    if (auctionFilters.status) addTelegramPresetChip(chips, seen, `Статус: ${auctionFilters.status}`)
+    if (auctionFilters.analysisColor) addTelegramPresetChip(chips, seen, `Анализ: ${auctionFilters.analysisColor}`)
+    if (auctionFilters.minPrice.trim()) addTelegramPresetChip(chips, seen, `Цена от ${auctionFilters.minPrice.trim()}`)
+    if (auctionFilters.maxPrice.trim()) addTelegramPresetChip(chips, seen, `Цена до ${auctionFilters.maxPrice.trim()}`)
+    if (auctionFilters.onlyNew) addTelegramPresetChip(chips, seen, 'Только новые')
+    if (auctionFilters.shortlist) addTelegramPresetChip(chips, seen, 'Shortlist')
+    if (auctionFilters.minRating > 0) addTelegramPresetChip(chips, seen, `Рейтинг >= ${auctionFilters.minRating}`)
+  }
+
+  collectTelegramPresetGridFilterChips(getTelegramPresetGridFilterModel(preset), chips, seen)
+  return chips.length ? chips : [{ label: 'Без дополнительных фильтров' }]
+}
+
 function telegramPresetMinRating(preset: FilterPreset) {
   const filters = preset.filters as Record<string, unknown>
   const auctionFilters = sanitizeServerFilters(preset.filters, DEFAULT_SERVER_FILTERS)
@@ -2068,6 +2246,7 @@ const interestProfilesRouteBindings = {
   loadUserInterestProfiles,
   createInterestProfileFromSelectedPreset,
   telegramPresetLabel,
+  telegramPresetFilterChips,
   connectTelegramBot,
   toggleInterestProfileActive,
   toggleInterestProfileTelegram,
