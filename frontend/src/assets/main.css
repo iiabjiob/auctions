@@ -2505,3 +2505,14 @@ input[type='range'] {
     display: none;
   }
 }
+
+/* Temporary mobile fallback for grid canvas compositing investigation. */
+@media (hover: none) and (pointer: coarse) {
+  .grid-stage--canvas-chrome .grid-chrome-canvas {
+    display: none !important;
+  }
+
+  .grid-stage--canvas-chrome .grid-body-shell .grid-cell {
+    color: var(--datagrid-row-text-color, var(--color-text-body)) !important;
+  }
+}
