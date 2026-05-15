@@ -405,7 +405,6 @@ const catalogPresetOptions = computed(() => [
 ])
 const catalogFilterModel = computed(() => buildCatalogFilterModel(filters))
 const hasCatalogAppliedFilters = computed(() => hasGridFilterModel(catalogFilterModel.value))
-const canSaveCatalogPreset = computed(() => hasCatalogAppliedFilters.value)
 const canUpdateCatalogPreset = computed(() => Boolean(selectedPreset.value) && hasCatalogAppliedFilters.value)
 const activeModule = computed(() => {
   if (route.name === 'analysis-config') return 'analysis-config'
@@ -438,18 +437,18 @@ const selectedPreset = computed(() => presets.value.find((preset) => preset.id =
 const isAnalysisConfigRoute = computed(() => route.name === 'analysis-config')
 const isInterestProfilesRoute = computed(() => route.name === 'interest-profiles')
 const presetDialogTitle = computed(() => {
-  if (presetDialogMode.value === 'delete') return 'Удалить подборку'
-  if (presetDialogMode.value === 'update') return 'Обновить подборку'
-  return 'Сохранить подборку'
+  if (presetDialogMode.value === 'delete') return 'Удалить срез'
+  if (presetDialogMode.value === 'update') return 'Обновить срез'
+  return 'Сохранить срез'
 })
 const presetDialogDescription = computed(() => {
   if (presetDialogMode.value === 'delete') {
-    return `Подборка "${selectedPreset.value?.name ?? ''}" будет удалена без возможности восстановления.`
+    return `Срез "${selectedPreset.value?.name ?? ''}" будет удален без возможности восстановления.`
   }
   if (presetDialogMode.value === 'update') {
-    return 'Обновим имя подборки и сохраним текущее состояние фильтров и таблицы.'
+    return 'Обновим имя среза и сохраним текущее состояние фильтров и таблицы.'
   }
-  return 'Сохраним текущие фильтры и раскладку таблицы как новую пользовательскую подборку.'
+  return 'Сохраним текущие фильтры и раскладку таблицы как новый срез.'
 })
 const presetDialogSubmitLabel = computed(() => {
   if (presetDialogMode.value === 'delete') return 'Удалить'
@@ -1978,7 +1977,7 @@ async function submitPresetDialog() {
 
   const nextName = presetNameDraft.value.trim()
   if (!nextName) {
-    errorMessage.value = 'Название подборки не должно быть пустым'
+    errorMessage.value = 'Название среза не должно быть пустым'
     return
   }
 
@@ -1989,12 +1988,12 @@ async function submitPresetDialog() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(buildPresetPayload(nextName)),
       })
-      presets.value = sortPresets(presets.value.map((item) => (item.id === preset.id ? preset : item)))
-      selectedPresetId.value = preset.id
-      await syncInterestProfilesForPreset(preset.id)
-      await presetDialog.close('programmatic')
-    } catch (error) {
-      errorMessage.value = error instanceof Error ? error.message : 'Не удалось обновить подборку'
+    presets.value = sortPresets(presets.value.map((item) => (item.id === preset.id ? preset : item)))
+    selectedPresetId.value = preset.id
+    await syncInterestProfilesForPreset(preset.id)
+    await presetDialog.close('programmatic')
+  } catch (error) {
+      errorMessage.value = error instanceof Error ? error.message : 'Не удалось обновить срез'
     }
     return
   }
@@ -2009,7 +2008,7 @@ async function submitPresetDialog() {
     selectedPresetId.value = preset.id
     await presetDialog.close('programmatic')
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : 'Не удалось сохранить подборку'
+    errorMessage.value = error instanceof Error ? error.message : 'Не удалось сохранить срез'
   }
 }
 
@@ -2882,14 +2881,19 @@ onUnmounted(() => {
             <span class="eyebrow">Каталог банкротных торгов</span>
             <h1>Лоты для отбора</h1>
           </div>
-          <button
-            v-if="mobileInlineEditTarget"
-            class="auction-toolbar__edit-button"
-            type="button"
-            @click="openMobileInlineEdit"
-          >
-            Редактировать ячейку
-          </button>
+          <div class="toolbar-actions">
+            <button class="primary-button" type="button" @click="openCreatePresetDialog">
+              Сохранить срез
+            </button>
+            <button
+              v-if="mobileInlineEditTarget"
+              class="auction-toolbar__edit-button"
+              type="button"
+              @click="openMobileInlineEdit"
+            >
+              Редактировать ячейку
+            </button>
+          </div>
         </section>
 
         <section class="summary-strip" aria-label="Сводка каталога">
@@ -2921,9 +2925,6 @@ onUnmounted(() => {
               @change="applyPresetById"
             />
             <div class="summary-strip__buttons">
-              <button v-if="canSaveCatalogPreset" class="primary-button" type="button" @click="openCreatePresetDialog">
-                Сохранить текущий фильтр
-              </button>
               <button v-if="canUpdateCatalogPreset" class="secondary-button" type="button" @click="openUpdatePresetDialog">
                 Обновить срез
               </button>

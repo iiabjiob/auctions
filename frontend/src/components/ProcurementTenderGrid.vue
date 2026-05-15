@@ -498,7 +498,6 @@ const activeRowModelFilterModel = computed(() => rowModel.value?.getSnapshot().f
 const hasAppliedFilters = computed(
   () => hasFilterModel(currentFilterModel.value) || hasFilterModel(activeRowModelFilterModel.value),
 )
-const canSavePreset = computed(() => hasAppliedFilters.value)
 const canUpdatePreset = computed(() => Boolean(selectedPreset.value) && hasAppliedFilters.value)
 
 function sortPresets(items: FilterPreset[]) {
@@ -1471,6 +1470,11 @@ onUnmounted(() => {
         <span class="eyebrow">ЕИС Закупки</span>
         <h1>Лоты закупок для отбора</h1>
       </div>
+      <div class="toolbar-actions">
+        <button class="primary-button" type="button" @click="openPresetDialog('create')">
+          Сохранить срез
+        </button>
+      </div>
     </header>
 
     <section class="summary-strip" aria-label="Сводка закупок">
@@ -1491,9 +1495,6 @@ onUnmounted(() => {
           @change="applyPresetById"
         />
         <div class="summary-strip__buttons">
-          <button v-if="canSavePreset" class="primary-button" type="button" @click="openPresetDialog('create')">
-            Сохранить текущий фильтр
-          </button>
           <button v-if="canUpdatePreset" class="secondary-button" type="button" @click="openPresetDialog('update')">
             Обновить срез
           </button>
