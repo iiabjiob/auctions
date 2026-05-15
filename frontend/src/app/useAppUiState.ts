@@ -5,13 +5,6 @@ import { createDialogFocusOrchestrator, useDialogController } from '@affino/dial
 
 export type PresetDialogMode = 'create' | 'update' | 'delete'
 
-export type InterestProfileDraft = {
-  name: string
-  minRating: number
-  telegramEnabled: boolean
-  isActive: boolean
-}
-
 export type AnalysisConfigDraftRule = {
   id: number
   category: string
@@ -50,20 +43,14 @@ export function useAppUiState() {
     focusOrchestrator: presetDialogFocus,
   })
 
-  const interestProfilesDialogInitialRef = ref<HTMLElement | null>(null)
-
-  const analysisConfigDialogInitialRef = ref<HTMLElement | null>(null)
+  const analysisConfigInitialRef = ref<HTMLElement | null>(null)
 
   function setPresetDialogInitialRef(element: Element | ComponentPublicInstance | null) {
     presetDialogInitialRef.value = element as HTMLElement | null
   }
 
-  function setInterestProfilesDialogInitialRef(element: Element | ComponentPublicInstance | null) {
-    interestProfilesDialogInitialRef.value = element as HTMLElement | null
-  }
-
-  function setAnalysisConfigDialogInitialRef(element: Element | ComponentPublicInstance | null) {
-    analysisConfigDialogInitialRef.value = element as HTMLElement | null
+  function setAnalysisConfigInitialRef(element: Element | ComponentPublicInstance | null) {
+    analysisConfigInitialRef.value = element as HTMLElement | null
   }
 
   function closeMobileRail() {
@@ -88,11 +75,9 @@ export function useAppUiState() {
     presetDialogRef,
     presetDialogInitialRef,
     presetDialog,
-    interestProfilesDialogInitialRef,
-    analysisConfigDialogInitialRef,
     setPresetDialogInitialRef,
-    setInterestProfilesDialogInitialRef,
-    setAnalysisConfigDialogInitialRef,
+    analysisConfigInitialRef,
+    setAnalysisConfigInitialRef,
     closeMobileRail,
     toggleMobileRail,
   }

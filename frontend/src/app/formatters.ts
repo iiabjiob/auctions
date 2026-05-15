@@ -25,8 +25,15 @@ export function parseNumber(value: string | number | null) {
   return Number.isFinite(parsed) ? parsed : null
 }
 
-export function parseDateTime(value: string | null) {
+export function parseDateTime(value: DateLike) {
   if (!value) return null
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value
+  }
+  if (typeof value === 'number') {
+    const date = new Date(value)
+    return Number.isNaN(date.getTime()) ? null : date
+  }
   const normalized = value.trim()
   const russianDateTime = normalized.match(/^(\d{1,2})[./](\d{1,2})[./](\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/)
   if (russianDateTime) {

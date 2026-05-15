@@ -1122,8 +1122,48 @@ h2 {
   min-width: 0;
 }
 
+.analysis-config-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.08fr) minmax(0, 0.92fr);
+  gap: 12px;
+  align-items: start;
+  min-width: 0;
+  padding: 0 28px;
+}
+
+.analysis-config-layout > .route-card {
+  margin: 0;
+}
+
+.analysis-config-layout .analysis-config-section--categories {
+  min-height: 100%;
+}
+
+.analysis-config-layout .analysis-config-section--grid {
+  align-content: start;
+}
+
 .interest-profile-panel,
 .interest-profile-list {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.interest-profiles-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 0.86fr) minmax(0, 1.14fr);
+  gap: 12px;
+  align-items: start;
+  min-width: 0;
+  padding: 0 28px;
+}
+
+.interest-profiles-layout > .route-card {
+  margin: 0;
+}
+
+.interest-profiles-layout__sidebar {
   display: grid;
   gap: 12px;
   min-width: 0;
@@ -1200,6 +1240,40 @@ h2 {
   justify-content: flex-end;
   gap: 8px;
   min-width: 0;
+}
+
+.route-page--analysis .route-card {
+  padding: 18px;
+}
+
+.route-page--analysis .analysis-config-rule {
+  padding: 12px;
+}
+
+.route-page--interests .route-card {
+  padding: 16px;
+}
+
+.route-page--interests .interest-profile-panel,
+.route-page--interests .interest-profile-list {
+  min-height: 0;
+}
+
+.route-page--interests .interest-profile-list {
+  gap: 10px;
+}
+
+.route-page--interests .interest-profile-card {
+  padding: 12px 14px;
+}
+
+.route-page--interests .interest-profile-panel p,
+.route-page--interests .interest-profile-card p {
+  line-height: 1.4;
+}
+
+.route-page--interests .interest-profile-preset-row {
+  align-items: center;
 }
 
 .secondary-button--danger {
@@ -2540,6 +2614,12 @@ input[type='range'] {
   .analysis-config-rule__row,
   .app-dialog__grid {
     grid-template-columns: 1fr;
+  }
+
+  .analysis-config-layout,
+  .interest-profiles-layout {
+    grid-template-columns: 1fr;
+    padding: 0 16px;
   }
 
   .analysis-config-section__header,

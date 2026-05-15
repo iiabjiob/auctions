@@ -45,7 +45,6 @@ import { renderHelpMarkdown } from './app/markdown'
 import {
   type AnalysisConfigDraft,
   type AnalysisConfigDraftRule,
-  type InterestProfileDraft,
   type PresetDialogMode,
   useAppUiState,
 } from './app/useAppUiState'
@@ -131,7 +130,6 @@ import {
   saveDetailPaneWidth,
 } from './app/persistence'
 import {
-  createUserInterestProfile,
   createUserInterestProfileFromPreset,
   deleteUserInterestProfile,
   fetchUserInterestProfiles,
@@ -164,7 +162,7 @@ import { createAuctionColumnMenuOptions, createAuctionGridColumns } from './data
 import { useAuthStore } from './stores/auth'
 import { workspaceDataGridTheme } from './theme/dataGridTheme'
 import type { ActionRecommendation, DecisionLevel, LotDecisionReport } from './types/decisionReport'
-import type { LotScoringProfilePayload, UserInterestProfile } from './types/userInterestProfiles'
+import type { UserInterestProfile } from './types/userInterestProfiles'
 import howItWorksMarkdown from '../../docs/how-it-works.md?raw'
 
 const allRows = ref<GridLotRow[]>([])
@@ -180,12 +178,6 @@ const presets = ref<FilterPreset[]>([])
 const userInterestProfiles = ref<UserInterestProfile[]>([])
 const analysisConfig = ref<AnalysisConfigResponse | null>(null)
 const auctionPipelineHealth = ref<AuctionPipelineHealthResponse | null>(null)
-const interestProfileDraft = reactive<InterestProfileDraft>({
-  name: '',
-  minRating: 0,
-  telegramEnabled: true,
-  isActive: true,
-})
 const loading = ref(false)
 const presetsLoading = ref(false)
 const interestProfilesLoading = ref(false)
@@ -364,8 +356,7 @@ const {
   presetDialogInitialRef,
   presetDialog,
   setPresetDialogInitialRef,
-  setInterestProfilesDialogInitialRef,
-  setAnalysisConfigDialogInitialRef,
+  setAnalysisConfigInitialRef,
   closeMobileRail,
   toggleMobileRail,
 } = useAppUiState()
@@ -413,6 +404,8 @@ const presetOptions = computed(() => [
   })),
 ])
 const activeModule = computed(() => {
+  if (route.name === 'analysis-config') return 'analysis-config'
+  if (route.name === 'interest-profiles') return 'interest-profiles'
   if (route.name === 'diagnostics') return 'diagnostics'
   if (route.name === 'tenders') return 'tenders'
   if (route.name === 'help') return 'help'
@@ -440,13 +433,6 @@ const currentUserInitials = computed(() => {
 const selectedPreset = computed(() => presets.value.find((preset) => preset.id === selectedPresetId.value) ?? null)
 const isAnalysisConfigRoute = computed(() => route.name === 'analysis-config')
 const isInterestProfilesRoute = computed(() => route.name === 'interest-profiles')
-const activeInterestProfiles = computed(() => userInterestProfiles.value.filter((profile) => profile.is_active))
-const interestProfileSummary = computed(() => {
-  if (interestProfilesLoading.value) return 'Загрузка'
-  const activeCount = activeInterestProfiles.value.length
-  if (!userInterestProfiles.value.length) return 'Профили не заданы'
-  return `${activeCount} активн. из ${userInterestProfiles.value.length}`
-})
 const presetDialogTitle = computed(() => {
   if (presetDialogMode.value === 'delete') return 'Удалить подборку'
   if (presetDialogMode.value === 'update') return 'Обновить подборку'
@@ -1678,29 +1664,6 @@ function buildPresetPayload(name?: string) {
   }
 }
 
-function buildInterestProfilePayloadFromFilters(name: string) {
-  const profilePayload: LotScoringProfilePayload = {
-    profile_identifier: null,
-    target_regions: [],
-    target_categories: selectedLot.value?.analysisCategory ? [selectedLot.value.analysisCategory] : [],
-    budget_min: parseFilterNumber(filters.minPrice),
-    budget_max: parseFilterNumber(filters.maxPrice),
-    allowed_legal_risks: ['low', 'medium'],
-    desired_keywords: splitInterestProfileTerms(filters.status),
-    stop_words: [],
-    strategy: 'balanced',
-  }
-
-  return {
-    name: name.trim(),
-    profile_payload: profilePayload,
-    min_rating: Math.max(0, Math.min(100, Number(interestProfileDraft.minRating) || 0)),
-    notification_priority_threshold: 'medium' as const,
-    telegram_enabled: interestProfileDraft.telegramEnabled,
-    is_active: interestProfileDraft.isActive,
-  }
-}
-
 async function applyPresetById(presetId: string) {
   selectedPresetId.value = presetId
   const preset = presets.value.find((item) => item.id === presetId)
@@ -1779,11 +1742,6 @@ function splitAnalysisConfigLines(value: string) {
     })
 }
 
-function splitInterestProfileTerms(value: string) {
-  if (!value.trim()) return []
-  return splitAnalysisConfigLines(value)
-}
-
 function buildAnalysisConfigPayload() {
   return {
     category_rules: analysisConfigDraft.categoryRules
@@ -1830,23 +1788,6 @@ function openInterestProfilesDialog(event?: Event) {
   void router.push({ name: 'interest-profiles' })
 }
 
-function resetInterestProfileDraft() {
-  interestProfileDraft.name = defaultInterestProfileName()
-  interestProfileDraft.minRating = filters.minRating > 0 ? filters.minRating : 80
-  interestProfileDraft.telegramEnabled = true
-  interestProfileDraft.isActive = true
-  telegramPresetIdDraft.value = selectedPresetId.value || presets.value[0]?.id || ''
-}
-
-function defaultInterestProfileName() {
-  const parts = []
-  if (selectedLot.value?.analysisCategory) parts.push(selectedLot.value.analysisCategory)
-  if (filters.minPrice.trim()) parts.push(`от ${filters.minPrice.trim()}`)
-  if (filters.maxPrice.trim()) parts.push(`до ${filters.maxPrice.trim()}`)
-  if (filters.minRating > 0) parts.push(`рейтинг ${filters.minRating}+`)
-  return parts.length ? parts.join(', ') : 'Новый профиль интересов'
-}
-
 function interestProfileNote(profile: UserInterestProfile) {
   const payload = profile.profile_payload ?? {}
   const parts = []
@@ -1860,26 +1801,6 @@ function interestProfileNote(profile: UserInterestProfile) {
   if (profile.source_filter_preset_id) parts.push('из среза')
   parts.push(`рейтинг ${profile.min_rating}+`)
   return parts.join(' · ')
-}
-
-async function createInterestProfileFromCurrentFilters() {
-  const name = interestProfileDraft.name.trim()
-  if (!name) {
-    interestProfilesError.value = 'Название профиля не должно быть пустым'
-    return
-  }
-
-  interestProfilesSaving.value = true
-  interestProfilesError.value = ''
-  try {
-    const profile = await createUserInterestProfile(buildInterestProfilePayloadFromFilters(name))
-    userInterestProfiles.value = sortUserInterestProfiles([...userInterestProfiles.value, profile])
-    resetInterestProfileDraft()
-  } catch (error) {
-    interestProfilesError.value = error instanceof Error ? error.message : 'Не удалось создать профиль интересов'
-  } finally {
-    interestProfilesSaving.value = false
-  }
 }
 
 async function createInterestProfileFromSelectedPreset() {
@@ -2110,15 +2031,10 @@ const interestProfilesRouteBindings = {
   telegramConnectLoading,
   telegramConnectUrl,
   telegramConnectExpiresAt,
-  interestProfileDraft,
   telegramPresetIdDraft,
-  interestProfileSummary,
   formatDateTime,
-  setInterestProfilesDialogInitialRef,
   loadPresets,
   loadUserInterestProfiles,
-  resetInterestProfileDraft,
-  createInterestProfileFromCurrentFilters,
   createInterestProfileFromSelectedPreset,
   connectTelegramBot,
   toggleInterestProfileActive,
@@ -2134,7 +2050,7 @@ const analysisConfigRouteBindings = {
   analysisConfigError,
   analysisConfigUpdatedAt,
   analysisConfigDraft,
-  setAnalysisConfigDialogInitialRef,
+  setAnalysisConfigInitialRef,
   loadAnalysisConfig,
   submitAnalysisConfigDialog,
   addAnalysisConfigCategoryRule,
@@ -2941,7 +2857,9 @@ onUnmounted(() => {
     </aside>
 
     <section class="workspace-area">
-      <template v-if="isAuctionsModule">
+      <AnalysisConfigRoute v-if="isAnalysisConfigRoute" :bindings="analysisConfigRouteBindings" />
+      <InterestProfilesRoute v-else-if="isInterestProfilesRoute" :bindings="interestProfilesRouteBindings" />
+      <template v-else-if="isAuctionsModule">
         <section class="auction-toolbar" aria-label="Фильтры каталога лотов">
           <div class="toolbar-title">
             <button
@@ -3489,8 +3407,5 @@ onUnmounted(() => {
         </div>
       </transition>
     </Teleport>
-
-    <InterestProfilesRoute v-if="isInterestProfilesRoute" :bindings="interestProfilesRouteBindings" />
-    <AnalysisConfigRoute v-else-if="isAnalysisConfigRoute" :bindings="analysisConfigRouteBindings" />
   </main>
 </template>
