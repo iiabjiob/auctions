@@ -138,6 +138,7 @@ import {
 } from './api/userInterestProfiles'
 import { createTelegramConnectToken } from './api/telegram'
 import AuthLoginScreen from './components/AuthLoginScreen.vue'
+import AffinoCombobox from './components/AffinoCombobox.vue'
 import RatingInfoTooltip from './components/RatingInfoTooltip.vue'
 import AuctionWorkspace from './components/AuctionWorkspace.vue'
 import ProcurementTenderGrid from './components/ProcurementTenderGrid.vue'
@@ -347,9 +348,7 @@ const {
   presetNameDraft,
   telegramPresetIdDraft,
   mobileRailOpen,
-  presetsMenuRef,
   accountMenuRef,
-  presetsMenuOpen,
   accountMenuOpen,
   presetDialogTriggerRef,
   presetDialogRef,
@@ -396,13 +395,17 @@ const columnLayoutOptions = {
 }
 const gridStatePersistence = catalogGridStatePersistence
 
-const presetOptions = computed(() => [
-  { label: 'Подборки', value: '' },
+const catalogPresetOptions = computed(() => [
+  { label: 'Без среза', value: '' },
   ...presets.value.map((preset) => ({
     label: preset.is_favorite ? `${preset.name} *` : preset.name,
     value: preset.id,
   })),
 ])
+const catalogFilterModel = computed(() => buildCatalogFilterModel(filters))
+const hasCatalogAppliedFilters = computed(() => hasGridFilterModel(catalogFilterModel.value))
+const canSaveCatalogPreset = computed(() => hasCatalogAppliedFilters.value)
+const canUpdateCatalogPreset = computed(() => Boolean(selectedPreset.value) && hasCatalogAppliedFilters.value)
 const activeModule = computed(() => {
   if (route.name === 'analysis-config') return 'analysis-config'
   if (route.name === 'interest-profiles') return 'interest-profiles'
@@ -2775,41 +2778,6 @@ onUnmounted(() => {
 
         <div class="app-rail__separator" aria-hidden="true"></div>
 
-        <UiMenu ref="presetsMenuRef" placement="right" align="start" :gutter="10">
-          <UiMenuTrigger as-child>
-            <button
-              class="app-rail__item app-rail__menu-trigger"
-              :class="{ 'app-rail__item--active': presetsMenuOpen }"
-              type="button"
-              aria-haspopup="menu"
-            >
-              <span class="app-rail__item-icon" aria-hidden="true">≡</span>
-              <span class="app-rail__item-label">Срезы</span>
-            </button>
-          </UiMenuTrigger>
-
-          <UiMenuContent class="app-rail__menu-content app-rail__menu-content--presets">
-            <UiMenuLabel>Срезы каталога</UiMenuLabel>
-            <UiMenuItem @select="() => applyPresetById('')">
-              <span class="app-rail__menu-title">Каталог</span>
-              <span class="app-rail__menu-note">Все лоты</span>
-            </UiMenuItem>
-            <UiMenuSeparator />
-            <UiMenuItem
-              v-for="preset in presets"
-              :key="preset.id"
-              @select="() => applyPresetById(preset.id)"
-            >
-              <span class="app-rail__menu-title">{{ preset.is_favorite ? `${preset.name} *` : preset.name }}</span>
-              <span class="app-rail__menu-note">{{ preset.is_favorite ? 'Избранный срез' : 'Сохраненный срез' }}</span>
-            </UiMenuItem>
-            <UiMenuSeparator />
-            <UiMenuItem @select="() => openCreatePresetDialog()">Сохранить</UiMenuItem>
-            <UiMenuItem :disabled="!selectedPreset" @select="() => openUpdatePresetDialog()">Обновить</UiMenuItem>
-            <UiMenuItem :disabled="!selectedPreset" @select="() => openDeletePresetDialog()">Удалить</UiMenuItem>
-          </UiMenuContent>
-        </UiMenu>
-
         <button class="app-rail__item" type="button" @click="openAnalysisConfigDialog">
           <span class="app-rail__item-icon" aria-hidden="true">⚙</span>
           <span class="app-rail__item-label">Анализ</span>
@@ -2819,8 +2787,6 @@ onUnmounted(() => {
           <span class="app-rail__item-icon" aria-hidden="true">I</span>
           <span class="app-rail__item-label">Интересы</span>
         </button>
-
-        <div class="app-rail__separator" aria-hidden="true"></div>
       </div>
 
       <div class="app-rail__cluster app-rail__cluster--bottom">
@@ -2832,6 +2798,16 @@ onUnmounted(() => {
         >
           <span class="app-rail__item-icon" aria-hidden="true">?</span>
           <span class="app-rail__item-label">Помощь</span>
+        </RouterLink>
+
+        <RouterLink
+          class="app-rail__item"
+          :class="{ 'app-rail__item--active': isDiagnosticsModule }"
+          to="/diagnostics"
+          :aria-current="isDiagnosticsModule ? 'page' : undefined"
+        >
+          <span class="app-rail__item-icon" aria-hidden="true">D</span>
+          <span class="app-rail__item-label">Диагностика</span>
         </RouterLink>
 
         <UiMenu ref="accountMenuRef" placement="right" align="end" :gutter="10">
@@ -2903,6 +2879,27 @@ onUnmounted(() => {
             <div>
               <span>Рейтинг 75+</span>
               <strong>{{ highRatingCount }}</strong>
+            </div>
+          </div>
+          <div class="summary-strip__controls">
+            <AffinoCombobox
+              id="catalog-preset-combobox"
+              v-model="selectedPresetId"
+              class="summary-strip__preset-combobox"
+              placeholder="Выберите срез"
+              :options="catalogPresetOptions"
+              @change="applyPresetById"
+            />
+            <div class="summary-strip__buttons">
+              <button v-if="canSaveCatalogPreset" class="primary-button" type="button" @click="openCreatePresetDialog">
+                Сохранить текущий фильтр
+              </button>
+              <button v-if="canUpdateCatalogPreset" class="secondary-button" type="button" @click="openUpdatePresetDialog">
+                Обновить срез
+              </button>
+              <button v-if="selectedPreset" class="secondary-button secondary-button--danger" type="button" @click="openDeletePresetDialog">
+                Удалить срез
+              </button>
             </div>
           </div>
           <p class="summary-strip__status">

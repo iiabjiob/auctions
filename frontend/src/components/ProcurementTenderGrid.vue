@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, onMounted, onUnmounted, reactive, ref, shallowRef, watch } from 'vue'
+import { computed, h, nextTick, onMounted, onUnmounted, reactive, ref, shallowRef, watch } from 'vue'
 import {
   DataGrid,
   defineDataGridColumnMenu,
@@ -18,6 +18,10 @@ import {
   type DataSourceBackedRowModel,
 } from '@affino/datagrid-vue'
 import { normalizeDatasourceInvalidation } from '@affino/datagrid-server-client'
+import { apiRequest } from '@/api/http'
+import AffinoCombobox from '@/components/AffinoCombobox.vue'
+import { sanitizeGridSavedView } from '@/app/persistence'
+import type { FilterPreset } from '@/app/types'
 import { PROCUREMENT_GRID_EDITABLE_COLUMN_IDS } from '@/datagrid/procurementGridEdits'
 import {
   PROCUREMENT_ADVANCED_FILTER_OPTIONS,
@@ -50,6 +54,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   toggleMobileRail: []
 }>()
+
+type PresetDialogMode = 'create' | 'update' | 'delete'
 
 type ProcurementApiRow = {
   id: string
@@ -292,6 +298,15 @@ const rowModel = shallowRef<ProcurementRowModel | null>(null)
 const datasourceRef = shallowRef<ProcurementServerGridDataSource | null>(null)
 const rowRevision = ref(0)
 const latestDatasetVersion = ref<number | null>(null)
+const presets = ref<FilterPreset[]>([])
+const presetsLoading = ref(false)
+const selectedPresetId = ref('')
+const presetDialogOpen = ref(false)
+const presetDialogMode = ref<PresetDialogMode>('create')
+const presetNameDraft = ref('')
+const presetDialogSaving = ref(false)
+const presetDialogError = ref('')
+const presetNameInputRef = ref<HTMLInputElement | null>(null)
 const historyState = reactive({
   canUndo: false,
   canRedo: false,
@@ -312,7 +327,7 @@ const selectedWorkspace = ref<ProcurementWorkspaceResponse | null>(null)
 const workspaceLoading = ref(false)
 const workspaceRefreshing = ref(false)
 const workspaceError = ref('')
-const filters = reactive({
+const defaultFilters = {
   source: 'all',
   law: '',
   status: '',
@@ -323,7 +338,8 @@ const filters = reactive({
   maxPrice: '',
   minScore: 0,
   onlyNew: false,
-})
+}
+const filters = reactive({ ...defaultFilters })
 let gridChangesPollTimer: ReturnType<typeof window.setTimeout> | null = null
 let gridChangesRefreshTimer: ReturnType<typeof window.setTimeout> | null = null
 let gridChangesPolling = false
@@ -445,6 +461,140 @@ function scheduleFilterSync() {
     filterSyncTimer = null
     syncFilterModel()
   }, PROCUREMENT_FILTER_SYNC_DELAY_MS)
+}
+
+const presetOptions = computed(() => [
+  { label: 'Без среза', value: '' },
+  ...presets.value.map((preset) => ({
+    label: preset.is_favorite ? `${preset.name} *` : preset.name,
+    value: preset.id,
+  })),
+])
+
+const selectedPreset = computed(() => presets.value.find((preset) => preset.id === selectedPresetId.value) ?? null)
+const currentFilterModel = computed(() => buildNativeFilterModel())
+const hasAppliedFilters = computed(() => currentFilterModel.value !== null)
+const canSavePreset = computed(() => hasAppliedFilters.value)
+const canUpdatePreset = computed(() => Boolean(selectedPreset.value) && hasAppliedFilters.value)
+
+function sortPresets(items: FilterPreset[]) {
+  return [...items].sort((left, right) => {
+    if (left.is_favorite !== right.is_favorite) {
+      return left.is_favorite ? -1 : 1
+    }
+    return left.name.localeCompare(right.name, 'ru')
+  })
+}
+
+async function loadPresets() {
+  presetsLoading.value = true
+  presetDialogError.value = ''
+  try {
+    presets.value = sortPresets(await apiRequest<FilterPreset[]>('/filter-presets', { auth: true }))
+    if (selectedPresetId.value && !presets.value.some((preset) => preset.id === selectedPresetId.value)) {
+      selectedPresetId.value = ''
+    }
+  } catch (error) {
+    presetDialogError.value = error instanceof Error ? error.message : 'Не удалось загрузить срезы'
+  } finally {
+    presetsLoading.value = false
+  }
+}
+
+function buildPresetPayload(name?: string) {
+  return {
+    name: (name ?? selectedPreset.value?.name ?? '').trim(),
+    filters: { ...filters },
+    grid_view: gridRef.value?.getSavedView() ?? null,
+    is_favorite: selectedPreset.value?.is_favorite ?? false,
+  }
+}
+
+async function applyPresetById(presetId: string) {
+  selectedPresetId.value = presetId
+  const preset = presets.value.find((item) => item.id === presetId)
+  if (!preset) return
+
+  Object.assign(filters, defaultFilters, preset.filters)
+  await nextTick()
+  if (preset.grid_view) {
+    gridRef.value?.applySavedView(sanitizeGridSavedView(preset.grid_view))
+  }
+  syncFilterModel()
+}
+
+function openPresetDialog(mode: PresetDialogMode) {
+  presetDialogMode.value = mode
+  presetNameDraft.value = mode === 'create' ? '' : selectedPreset.value?.name ?? ''
+  presetDialogError.value = ''
+  presetDialogOpen.value = true
+  void nextTick(() => presetNameInputRef.value?.focus())
+}
+
+function closePresetDialog() {
+  presetDialogOpen.value = false
+  presetDialogError.value = ''
+}
+
+async function submitPresetDialog() {
+  if (presetDialogMode.value === 'delete') {
+    await confirmDeletePreset()
+    return
+  }
+
+  const nextName = presetNameDraft.value.trim()
+  if (!nextName) {
+    presetDialogError.value = 'Название среза не должно быть пустым'
+    return
+  }
+
+  presetDialogSaving.value = true
+  presetDialogError.value = ''
+  try {
+    if (presetDialogMode.value === 'update' && selectedPreset.value) {
+      const preset = await apiRequest<FilterPreset>(`/filter-presets/${selectedPreset.value.id}`, {
+        auth: true,
+        method: 'PATCH',
+        body: JSON.stringify(buildPresetPayload(nextName)),
+      })
+      presets.value = sortPresets(presets.value.map((item) => (item.id === preset.id ? preset : item)))
+      selectedPresetId.value = preset.id
+      await applyPresetById(preset.id)
+    } else {
+      const preset = await apiRequest<FilterPreset>('/filter-presets', {
+        auth: true,
+        method: 'POST',
+        body: JSON.stringify(buildPresetPayload(nextName)),
+      })
+      presets.value = sortPresets([...presets.value, preset])
+      selectedPresetId.value = preset.id
+    }
+    closePresetDialog()
+  } catch (error) {
+    presetDialogError.value = error instanceof Error ? error.message : 'Не удалось сохранить срез'
+  } finally {
+    presetDialogSaving.value = false
+  }
+}
+
+async function confirmDeletePreset() {
+  if (!selectedPreset.value) return
+
+  presetDialogSaving.value = true
+  presetDialogError.value = ''
+  try {
+    await apiRequest(`/filter-presets/${selectedPreset.value.id}`, {
+      auth: true,
+      method: 'DELETE',
+    })
+    presets.value = presets.value.filter((preset) => preset.id !== selectedPreset.value?.id)
+    selectedPresetId.value = ''
+    closePresetDialog()
+  } catch (error) {
+    presetDialogError.value = error instanceof Error ? error.message : 'Не удалось удалить срез'
+  } finally {
+    presetDialogSaving.value = false
+  }
 }
 
 const predicateFilterOnly = { valueSet: false } satisfies DataGridAppColumnFilterOptions
@@ -1255,6 +1405,7 @@ function emptySummary(total: number): ProcurementServerGridSummary {
 onMounted(() => {
   rowModel.value = createGridRowModel()
   filterSyncSignature = serializeNativeFilterModel()
+  void loadPresets()
   subscribeHistoryStatus()
   void loadPipelineHealth()
   document.addEventListener('visibilitychange', handleGridVisibilityChange)
@@ -1305,6 +1456,27 @@ onUnmounted(() => {
         <div><span>Релевантные</span><strong>{{ summary.relevantCount }}</strong></div>
         <div><span>Рейтинг 75+</span><strong>{{ summary.highScoreCount }}</strong></div>
         <div><span>На решение</span><strong>{{ summary.decisionPendingCount }}</strong></div>
+      </div>
+      <div class="summary-strip__controls">
+        <AffinoCombobox
+          id="procurement-preset-combobox"
+          v-model="selectedPresetId"
+          class="summary-strip__preset-combobox"
+          placeholder="Выберите срез"
+          :options="presetOptions"
+          @change="applyPresetById"
+        />
+        <div class="summary-strip__buttons">
+          <button v-if="canSavePreset" class="primary-button" type="button" @click="openPresetDialog('create')">
+            Сохранить текущий фильтр
+          </button>
+          <button v-if="canUpdatePreset" class="secondary-button" type="button" @click="openPresetDialog('update')">
+            Обновить срез
+          </button>
+          <button v-if="selectedPreset" class="secondary-button secondary-button--danger" type="button" @click="openPresetDialog('delete')">
+            Удалить срез
+          </button>
+        </div>
       </div>
       <p class="summary-strip__status">{{ gridStatus }}</p>
     </section>
@@ -1429,6 +1601,69 @@ onUnmounted(() => {
           <a v-if="selectedRow.noticeUrl" class="primary-button" :href="selectedRow.noticeUrl" target="_blank" rel="noreferrer">ЕИС</a>
         </footer>
       </aside>
+
+      <Teleport to="#affino-dialog-host">
+        <transition name="dialog-layer">
+          <div
+            v-if="presetDialogOpen"
+            class="app-dialog-layer"
+            @click.self="closePresetDialog"
+          >
+            <div
+              class="app-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="procurement-preset-dialog-title"
+              tabindex="-1"
+            >
+              <header class="app-dialog__header">
+                <div>
+                  <span class="eyebrow">Срезы</span>
+                  <h2 id="procurement-preset-dialog-title">
+                    {{ presetDialogMode === 'delete' ? 'Удалить срез' : presetDialogMode === 'update' ? 'Обновить срез' : 'Сохранить срез' }}
+                  </h2>
+                </div>
+                <button class="icon-button" type="button" aria-label="Закрыть окно" @click="closePresetDialog">×</button>
+              </header>
+
+              <div class="app-dialog__body app-dialog__body--scroll">
+                <p v-if="presetDialogMode !== 'delete'" class="app-dialog__text">
+                  {{ presetDialogMode === 'update' ? 'Обновим текущий срез с учетом активных фильтров и раскладки таблицы.' : 'Сохраним текущие фильтры и раскладку таблицы как новый срез.' }}
+                </p>
+                <p v-else class="app-dialog__text">
+                  Срез "{{ selectedPreset?.name ?? '' }}" будет удален без возможности восстановления.
+                </p>
+
+                <label v-if="presetDialogMode !== 'delete'" class="app-dialog__field">
+                  <span>Название среза</span>
+                  <input
+                    ref="presetNameInputRef"
+                    v-model="presetNameDraft"
+                    type="text"
+                    maxlength="160"
+                    placeholder="Например, Контракты по 44-ФЗ"
+                    @keydown.enter.prevent="void submitPresetDialog()"
+                  />
+                </label>
+
+                <p v-if="presetDialogError" class="error-banner error-banner--inline">{{ presetDialogError }}</p>
+              </div>
+
+              <footer class="app-dialog__footer">
+                <button class="secondary-button" type="button" @click="closePresetDialog">Отмена</button>
+                <button
+                  class="primary-button"
+                  type="button"
+                  :disabled="presetDialogSaving"
+                  @click="void submitPresetDialog()"
+                >
+                  {{ presetDialogMode === 'delete' ? 'Удалить' : presetDialogSaving ? 'Сохраняю' : 'Сохранить' }}
+                </button>
+              </footer>
+            </div>
+          </div>
+        </transition>
+      </Teleport>
     </section>
   </section>
 </template>

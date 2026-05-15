@@ -3,6 +3,8 @@ from __future__ import annotations
 import unittest
 
 from app.schemas.procurements import ProcurementLotItem
+from app.services.auction_analysis import LegalRiskRules
+from app.services.auction_analysis_config import AnalysisRuntimeConfig, OwnerScoringProfile, ScoringDimensionWeights
 from app.services.procurement_classification import classify_procurement_lot
 from app.services.procurement_sync import prepare_procurement_lot
 
@@ -79,3 +81,26 @@ class ProcurementClassificationTests(unittest.TestCase):
         self.assertEqual(prepared.classification.category, "Спецодежда")
         self.assertEqual(prepared.normalized_item["classification"]["category"], "Спецодежда")
         self.assertTrue(prepared.normalized_item["classification"]["is_relevant"])
+
+    def test_custom_runtime_config_is_used_for_classification(self) -> None:
+        runtime_config = AnalysisRuntimeConfig(
+            category_keywords={"СИЗ": ("поставка",)},
+            exclusion_keywords=("поставка",),
+            legal_risk_rules=LegalRiskRules(high_keywords=(), medium_keywords=(), medium_categories=()),
+            owner_profile=OwnerScoringProfile(),
+            dimension_weights=ScoringDimensionWeights(),
+        )
+
+        prepared = prepare_procurement_lot(
+            ProcurementLotItem(
+                external_id="6",
+                registry_number="6",
+                title="Поставка касок и перчаток",
+            ),
+            runtime_config=runtime_config,
+        )
+
+        self.assertEqual(prepared.classification.category, "СИЗ")
+        self.assertFalse(prepared.classification.is_relevant)
+        self.assertIn("поставка", prepared.classification.excluded_keywords)
+        self.assertEqual(prepared.normalized_item["classification"]["category"], "СИЗ")

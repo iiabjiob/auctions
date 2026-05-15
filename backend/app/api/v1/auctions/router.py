@@ -67,19 +67,21 @@ async def get_auction_sources() -> list[AuctionSourceInfo]:
 
 @router.get("/analysis-config", response_model=AuctionAnalysisConfigResponse)
 async def get_auction_analysis_config(
+    source: Literal["auction", "procurement"] = Query(default="auction"),
     session: AsyncSession = Depends(get_db),
     current_user: UserModel = Depends(get_current_user),
 ) -> AuctionAnalysisConfigResponse:
-    return await auction_analysis_config_service.get(session)
+    return await auction_analysis_config_service.get(session, source=source)
 
 
 @router.patch("/analysis-config", response_model=AuctionAnalysisConfigResponse)
 async def patch_auction_analysis_config(
     payload: AuctionAnalysisConfigUpdate,
+    source: Literal["auction", "procurement"] = Query(default="auction"),
     session: AsyncSession = Depends(get_db),
     current_user: UserModel = Depends(get_current_user),
 ) -> AuctionAnalysisConfigResponse:
-    return await auction_analysis_config_service.update(session, payload)
+    return await auction_analysis_config_service.update(session, payload, source=source)
 
 
 @router.get("/lots", response_model=LotDatagridResponse)

@@ -1122,6 +1122,18 @@ h2 {
   min-width: 0;
 }
 
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .analysis-config-layout {
   display: grid;
   grid-template-columns: minmax(0, 1.08fr) minmax(0, 0.92fr);
@@ -1319,10 +1331,10 @@ h2 {
 
 .summary-strip {
   grid-row: 2;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px 16px;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
   min-width: 0;
   padding: 10px 12px;
   border-radius: var(--radius-md);
@@ -1338,13 +1350,42 @@ h2 {
   min-width: 0;
 }
 
+.summary-strip__controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.summary-strip__preset-combobox {
+  width: min(100%, 280px);
+  min-width: 220px;
+}
+
+.summary-strip__preset-combobox .affino-combobox {
+  width: 100%;
+}
+
+.summary-strip__buttons {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
 .summary-strip__status {
-  margin: 0 0 0 auto;
+  grid-column: 1;
+  margin: 0;
   color: var(--color-text-muted);
   font-size: 12px;
   line-height: 1.35;
   white-space: nowrap;
   text-align: right;
+  justify-self: start;
 }
 
 .summary-strip__group > div {
@@ -1673,6 +1714,22 @@ select,
   padding: 4px;
   background: var(--color-surface);
   box-shadow: var(--shadow-md);
+}
+
+.affino-combobox__search {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.affino-combobox__search-input {
+  width: 100%;
+  min-height: 34px;
+}
+
+.affino-combobox__empty {
+  padding: 8px 10px;
+  color: var(--color-text-muted);
+  font-size: 13px;
 }
 
 .affino-combobox__option {
@@ -2620,6 +2677,27 @@ input[type='range'] {
   .interest-profiles-layout {
     grid-template-columns: 1fr;
     padding: 0 16px;
+  }
+
+  .summary-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .summary-strip__controls {
+    justify-content: stretch;
+  }
+
+  .summary-strip__preset-combobox {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .summary-strip__buttons {
+    justify-content: stretch;
+  }
+
+  .summary-strip__buttons button {
+    flex: 1 1 auto;
   }
 
   .analysis-config-section__header,

@@ -25,10 +25,7 @@ export function useAppUiState() {
   const presetNameDraft = ref('')
   const telegramPresetIdDraft = ref('')
   const mobileRailOpen = ref(false)
-
-  const presetsMenuRef = ref<InstanceType<typeof UiMenu> | null>(null)
   const accountMenuRef = ref<InstanceType<typeof UiMenu> | null>(null)
-  const presetsMenuOpen = computed(() => presetsMenuRef.value?.controller.state.value.open === true)
   const accountMenuOpen = computed(() => accountMenuRef.value?.controller.state.value.open === true)
 
   const presetDialogTriggerRef = ref<HTMLElement | null>(null)
@@ -67,9 +64,7 @@ export function useAppUiState() {
     presetNameDraft,
     telegramPresetIdDraft,
     mobileRailOpen,
-    presetsMenuRef,
     accountMenuRef,
-    presetsMenuOpen,
     accountMenuOpen,
     presetDialogTriggerRef,
     presetDialogRef,

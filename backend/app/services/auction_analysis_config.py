@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,19 +20,22 @@ from app.services.auction_analysis import (
     build_category_keywords_map,
     build_exclusion_keywords,
     build_legal_risk_rules,
-    default_category_rules_payload,
-    default_exclusion_keywords_payload,
-    default_legal_risk_rules_payload,
+    default_category_rules_payload as default_auction_category_rules_payload,
+    default_exclusion_keywords_payload as default_auction_exclusion_keywords_payload,
+    default_legal_risk_rules_payload as default_auction_legal_risk_rules_payload,
 )
 from app.services.auction_scoring import SCORING_VERSION
 from app.services.auction_scoring_invalidation import invalidate_records_for_scoring_config_change
+from app.services.procurement_classification import EXCLUSION_KEYWORDS as PROCUREMENT_EXCLUSION_KEYWORDS
+from app.services.procurement_classification import KEYWORD_GROUPS as PROCUREMENT_CATEGORY_KEYWORDS
 
 
-DEFAULT_ANALYSIS_CONFIG_ID = "default"
+AnalysisSourceKind = Literal["auction", "procurement"]
+DEFAULT_ANALYSIS_CONFIG_ID = "auction"
 
 
 @dataclass(frozen=True)
-class AuctionAnalysisRuntimeConfig:
+class AnalysisRuntimeConfig:
     category_keywords: dict[str, tuple[str, ...]]
     exclusion_keywords: tuple[str, ...]
     legal_risk_rules: LegalRiskRules
@@ -39,31 +43,46 @@ class AuctionAnalysisRuntimeConfig:
     dimension_weights: ScoringDimensionWeights
 
 
+AuctionAnalysisRuntimeConfig = AnalysisRuntimeConfig
+
+
 class AuctionAnalysisConfigService:
-    async def get(self, session: AsyncSession) -> AuctionAnalysisConfigResponse:
-        config = await self._get_or_create_model(session)
+    async def get(
+        self,
+        session: AsyncSession,
+        *,
+        source: AnalysisSourceKind = "auction",
+    ) -> AuctionAnalysisConfigResponse:
+        config = await self._get_or_create_model(session, source=source)
         return AuctionAnalysisConfigResponse.model_validate(config, from_attributes=True)
 
     async def update(
         self,
         session: AsyncSession,
         payload: AuctionAnalysisConfigUpdate,
+        *,
+        source: AnalysisSourceKind = "auction",
     ) -> AuctionAnalysisConfigResponse:
-        config = await self._get_or_create_model(session)
+        config = await self._get_or_create_model(session, source=source)
         config.category_rules = self._normalize_category_rules(payload.category_rules)
         config.exclusion_keywords = self._normalize_keywords(payload.exclusion_keywords)
         config.legal_risk_rules = self._normalize_legal_risk_rules(payload.legal_risk_rules)
         config.owner_profile = self._normalize_owner_profile(payload.owner_profile)
         config.dimension_weights = self._normalize_dimension_weights(payload.dimension_weights)
         config.updated_at = datetime.now(UTC)
-        await self.queue_recalculation(session)
+        await self.queue_recalculation(session, source=source)
         await session.commit()
         await session.refresh(config)
         return AuctionAnalysisConfigResponse.model_validate(config, from_attributes=True)
 
-    async def get_runtime_config(self, session: AsyncSession) -> AuctionAnalysisRuntimeConfig:
-        config = await self._get_or_create_model(session)
-        return AuctionAnalysisRuntimeConfig(
+    async def get_runtime_config(
+        self,
+        session: AsyncSession,
+        *,
+        source: AnalysisSourceKind = "auction",
+    ) -> AnalysisRuntimeConfig:
+        config = await self._get_or_create_model(session, source=source)
+        return AnalysisRuntimeConfig(
             category_keywords=build_category_keywords_map(config.category_rules),
             exclusion_keywords=build_exclusion_keywords(config.exclusion_keywords),
             legal_risk_rules=build_legal_risk_rules(config.legal_risk_rules),
@@ -71,16 +90,17 @@ class AuctionAnalysisConfigService:
             dimension_weights=ScoringDimensionWeights.model_validate(config.dimension_weights or {}),
         )
 
-    async def _get_or_create_model(self, session: AsyncSession) -> AuctionAnalysisConfigModel:
-        config = await session.get(AuctionAnalysisConfigModel, DEFAULT_ANALYSIS_CONFIG_ID)
+    async def _get_or_create_model(self, session: AsyncSession, *, source: AnalysisSourceKind) -> AuctionAnalysisConfigModel:
+        config_id = _config_id_for_source(source)
+        config = await session.get(AuctionAnalysisConfigModel, config_id)
         if config is not None:
             return config
 
         config = AuctionAnalysisConfigModel(
-            id=DEFAULT_ANALYSIS_CONFIG_ID,
-            category_rules=default_category_rules_payload(),
-            exclusion_keywords=default_exclusion_keywords_payload(),
-            legal_risk_rules=default_legal_risk_rules_payload(),
+            id=config_id,
+            category_rules=_default_category_rules_payload(source),
+            exclusion_keywords=_default_exclusion_keywords_payload(source),
+            legal_risk_rules=_default_legal_risk_rules_payload(source),
             owner_profile=default_owner_profile_payload(),
             dimension_weights=default_dimension_weights_payload(),
             created_at=datetime.now(UTC),
@@ -145,7 +165,9 @@ class AuctionAnalysisConfigService:
     def _normalize_dimension_weights(self, weights: ScoringDimensionWeights) -> dict:
         return weights.model_dump(mode="json")
 
-    async def queue_recalculation(self, session: AsyncSession) -> int:
+    async def queue_recalculation(self, session: AsyncSession, *, source: AnalysisSourceKind = "auction") -> int:
+        if source != "auction":
+            return 0
         return await invalidate_records_for_scoring_config_change(
             session,
             current_scoring_version=SCORING_VERSION,
@@ -158,6 +180,28 @@ def default_owner_profile_payload() -> dict:
 
 def default_dimension_weights_payload() -> dict:
     return ScoringDimensionWeights().model_dump(mode="json")
+
+
+def _config_id_for_source(source: AnalysisSourceKind) -> str:
+    return source
+
+
+def _default_category_rules_payload(source: AnalysisSourceKind) -> list[dict[str, object]]:
+    if source == "procurement":
+        return [{"category": category, "keywords": list(keywords)} for category, keywords in PROCUREMENT_CATEGORY_KEYWORDS.items()]
+    return default_auction_category_rules_payload()
+
+
+def _default_exclusion_keywords_payload(source: AnalysisSourceKind) -> list[str]:
+    if source == "procurement":
+        return list(PROCUREMENT_EXCLUSION_KEYWORDS)
+    return default_auction_exclusion_keywords_payload()
+
+
+def _default_legal_risk_rules_payload(source: AnalysisSourceKind) -> dict[str, list[str]]:
+    if source == "procurement":
+        return {"high_keywords": [], "medium_keywords": [], "medium_categories": []}
+    return default_auction_legal_risk_rules_payload()
 
 
 auction_analysis_config_service = AuctionAnalysisConfigService()

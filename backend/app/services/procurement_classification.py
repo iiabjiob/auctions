@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Mapping, Sequence
 
 from app.schemas.procurements import ProcurementLotItem
 
@@ -92,12 +93,17 @@ class ProcurementClassification:
     is_relevant: bool
 
 
-def classify_procurement_lot(item: ProcurementLotItem) -> ProcurementClassification:
+def classify_procurement_lot(
+    item: ProcurementLotItem,
+    *,
+    category_keywords: Mapping[str, Sequence[str]] | None = None,
+    exclusion_keywords: Sequence[str] | None = None,
+) -> ProcurementClassification:
     haystack = _classification_text(item)
-    excluded = _matched_keywords(haystack, EXCLUSION_KEYWORDS)
+    excluded = _matched_keywords(haystack, exclusion_keywords or EXCLUSION_KEYWORDS)
     matches_by_category = {
-        category: _matched_keywords(haystack, keywords)
-        for category, keywords in KEYWORD_GROUPS.items()
+        category: _matched_keywords(haystack, tuple(keywords))
+        for category, keywords in (category_keywords or KEYWORD_GROUPS).items()
     }
     matches_by_category = {category: matches for category, matches in matches_by_category.items() if matches}
     matched_keywords = _dedupe(keyword for matches in matches_by_category.values() for keyword in matches)

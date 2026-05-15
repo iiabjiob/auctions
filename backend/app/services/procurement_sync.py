@@ -25,6 +25,7 @@ from app.services.procurement_notifications import enqueue_procurement_telegram_
 from app.services.procurement_enrichment import classify_procurement_enrichment, schedule_procurement_lot_enrichment
 from app.services.procurement_scoring import apply_procurement_score
 from app.services.procurement_grid_state import bump_procurement_lot_dataset_version
+from app.services.auction_analysis_config import auction_analysis_config_service, AnalysisRuntimeConfig
 from app.services.procurement_sources import (
     get_procurement_source_provider,
     list_enabled_procurement_source_providers,
@@ -137,6 +138,7 @@ async def sync_procurement_source_provider(
     )
 
     diagnostics_token = begin_source_http_diagnostics()
+    runtime_config = await auction_analysis_config_service.get_runtime_config(session, source="procurement")
     try:
         pages_processed = 0
         while pages_processed < page_batch_size and (remaining_limit is None or remaining_limit > 0):
@@ -173,6 +175,7 @@ async def sync_procurement_source_provider(
                 result=result,
                 missing_critical_fields=missing_critical_fields,
                 observed_at=now,
+                runtime_config=runtime_config,
             )
             pages_processed += 1
             if remaining_limit is not None:
@@ -276,8 +279,16 @@ async def sync_procurement_source_provider(
     return result
 
 
-def prepare_procurement_lot(item: ProcurementLotItem) -> PreparedProcurementLot:
-    classification = classify_procurement_lot(item)
+def prepare_procurement_lot(
+    item: ProcurementLotItem,
+    *,
+    runtime_config: AnalysisRuntimeConfig | None = None,
+) -> PreparedProcurementLot:
+    classification = classify_procurement_lot(
+        item,
+        category_keywords=runtime_config.category_keywords if runtime_config is not None else None,
+        exclusion_keywords=runtime_config.exclusion_keywords if runtime_config is not None else None,
+    )
     normalized = item.model_dump(mode="json")
     normalized["classification"] = {
         "category": classification.category,
@@ -305,10 +316,11 @@ async def _sync_procurement_items(
     result: ProcurementSyncResult,
     missing_critical_fields: Counter[str],
     observed_at: datetime,
+    runtime_config: AnalysisRuntimeConfig,
 ) -> None:
     for item in items:
         result.fetched += 1
-        prepared = prepare_procurement_lot(item)
+        prepared = prepare_procurement_lot(item, runtime_config=runtime_config)
         record = await _find_record(session, source_code=info.code, external_id=item.external_id)
         publication_at = parse_scraped_datetime(item.publication_date)
         deadline_at = parse_scraped_datetime(item.application_deadline)
