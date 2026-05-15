@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, onMounted, onUnmounted, reactive, ref, shallowRef } from 'vue'
+import { computed, h, onMounted, onUnmounted, reactive, ref, shallowRef, watch } from 'vue'
 import {
   DataGrid,
   defineDataGridColumnMenu,
@@ -273,6 +273,7 @@ const GRID_CHANGES_REFRESH_DEBOUNCE_MS = 650
 const DETAIL_PANE_DEFAULT_WIDTH = 560
 const DETAIL_PANE_MIN_WIDTH = 420
 const DETAIL_PANE_MAX_WIDTH = 920
+const PROCUREMENT_FILTER_SYNC_DELAY_MS = 400
 
 const gridRef = ref<DataGridExposed<ProcurementGridRow> | null>(null)
 const workspaceRef = ref<HTMLElement | null>(null)
@@ -321,6 +322,8 @@ let workspaceAbortController: AbortController | null = null
 let resizeStartX = 0
 let resizeStartWidth = 0
 let historyStatusUnsubscribe: (() => void) | null = null
+let filterSyncTimer: ReturnType<typeof window.setTimeout> | null = null
+let filterSyncSignature = ''
 
 const procurementContentClass = computed(() => ({
   'procurement-content--with-detail': Boolean(selectedRow.value),
@@ -345,17 +348,92 @@ const filterNumber = (value: string) => {
 
 function buildServerFilters(): ProcurementServerGridFilters {
   return {
-    source: filters.source && filters.source !== 'all' ? filters.source : null,
-    law: filters.law || null,
-    status: filters.status || null,
-    workflowStatus: filters.workflowStatus || null,
-    assignee: filters.assignee || null,
-    category: filters.category || null,
-    minPrice: filterNumber(filters.minPrice),
-    maxPrice: filterNumber(filters.maxPrice),
-    minScore: filters.minScore > 0 ? filters.minScore : null,
-    onlyNew: filters.onlyNew,
+    source: null,
+    law: null,
+    status: null,
+    workflowStatus: null,
+    assignee: null,
+    category: null,
+    minPrice: null,
+    maxPrice: null,
+    minScore: null,
+    onlyNew: false,
   }
+}
+
+function buildNativeFilterModel(): DataGridFilterSnapshot | null {
+  const conditions: Record<string, unknown>[] = []
+  const minPrice = filterNumber(filters.minPrice)
+  const maxPrice = filterNumber(filters.maxPrice)
+
+  if (filters.source && filters.source !== 'all') {
+    conditions.push({ kind: 'condition', key: 'source', operator: 'equals', value: filters.source })
+  }
+  if (filters.law) {
+    conditions.push({ kind: 'condition', key: 'law', operator: 'equals', value: filters.law })
+  }
+  if (filters.status) {
+    conditions.push({ kind: 'condition', key: 'status', operator: 'contains', value: filters.status })
+  }
+  if (filters.workflowStatus) {
+    conditions.push({ kind: 'condition', key: 'workflowStatus', operator: 'equals', value: filters.workflowStatus })
+  }
+  if (filters.assignee) {
+    conditions.push({ kind: 'condition', key: 'assignee', operator: 'equals', value: filters.assignee })
+  }
+  if (filters.category) {
+    conditions.push({ kind: 'condition', key: 'category', operator: 'equals', value: filters.category })
+  }
+  if (minPrice !== null) {
+    conditions.push({ kind: 'condition', key: 'initialPrice', operator: 'gte', value: minPrice })
+  }
+  if (maxPrice !== null) {
+    conditions.push({ kind: 'condition', key: 'initialPrice', operator: 'lte', value: maxPrice })
+  }
+  if (filters.minScore > 0) {
+    conditions.push({ kind: 'condition', key: 'score', operator: 'gte', value: filters.minScore })
+  }
+  if (filters.onlyNew) {
+    conditions.push({ kind: 'condition', key: 'isNew', operator: 'equals', value: true })
+  }
+
+  if (!conditions.length) return null
+  return {
+    advancedExpression:
+      conditions.length === 1
+        ? conditions[0]
+        : {
+            kind: 'group',
+            operator: 'and',
+            children: conditions,
+          },
+  } as DataGridFilterSnapshot
+}
+
+function serializeNativeFilterModel() {
+  return JSON.stringify(buildNativeFilterModel())
+}
+
+function clearFilterSyncTimer() {
+  if (filterSyncTimer === null) return
+  window.clearTimeout(filterSyncTimer)
+  filterSyncTimer = null
+}
+
+function syncFilterModel() {
+  clearFilterSyncTimer()
+  const nextSignature = serializeNativeFilterModel()
+  if (nextSignature === filterSyncSignature) return
+  filterSyncSignature = nextSignature
+  rowModel.value?.setFilterModel(buildNativeFilterModel())
+}
+
+function scheduleFilterSync() {
+  clearFilterSyncTimer()
+  filterSyncTimer = window.setTimeout(() => {
+    filterSyncTimer = null
+    syncFilterModel()
+  }, PROCUREMENT_FILTER_SYNC_DELAY_MS)
 }
 
 const predicateFilterOnly = { valueSet: false } satisfies DataGridAppColumnFilterOptions
@@ -602,6 +680,7 @@ function createGridRowModel(): ProcurementRowModel {
     dataSource: datasource,
     resolveRowId: (row: ProcurementGridRow) => row.id,
     initialTotal: Math.max(total.value || 0, SERVER_ROW_MODEL_INITIAL_FETCH_SIZE),
+    initialFilterModel: buildNativeFilterModel(),
     rowCacheLimit: ROW_CACHE_LIMIT,
     prefetch: prefetchOptions,
   }) as ProcurementRowModel
@@ -1200,10 +1279,15 @@ function emptySummary(total: number): ProcurementServerGridSummary {
 
 onMounted(() => {
   rowModel.value = createGridRowModel()
+  filterSyncSignature = serializeNativeFilterModel()
   subscribeHistoryStatus()
   void loadPipelineHealth()
   document.addEventListener('visibilitychange', handleGridVisibilityChange)
 })
+
+watch(filters, () => {
+  scheduleFilterSync()
+}, { deep: true })
 
 onUnmounted(() => {
   historyStatusUnsubscribe?.()
@@ -1213,6 +1297,7 @@ onUnmounted(() => {
   pipelineHealthAbortController?.abort()
   pipelineHealthAbortController = null
   stopDetailResize()
+  clearFilterSyncTimer()
   rowModel.value?.dispose()
   rowModel.value = null
 })

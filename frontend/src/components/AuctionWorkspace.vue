@@ -9,8 +9,6 @@ const props = defineProps({
   loading: { type: Boolean, required: true },
   allRowsLength: { type: Number, required: true },
   catalogGridHasLoadedOnce: { type: Boolean, required: true },
-  catalogQueryPlaceholderVisible: { type: Boolean, required: true },
-  catalogViewportDimmed: { type: Boolean, required: true },
   loadingSkeletonTemplate: { type: String, required: true },
   loadingSkeletonColumns: {
     type: Array as PropType<ReadonlyArray<{ key: string; label: string; placeholderWidth: string }>>,
@@ -115,13 +113,5 @@ defineExpose({
       :history="auctionGridHistoryOptions"
       @update:column-widths="emit('update:column-widths', $event)"
     />
-    <div
-      v-if="catalogQueryPlaceholderVisible && catalogGridHasLoadedOnce"
-      class="grid-query-placeholder"
-      role="status"
-      aria-live="polite"
-    >
-      <span>Обновляем срез</span>
-    </div>
   </div>
 </template>

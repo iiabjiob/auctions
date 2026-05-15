@@ -807,7 +807,6 @@ const detailLoading = ref(false)
 const detailLiveRefreshing = ref(false)
 const detailReanalyzing = ref(false)
 const detailStatus = ref('')
-const catalogViewportDimmed = ref(false)
 const DETAIL_PANE_WIDTH_STORAGE_KEY = 'auction-detail-pane-width'
 const GRID_STATE_PERSISTENCE_KEY = 'auction-grid-state-v1'
 const GRID_COLUMN_WIDTHS_STORAGE_KEY = 'auction-grid-column-widths-v1'
@@ -841,6 +840,7 @@ const DETAIL_PANE_DEFAULT_WIDTH = 720
 const DETAIL_PANE_MIN_WIDTH = 420
 const DETAIL_PANE_MAX_WIDTH = 980
 const LOTS_RELOAD_DELAY_MS = 400
+const CATALOG_FILTER_SYNC_DELAY_MS = LOTS_RELOAD_DELAY_MS
 const SYNC_PROGRESS_RELOAD_INTERVAL_MS = 30_000
 const SERVER_ROW_MODEL_INITIAL_FETCH_SIZE = 256
 const DETAIL_FETCH_TIMEOUT_MS = 15_000
@@ -854,15 +854,12 @@ const LOADING_SKELETON_MIN_ROWS = 16
 const LOADING_SKELETON_TOOLBAR_HEIGHT = 42
 const LOADING_SKELETON_HEADER_HEIGHT = 34
 const LOADING_SKELETON_ROW_HEIGHT = 26
-const CATALOG_QUERY_PLACEHOLDER_SHOW_DELAY_MS = 180
-const CATALOG_QUERY_PLACEHOLDER_MIN_VISIBLE_MS = 140
 const detailPaneWidth = ref(readStoredDetailPaneWidth())
 const gridRef = ref<AuctionWorkspaceExposed | null>(null)
 const gridSurfaceRef = ref<HTMLElement | null>(null)
 const gridColumnWidths = ref<GridColumnWidthsState>(readStoredGridColumnWidths())
 const gridRowsById = shallowRef(new Map<string, GridLotRow>())
 const catalogGridHasLoadedOnce = ref(false)
-const catalogQueryPlaceholderVisible = ref(false)
 const gridRowRevision = ref(0)
 const latestAuctionGridDatasetVersion = ref<number | null>(null)
 const auctionHistoryState = reactive({
@@ -889,16 +886,9 @@ let lastLotsReloadStartedAt = 0
 let catalogPullRequestSeq = 0
 let catalogSoftReloadSeq = 0
 let catalogSoftRefreshAbortController: AbortController | null = null
-let catalogViewportDimRequests = 0
-let catalogViewportDimShowTimer: ReturnType<typeof window.setTimeout> | null = null
-let catalogViewportDimHideTimer: ReturnType<typeof window.setTimeout> | null = null
-let catalogViewportDimVisibleAt = 0
-let catalogQueryPlaceholderRequests = 0
-let catalogQueryPlaceholderShowTimer: ReturnType<typeof window.setTimeout> | null = null
-let catalogQueryPlaceholderHideTimer: ReturnType<typeof window.setTimeout> | null = null
-let catalogQueryPlaceholderVisibleAt = 0
-let catalogNextViewportPullShouldDim = false
-let catalogViewportRecoveryTimer: ReturnType<typeof window.setTimeout> | null = null
+let catalogFilterSyncTimer: ReturnType<typeof window.setTimeout> | null = null
+let catalogFilterSyncSignature = ''
+let catalogQueryScopeSyncSignature = ''
 let keepCatalogEditErrorOnNextPull = false
 const catalogFetchRequests = new Map<string, Promise<LotsResponse>>()
 let auctionGridChangesPollTimer: ReturnType<typeof window.setTimeout> | null = null
@@ -2468,20 +2458,104 @@ function isApiRequestStatus(error: unknown, status: number) {
 }
 
 function buildAuctionServerGridFilters(): AuctionServerGridFilters {
-  const minPrice = parseFilterNumber(filters.minPrice)
-  const maxPrice = parseFilterNumber(filters.maxPrice)
   return {
     period: filters.period,
-    source: filters.source || null,
-    status: filters.status || null,
-    analysis_color: filters.analysisColor || null,
-    min_price: minPrice,
-    max_price: maxPrice,
-    only_new: filters.onlyNew,
-    shortlist: filters.shortlist,
-    min_rating: filters.minRating > 0 ? filters.minRating : null,
+    source: null,
+    status: null,
+    analysis_color: null,
+    min_price: null,
+    max_price: null,
+    only_new: false,
+    shortlist: false,
+    min_rating: null,
     include_archived: filters.includeArchived,
   }
+}
+
+function buildCatalogFilterModel(): DataGridFilterSnapshot | null {
+  const conditions: Record<string, unknown>[] = []
+  const minPrice = parseFilterNumber(filters.minPrice)
+  const maxPrice = parseFilterNumber(filters.maxPrice)
+
+  if (filters.source && filters.source !== 'all') {
+    conditions.push({ kind: 'condition', key: 'source', operator: 'equals', value: filters.source })
+  }
+  if (filters.status) {
+    conditions.push({ kind: 'condition', key: 'status', operator: 'equals', value: filters.status })
+  }
+  if (filters.analysisColor) {
+    conditions.push({ kind: 'condition', key: 'analysisColor', operator: 'equals', value: filters.analysisColor })
+  }
+  if (minPrice !== null) {
+    conditions.push({ kind: 'condition', key: 'price', operator: 'gte', value: minPrice })
+  }
+  if (maxPrice !== null) {
+    conditions.push({ kind: 'condition', key: 'price', operator: 'lte', value: maxPrice })
+  }
+  if (filters.onlyNew) {
+    conditions.push({ kind: 'condition', key: 'isNew', operator: 'equals', value: true })
+  }
+  if (filters.shortlist) {
+    conditions.push({ kind: 'condition', key: '__shortlist', operator: 'equals', value: true })
+  }
+  if (filters.minRating > 0) {
+    conditions.push({ kind: 'condition', key: 'ratingScore', operator: 'gte', value: filters.minRating })
+  }
+
+  if (!conditions.length) return null
+  return {
+    advancedExpression:
+      conditions.length === 1
+        ? conditions[0]
+        : {
+            kind: 'group',
+            operator: 'and',
+            children: conditions,
+          },
+  } as DataGridFilterSnapshot
+}
+
+function serializeCatalogFilterModel() {
+  return JSON.stringify(buildCatalogFilterModel())
+}
+
+function serializeCatalogQueryScope() {
+  return JSON.stringify({
+    period: filters.period,
+    includeArchived: filters.includeArchived,
+  })
+}
+
+function clearCatalogFilterSyncTimer() {
+  if (catalogFilterSyncTimer === null) return
+  window.clearTimeout(catalogFilterSyncTimer)
+  catalogFilterSyncTimer = null
+}
+
+function syncCatalogFilterModel() {
+  clearCatalogFilterSyncTimer()
+  const rowModel = catalogRowModel.value
+  if (!rowModel) return
+  const nextFilterSignature = serializeCatalogFilterModel()
+  const nextQueryScopeSignature = serializeCatalogQueryScope()
+  const filterChanged = nextFilterSignature !== catalogFilterSyncSignature
+  const queryScopeChanged = nextQueryScopeSignature !== catalogQueryScopeSyncSignature
+  if (!filterChanged && !queryScopeChanged) return
+  catalogFilterSyncSignature = nextFilterSignature
+  catalogQueryScopeSyncSignature = nextQueryScopeSignature
+  if (filterChanged) {
+    rowModel.setFilterModel(buildCatalogFilterModel())
+    return
+  }
+  void rowModel.refresh('manual')
+}
+
+function scheduleCatalogFilterSync() {
+  clearCatalogFilterSyncTimer()
+  catalogFilterSyncTimer = window.setTimeout(() => {
+    catalogFilterSyncTimer = null
+    syncCatalogFilterModel()
+  }, CATALOG_FILTER_SYNC_DELAY_MS)
 }
 
 async function postAuctionServerGridJson<TResponse>(path: string, payload: unknown, signal?: AbortSignal) {
@@ -2624,141 +2698,8 @@ async function fetchLotsRange(request: {
   })
 }
 
-function beginCatalogViewportDim() {
-  if (allRows.value.length === 0) return false
-
-  catalogViewportDimRequests += 1
-  if (catalogViewportDimHideTimer !== null) {
-    window.clearTimeout(catalogViewportDimHideTimer)
-    catalogViewportDimHideTimer = null
-  }
-  if (!catalogViewportDimmed.value && catalogViewportDimShowTimer === null) {
-    catalogViewportDimShowTimer = window.setTimeout(() => {
-      catalogViewportDimShowTimer = null
-      if (catalogViewportDimRequests <= 0) return
-
-      catalogViewportDimVisibleAt = window.performance.now()
-      catalogViewportDimmed.value = true
-    }, 80)
-  }
-  return true
-}
-
-function endCatalogViewportDim(active: boolean) {
-  if (!active) return
-
-  catalogViewportDimRequests = Math.max(0, catalogViewportDimRequests - 1)
-  if (catalogViewportDimRequests > 0) return
-
-  if (catalogViewportDimShowTimer !== null) {
-    window.clearTimeout(catalogViewportDimShowTimer)
-    catalogViewportDimShowTimer = null
-  }
-  if (!catalogViewportDimmed.value) return
-
-  const visibleForMs = window.performance.now() - catalogViewportDimVisibleAt
-  const hideDelayMs = Math.max(0, 160 - visibleForMs)
-  catalogViewportDimHideTimer = window.setTimeout(() => {
-    catalogViewportDimHideTimer = null
-    if (catalogViewportDimRequests === 0) {
-      catalogViewportDimmed.value = false
-    }
-  }, hideDelayMs)
-}
-
-function beginCatalogQueryPlaceholder() {
-  if (!catalogGridHasLoadedOnce.value && allRows.value.length === 0) return false
-
-  catalogQueryPlaceholderRequests += 1
-  if (catalogQueryPlaceholderHideTimer !== null) {
-    window.clearTimeout(catalogQueryPlaceholderHideTimer)
-    catalogQueryPlaceholderHideTimer = null
-  }
-  if (!catalogQueryPlaceholderVisible.value && catalogQueryPlaceholderShowTimer === null) {
-    catalogQueryPlaceholderShowTimer = window.setTimeout(() => {
-      catalogQueryPlaceholderShowTimer = null
-      if (catalogQueryPlaceholderRequests <= 0) return
-
-      catalogQueryPlaceholderVisibleAt = window.performance.now()
-      catalogQueryPlaceholderVisible.value = true
-    }, CATALOG_QUERY_PLACEHOLDER_SHOW_DELAY_MS)
-  } else if (catalogQueryPlaceholderVisible.value) {
-    catalogQueryPlaceholderVisibleAt = window.performance.now()
-  }
-  return true
-}
-
-function endCatalogQueryPlaceholder(active: boolean) {
-  if (!active) return
-
-  catalogQueryPlaceholderRequests = Math.max(0, catalogQueryPlaceholderRequests - 1)
-  if (catalogQueryPlaceholderRequests > 0) return
-
-  if (catalogQueryPlaceholderShowTimer !== null) {
-    window.clearTimeout(catalogQueryPlaceholderShowTimer)
-    catalogQueryPlaceholderShowTimer = null
-  }
-  if (!catalogQueryPlaceholderVisible.value) return
-
-  const visibleForMs = window.performance.now() - catalogQueryPlaceholderVisibleAt
-  const hideDelayMs = Math.max(0, CATALOG_QUERY_PLACEHOLDER_MIN_VISIBLE_MS - visibleForMs)
-  catalogQueryPlaceholderHideTimer = window.setTimeout(() => {
-    catalogQueryPlaceholderHideTimer = null
-    if (catalogQueryPlaceholderRequests === 0) {
-      catalogQueryPlaceholderVisible.value = false
-    }
-  }, hideDelayMs)
-}
-
 function clearCatalogViewportDim() {
-  catalogViewportDimRequests = 0
-  catalogQueryPlaceholderRequests = 0
-  catalogNextViewportPullShouldDim = false
-  catalogViewportDimmed.value = false
-  catalogQueryPlaceholderVisible.value = false
-  if (catalogQueryPlaceholderShowTimer !== null) {
-    window.clearTimeout(catalogQueryPlaceholderShowTimer)
-    catalogQueryPlaceholderShowTimer = null
-  }
-  if (catalogViewportDimShowTimer !== null) {
-    window.clearTimeout(catalogViewportDimShowTimer)
-    catalogViewportDimShowTimer = null
-  }
-  if (catalogViewportDimHideTimer !== null) {
-    window.clearTimeout(catalogViewportDimHideTimer)
-    catalogViewportDimHideTimer = null
-  }
-  if (catalogQueryPlaceholderHideTimer !== null) {
-    window.clearTimeout(catalogQueryPlaceholderHideTimer)
-    catalogQueryPlaceholderHideTimer = null
-  }
-  if (catalogViewportRecoveryTimer !== null) {
-    window.clearTimeout(catalogViewportRecoveryTimer)
-    catalogViewportRecoveryTimer = null
-  }
-}
-
-function shouldDimCatalogPull(reason: string) {
-  if (reason === 'sort-change' || reason === 'filter-change' || reason === 'group-change') return true
-  if (reason === 'viewport-change' && catalogNextViewportPullShouldDim) {
-    catalogNextViewportPullShouldDim = false
-    return true
-  }
-  return false
-}
-
-function shouldResetCatalogPullViewport(reason: string) {
-  return reason === 'sort-change' || reason === 'filter-change' || reason === 'group-change'
-}
-
-function scheduleCatalogViewportRecovery(range: { start: number; end: number }) {
-  if (catalogViewportRecoveryTimer !== null) {
-    window.clearTimeout(catalogViewportRecoveryTimer)
-  }
-  catalogViewportRecoveryTimer = window.setTimeout(() => {
-    catalogViewportRecoveryTimer = null
-    ensureCatalogServerViewport(range)
-  }, 0)
+  // Legacy query-busy overlay removed. Keep the hook as a no-op so callers stay simple.
 }
 
 function createCatalogDataSource(): CatalogDataSource {
@@ -2774,12 +2715,9 @@ function createCatalogDataSource(): CatalogDataSource {
       const requestSeq = catalogPullRequestSeq + 1
       catalogPullRequestSeq = requestSeq
       const isBackgroundPrefetch = request.reason === 'prefetch' || request.priority === 'background'
-      const dimViewport = shouldDimCatalogPull(request.reason)
       if (!isBackgroundPrefetch && allRows.value.length === 0) {
         loading.value = true
       }
-      const dimActive = dimViewport && beginCatalogViewportDim()
-      const queryPlaceholderActive = dimViewport && beginCatalogQueryPlaceholder()
       if (!isBackgroundPrefetch) {
         if (keepCatalogEditErrorOnNextPull) {
           keepCatalogEditErrorOnNextPull = false
@@ -2789,16 +2727,11 @@ function createCatalogDataSource(): CatalogDataSource {
       }
       try {
         const effectiveFilterModel = resolveCatalogPullFilterModel(request.filterModel, request.reason)
-        const shouldResetViewport = shouldResetCatalogPullViewport(request.reason)
-        const pullRange = shouldResetViewport ? buildCatalogServerViewportRange(request.range) : request.range
         const result = await auctionServerDataSource.pull({
           ...request,
-          range: pullRange,
+          range: request.range,
           filterModel: effectiveFilterModel,
         })
-        if (shouldResetViewport) {
-          scheduleCatalogViewportRecovery(pullRange)
-        }
         return result
       } catch (error) {
         if (!isBackgroundPrefetch && !isAbortLikeError(error) && requestSeq === catalogPullRequestSeq) {
@@ -2810,8 +2743,6 @@ function createCatalogDataSource(): CatalogDataSource {
           loading.value = false
           catalogGridHasLoadedOnce.value = true
         }
-        endCatalogViewportDim(dimActive)
-        endCatalogQueryPlaceholder(queryPlaceholderActive)
         if (!isBackgroundPrefetch) {
           scheduleGridSummaryRefresh()
         }
@@ -2851,6 +2782,7 @@ function createCatalogRowModel(): CatalogRowModel {
     dataSource: createCatalogDataSource(),
     resolveRowId: resolveClientGridRowId,
     initialTotal: Math.min(CATALOG_TOTAL_ROW_LIMIT, Math.max(catalogTotal.value || 0, SERVER_ROW_MODEL_INITIAL_FETCH_SIZE)),
+    initialFilterModel: buildCatalogFilterModel(),
     rowCacheLimit: CATALOG_ROW_CACHE_LIMIT,
     prefetch: catalogRowModelPrefetchOptions,
   }) as CatalogRowModel
@@ -3113,7 +3045,6 @@ function resolveCatalogReloadRange() {
 }
 
 async function softRefreshCatalogRows(options: {
-  dimViewport?: boolean
   range?: { start: number; end: number }
   expandViewportAfter?: boolean
   sortModel?: readonly DataGridSortState[]
@@ -3127,7 +3058,6 @@ async function softRefreshCatalogRows(options: {
   const controller = new AbortController()
   catalogSoftRefreshAbortController = controller
   const range = options.range ?? resolveCatalogReloadRange()
-  const dimActive = options.dimViewport === true && beginCatalogViewportDim()
   try {
     const result = await fetchLotsRange({
       start: range.start,
@@ -3156,12 +3086,12 @@ async function softRefreshCatalogRows(options: {
     if (catalogSoftRefreshAbortController === controller) {
       catalogSoftRefreshAbortController = null
     }
-    endCatalogViewportDim(dimActive)
     scheduleGridSummaryRefresh()
   }
 }
 
 function resetCatalogRowModel() {
+  clearCatalogFilterSyncTimer()
   catalogRowModel.value?.dispose()
   catalogDataSourceListeners.clear()
   clearCatalogViewportDim()
@@ -3177,6 +3107,8 @@ function resetCatalogRowModel() {
   }
   catalogGridHasLoadedOnce.value = false
   catalogRowModel.value = createCatalogRowModel()
+  catalogFilterSyncSignature = serializeCatalogFilterModel()
+  catalogQueryScopeSyncSignature = serializeCatalogQueryScope()
 }
 
 async function loadLots() {
@@ -3395,23 +3327,14 @@ function scheduleLotsReload(
     deferredLotsReloadTimer = null
     deferredLotsReloadShouldResetViewport = false
     lastLotsReloadStartedAt = Date.now()
-    catalogNextViewportPullShouldDim = shouldResetViewport
     const resetRange = shouldResetViewport ? buildCatalogServerViewportRange() : null
     const viewportChanged = resetRange ? ensureCatalogServerViewport(resetRange) : expandCollapsedCatalogServerViewport()
     if (resetRange) {
-      catalogNextViewportPullShouldDim = false
-      void softRefreshCatalogRows({
-        dimViewport: true,
-        range: resetRange,
-        expandViewportAfter: true,
-      })
+      void softRefreshCatalogRows({ range: resetRange, expandViewportAfter: true })
       return
     }
     if (!viewportChanged) {
-      catalogNextViewportPullShouldDim = false
-      void softRefreshCatalogRows({
-        dimViewport: false,
-      })
+      void softRefreshCatalogRows()
     }
   }, delayMs)
 }
@@ -3730,10 +3653,7 @@ async function refreshAuctionGridAfterChange() {
   if (!isAuctionsModule.value || !isAuthenticated.value || document.hidden || !catalogRowModel.value) return
   auctionGridChangesRefreshInFlight = true
   try {
-    await softRefreshCatalogRows({
-      dimViewport: false,
-      range: resolveCatalogReloadRange(),
-    })
+    await softRefreshCatalogRows({ range: resolveCatalogReloadRange() })
   } finally {
     auctionGridChangesRefreshInFlight = false
   }
@@ -3816,13 +3736,10 @@ async function applyPresetById(presetId: string) {
   if (!preset) return
 
   const nextFilters = sanitizeServerFilters(preset.filters)
-  const shouldReload = filters.period !== nextFilters.period
   Object.assign(filters, nextFilters)
-  if (shouldReload) {
-    await loadLots()
-  }
   await nextTick()
   writeGridSavedView(preset.grid_view)
+  syncCatalogFilterModel()
 }
 
 function sortPresets(items: FilterPreset[]) {
@@ -4864,8 +4781,7 @@ function stopAuctionEvents() {
 watch(filters, () => {
   if (!isAuctionsModule.value) return
   persistServerFilters()
-  scheduleLotsReload(LOTS_RELOAD_DELAY_MS, true, { resetViewport: true })
-  scheduleGridSummaryRefresh()
+  scheduleCatalogFilterSync()
 }, { deep: true })
 
 watch(isAuthenticated, (authenticated) => {
@@ -4937,6 +4853,7 @@ onUnmounted(() => {
     window.clearTimeout(deferredLotsReloadTimer)
     deferredLotsReloadTimer = null
   }
+  clearCatalogFilterSyncTimer()
   queuedRowUpdates.clear()
 })
 </script>
@@ -5126,8 +5043,8 @@ onUnmounted(() => {
         >
           <section
             ref="gridSurfaceRef"
-            :class="['grid-surface', { 'grid-surface--query-busy': catalogViewportDimmed }]"
-            :aria-busy="loading || catalogViewportDimmed"
+            class="grid-surface"
+            :aria-busy="loading"
           >
             <AuctionWorkspace
               v-if="catalogRowModel"
@@ -5135,8 +5052,6 @@ onUnmounted(() => {
               :loading="loading"
               :all-rows-length="allRows.length"
               :catalog-grid-has-loaded-once="catalogGridHasLoadedOnce"
-              :catalog-query-placeholder-visible="catalogQueryPlaceholderVisible"
-              :catalog-viewport-dimmed="catalogViewportDimmed"
               :loading-skeleton-template="loadingSkeletonTemplate"
               :loading-skeleton-columns="loadingSkeletonColumns"
               :loading-skeleton-rows="loadingSkeletonRows"

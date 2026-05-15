@@ -1259,35 +1259,6 @@ h2 {
   transition: opacity 160ms ease, filter 160ms ease;
 }
 
-.grid-surface--query-busy :where(.grid-body-viewport) {
-  opacity: 0.48;
-  filter: saturate(0.82);
-}
-
-.grid-query-placeholder {
-  position: absolute;
-  inset: 0;
-  z-index: 3;
-  display: grid;
-  place-items: center;
-  pointer-events: none;
-  background: rgba(255, 255, 255, 0.58);
-}
-
-.grid-query-placeholder span {
-  display: inline-flex;
-  align-items: center;
-  min-height: 34px;
-  padding: 0 12px;
-  border: 1px solid var(--color-accent-border);
-  border-radius: var(--radius-pill);
-  color: var(--color-accent-strong);
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow: 0 10px 24px rgba(37, 52, 71, 0.12);
-  font-size: 12px;
-  font-weight: 700;
-}
-
 .error-banner {
   grid-row: 3;
   margin: 0;
