@@ -25,3 +25,33 @@ export const PROCUREMENT_QUICK_FILTER = {
 export const PROCUREMENT_ADVANCED_FILTER_OPTIONS = {
   buttonLabel: 'Фильтр',
 }
+
+export const PROCUREMENT_LOADING_SKELETON_COLUMNS = [
+  { key: 'score', label: 'Рейтинг', placeholderWidth: '42px' },
+  { key: 'source', label: 'Площадка', placeholderWidth: '72px' },
+  { key: 'registryNumber', label: 'Закупка', placeholderWidth: '120px' },
+  { key: 'title', label: 'Наименование', placeholderWidth: '280px' },
+  { key: 'customerName', label: 'Заказчик', placeholderWidth: '180px' },
+  { key: 'initialPrice', label: 'Начальная цена', placeholderWidth: '96px' },
+  { key: 'applicationDeadline', label: 'Прием заявок до', placeholderWidth: '120px' },
+] as const
+
+export const PROCUREMENT_LOADING_SKELETON_ROWS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15] as const
+
+export const PROCUREMENT_COLUMN_LAYOUT_OPTIONS = {
+  buttonLabel: 'Колонки',
+}
+
+export const PROCUREMENT_COLUMN_MENU_OPTIONS = {
+  trigger: 'button+contextmenu' as const,
+  items: ['sort', 'pin', 'filter'],
+  labels: {
+    sort: 'Сортировка',
+    pin: 'Закрепление',
+    filter: 'Фильтр',
+    valueSearchPlaceholder: 'Поиск значений',
+    selectedValuesSummary: 'Выбрано {selected} из {total}',
+  },
+}
+
+export const PROCUREMENT_LOADING_SKELETON_TEMPLATE = PROCUREMENT_LOADING_SKELETON_COLUMNS.map((column) => column.placeholderWidth).join(' ')

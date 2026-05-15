@@ -63,6 +63,9 @@ import {
 import { AUCTION_GRID_EDITABLE_COLUMN_IDS } from './datagrid/auctionGridEdits'
 import {
   catalogAdvancedFilterOptions,
+  catalogColumnMenuOptions,
+  catalogGridStatePersistence,
+  catalogLoadingSkeletonColumns,
   catalogQuickFilter,
   catalogRowModelPrefetchOptions,
   catalogVirtualizationOptions,
@@ -814,7 +817,6 @@ const detailLiveRefreshing = ref(false)
 const detailReanalyzing = ref(false)
 const detailStatus = ref('')
 const DETAIL_PANE_WIDTH_STORAGE_KEY = 'auction-detail-pane-width'
-const GRID_STATE_PERSISTENCE_KEY = 'auction-grid-state-v1'
 const GRID_COLUMN_WIDTHS_STORAGE_KEY = 'auction-grid-column-widths-v1'
 const SERVER_FILTERS_STORAGE_KEY = 'auction-server-filters'
 const AUCTION_GRID_CHANGES_POLL_INTERVAL_MS = 3_000
@@ -991,29 +993,9 @@ const analysisConfigDialog = useDialogController({
 })
 let analysisConfigRuleSeed = 0
 
-const loadingSkeletonColumns = [
-  { key: 'ratingScore', label: 'Рейтинг', width: 96, placeholderWidth: '54%' },
-  { key: 'analysisLabel', label: 'Сигнал', width: 176, placeholderWidth: '76%' },
-  { key: 'analysisCategory', label: 'Категория', width: 168, placeholderWidth: '72%' },
-  { key: 'isNew', label: 'Новый', width: 88, placeholderWidth: '42%' },
-  { key: 'sourceTitle', label: 'Площадка', width: 120, placeholderWidth: '62%' },
-  { key: 'auctionNumber', label: 'Аукцион', width: 120, placeholderWidth: '58%' },
-  { key: 'publicationDate', label: 'Дата публикации', width: 160, placeholderWidth: '60%' },
-  { key: 'lotNumber', label: 'Лот', width: 76, placeholderWidth: '46%' },
-  { key: 'lotName', label: 'Наименование', width: 430, placeholderWidth: '88%' },
-  { key: 'location', label: 'Локация', width: 220, placeholderWidth: '82%' },
-  { key: 'initialPrice', label: 'Начальная цена', width: 150, placeholderWidth: '70%' },
-  { key: 'price', label: 'Текущая цена', width: 150, placeholderWidth: '70%' },
-  { key: 'minimumPrice', label: 'Мин. цена', width: 150, placeholderWidth: '64%' },
-  { key: 'status', label: 'Статус', width: 170, placeholderWidth: '78%' },
-  { key: 'organizer', label: 'Организатор', width: 240, placeholderWidth: '82%' },
-  { key: 'applicationDeadline', label: 'Прием заявок до', width: 180, placeholderWidth: '68%' },
-  { key: 'auctionDate', label: 'Дата торгов', width: 170, placeholderWidth: '66%' },
-  { key: 'lastSeenAt', label: 'Последнее наблюдение', width: 190, placeholderWidth: '72%' },
-  { key: 'lifecycleStatus', label: 'Актуальность', width: 148, placeholderWidth: '66%' },
-]
+const loadingSkeletonColumns = catalogLoadingSkeletonColumns
 const loadingSkeletonRows = computed(() => Array.from({ length: loadingSkeletonVisibleRows.value }, (_, index) => index))
-const loadingSkeletonTemplate = loadingSkeletonColumns.map((column) => `${column.width}px`).join(' ')
+const loadingSkeletonTemplate = catalogLoadingSkeletonColumns.map((column) => `${column.width}px`).join(' ')
 
 function normalizePercentFilterValue(context: DataGridAppFilterValueNormalizationContext) {
   const value = context.value
@@ -1498,32 +1480,7 @@ const columns = defineDataGridColumns<GridLotRow>()([
 ])
 
 const columnMenuOptions = defineDataGridColumnMenu({
-  trigger: 'button+contextmenu',
-  items: ['sort', 'group', 'pin', 'filter'],
-  labels: {
-    sort: 'Сортировка',
-    group: 'Группировка',
-    pin: 'Закрепление',
-    filter: 'Фильтр по значениям',
-    valueSearchPlaceholder: 'Поиск значений',
-    selectedValuesSummary: 'Выбрано {selected} из {total}',
-  },
-  actions: {
-    sortAsc: { label: 'По возрастанию' },
-    sortDesc: { label: 'По убыванию' },
-    clearSort: { label: 'Сбросить сортировку' },
-    toggleGroup: { label: 'Группировать по колонке' },
-    pinMenu: { label: 'Закрепить колонку' },
-    pinLeft: { label: 'Слева' },
-    pinRight: { label: 'Справа' },
-    unpin: { label: 'Не закреплять' },
-    clearFilter: { label: 'Сбросить фильтр' },
-    addCurrentSelectionToFilter: { label: 'Добавить выделение в фильтр' },
-    selectAllValues: { label: 'Выбрать все' },
-    clearAllValues: { label: 'Очистить выбор' },
-    applyFilter: { label: 'Применить' },
-    cancelFilter: { label: 'Отмена' },
-  },
+  ...catalogColumnMenuOptions,
   columns: Object.fromEntries(
     columns
       .filter((column) => 'filter' in column && column.filter?.valueSet === false)
@@ -1557,19 +1514,7 @@ const columnLayoutOptions = {
     moveDown: 'Ниже',
   },
 }
-const gridStatePersistence = {
-  key: GRID_STATE_PERSISTENCE_KEY,
-  storage: 'local' as const,
-  includeViewportPosition: true,
-  restoreOnReady: true,
-  debounceMs: 300,
-  setOptions: {
-    dataSource: {
-      atomic: true,
-      resetViewportRange: { start: 0, end: SERVER_ROW_MODEL_INITIAL_FETCH_SIZE - 1 },
-    },
-  } satisfies DataGridSetStateOptions,
-}
+const gridStatePersistence = catalogGridStatePersistence
 
 const presetOptions = computed(() => [
   { label: 'Подборки', value: '' },

@@ -21,6 +21,11 @@ import { normalizeDatasourceInvalidation } from '@affino/datagrid-server-client'
 import { PROCUREMENT_GRID_EDITABLE_COLUMN_IDS } from '@/datagrid/procurementGridEdits'
 import {
   PROCUREMENT_ADVANCED_FILTER_OPTIONS,
+  PROCUREMENT_COLUMN_LAYOUT_OPTIONS,
+  PROCUREMENT_COLUMN_MENU_OPTIONS,
+  PROCUREMENT_LOADING_SKELETON_COLUMNS,
+  PROCUREMENT_LOADING_SKELETON_ROWS,
+  PROCUREMENT_LOADING_SKELETON_TEMPLATE,
   PROCUREMENT_PREFETCH_OPTIONS,
   PROCUREMENT_QUICK_FILTER,
   PROCUREMENT_VIRTUALIZATION_OPTIONS,
@@ -449,32 +454,12 @@ const editableCellStyle: DataGridCellStyleResolver = (_row, _rowIndex, column) =
   return { backgroundColor: 'rgba(255, 244, 199, 0.28)' }
 }
 const quickFilter = PROCUREMENT_QUICK_FILTER
-const loadingSkeletonColumns = [
-  { key: 'score', label: 'Рейтинг', placeholderWidth: '42px' },
-  { key: 'source', label: 'Площадка', placeholderWidth: '72px' },
-  { key: 'registryNumber', label: 'Закупка', placeholderWidth: '120px' },
-  { key: 'title', label: 'Наименование', placeholderWidth: '280px' },
-  { key: 'customerName', label: 'Заказчик', placeholderWidth: '180px' },
-  { key: 'initialPrice', label: 'Начальная цена', placeholderWidth: '96px' },
-  { key: 'applicationDeadline', label: 'Прием заявок до', placeholderWidth: '120px' },
-] as const
-const loadingSkeletonRows = Array.from({ length: 16 }, (_, index) => index)
-const loadingSkeletonTemplate = loadingSkeletonColumns.map((column) => column.placeholderWidth).join(' ')
+const loadingSkeletonColumns = PROCUREMENT_LOADING_SKELETON_COLUMNS
+const loadingSkeletonRows = PROCUREMENT_LOADING_SKELETON_ROWS
+const loadingSkeletonTemplate = PROCUREMENT_LOADING_SKELETON_TEMPLATE
 const advancedFilterOptions = PROCUREMENT_ADVANCED_FILTER_OPTIONS
-const columnLayoutOptions = {
-  buttonLabel: 'Колонки',
-}
-const columnMenuOptions = defineDataGridColumnMenu({
-  trigger: 'button+contextmenu',
-  items: ['sort', 'pin', 'filter'],
-  labels: {
-    sort: 'Сортировка',
-    pin: 'Закрепление',
-    filter: 'Фильтр',
-    valueSearchPlaceholder: 'Поиск значений',
-    selectedValuesSummary: 'Выбрано {selected} из {total}',
-  },
-})
+const columnLayoutOptions = PROCUREMENT_COLUMN_LAYOUT_OPTIONS
+const columnMenuOptions = defineDataGridColumnMenu(PROCUREMENT_COLUMN_MENU_OPTIONS)
 const virtualizationOptions = PROCUREMENT_VIRTUALIZATION_OPTIONS
 const prefetchOptions = PROCUREMENT_PREFETCH_OPTIONS
 
