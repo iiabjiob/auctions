@@ -245,6 +245,13 @@ type GridHistoryMutationResponse<TApiRow> = GridHistoryStatusLike & {
   rejected?: readonly unknown[]
 }
 
+type CommitEditsResultLike = {
+  rows?: readonly unknown[] | null
+  updatedRows?: readonly unknown[] | null
+  invalidation?: unknown
+  rejected?: readonly unknown[] | null
+}
+
 type ServerPushDataSource = ProcurementDataSource & {
   applyRowSnapshots?: (rows: readonly DataGridDataSourceRowEntry<ProcurementGridRow>[]) => boolean
   applyInvalidation?: (invalidation: unknown, options?: { datasetVersion?: unknown }) => void
@@ -589,8 +596,8 @@ function createGridRowModel(): ProcurementRowModel {
     model.patchRows = async (updates) => {
       if (!updates.length) return
       const result = await datasource.commitEdits?.({ edits: updates }) as GridHistoryMutationResponse<ProcurementApiRow> | undefined
-      if (!result || hasProcurementMutationFastPayload(result) || result.rejected?.length) return
-      applyProcurementPatchUpdates(updates)
+      if (!result || result.rejected?.length || hasProcurementMutationFastPayload(result)) return
+      await rowModel.value?.refresh('manual')
     }
   }
   return model
@@ -618,7 +625,11 @@ function createGridDataSource(): ProcurementDataSource {
         throw new Error('Procurement grid datasource does not support edits')
       }
       const result = await commitEdits(request)
-      applyProcurementMutationResult(result as GridHistoryMutationResponse<ProcurementApiRow>)
+      const mutationResult = result as unknown as GridHistoryMutationResponse<ProcurementApiRow>
+      applyProcurementMutationResult(mutationResult)
+      if (result && !result.rejected?.length && !hasProcurementMutationFastPayload(result)) {
+        await refreshGrid()
+      }
       if (!result.rejected?.length) {
         errorMessage.value = ''
       }
@@ -829,36 +840,8 @@ function applyProcurementMutationResult(result: GridHistoryMutationResponse<Proc
   return false
 }
 
-function hasProcurementMutationFastPayload(result: GridHistoryMutationResponse<ProcurementApiRow>) {
+function hasProcurementMutationFastPayload(result: CommitEditsResultLike) {
   return Boolean(result.rows?.length || result.updatedRows?.length || result.invalidation)
-}
-
-function applyProcurementPatchUpdates(updates: readonly { rowId: string | number; data: Partial<ProcurementGridRow> }[]) {
-  const current = selectedRow.value
-  if (!current) return false
-  const revision = allocateRowRevision()
-  const entries: DataGridDataSourceRowEntry<ProcurementGridRow>[] = []
-  for (const update of updates) {
-    if (String(update.rowId) !== current.id) continue
-    const row = {
-      ...current,
-      ...update.data,
-      id: current.id,
-      rowRevision: revision,
-    }
-    entries.push({
-      index: 0,
-      rowId: row.id,
-      row,
-    })
-  }
-
-  if (!entries.length) return false
-  const datasource = rowModel.value?.dataSource as ServerPushDataSource | undefined
-  const applied = datasource?.applyRowSnapshots?.(entries) === true
-  if (!applied) return false
-  selectedRow.value = entries[entries.length - 1]?.row ?? selectedRow.value
-  return true
 }
 
 function applyProcurementInvalidation(invalidation: unknown, datasetVersion: number | null | undefined) {
@@ -927,6 +910,7 @@ function applyProcurementHistoryRows(rows: readonly GridHistoryRowSnapshot<Procu
 
   const revision = allocateRowRevision()
   const entries: DataGridExternalRowUpdate<ProcurementGridRow>[] = []
+  const entriesByRowId = new Map<string, DataGridExternalRowUpdate<ProcurementGridRow>>()
   for (const snapshot of rows) {
     const row = extractHistorySnapshotRow(snapshot)
     const mapped = isProcurementApiHistoryRow(row)
@@ -935,13 +919,14 @@ function applyProcurementHistoryRows(rows: readonly GridHistoryRowSnapshot<Procu
         ? row
         : null
     if (!mapped) continue
-    entries.push({
+    entriesByRowId.set(mapped.id, {
       rowId: mapped.id,
       row: mapped,
       index: typeof snapshot.index === 'number' && Number.isFinite(snapshot.index) ? Math.max(0, Math.trunc(snapshot.index)) : 0,
     })
   }
 
+  entries.push(...entriesByRowId.values())
   if (!entries.length) return false
   void rowModel.value?.applyExternalUpdates?.(entries, { recompute: true })
   for (const entry of entries) {
