@@ -33,21 +33,13 @@ import { normalizeDatasourceInvalidation } from '@affino/datagrid-server-client'
 import { ApiRequestError as ApiClientRequestError } from './api/http'
 import { fetchLotDecisionReport } from './api/decisionReports'
 import {
-  buildLifecycleStatusTooltip,
-  formatActionRecommendation,
-  formatApiMoney,
-  formatApiPercent,
-  formatCurrency,
   formatDateTime,
   formatDecisionLevel,
-  formatEnrichmentState,
   formatLifecycleStatus,
-  formatSourceSyncWindow,
   lifecycleStatusTone,
   parseDateTime,
   parseNumber,
 } from './app/formatters'
-import { belongsToSelectedLotMedia, isImageDocument, isLockedTbankrotImageUrl, isNoPhotoReason, isRelevantDetailImage, makeFields, normalizeRawFields, truncateDetailText, uniqueDetailImages, uniqueDocuments } from './app/detail'
 import { hasGridFilterModel } from './app/gridFilters'
 import { renderHelpMarkdown } from './app/markdown'
 import {
@@ -57,6 +49,76 @@ import {
   type PresetDialogMode,
   useAppUiState,
 } from './app/useAppUiState'
+import { useAuctionDetailState } from './app/useAuctionDetailState'
+import {
+  buildAuctionServerGridFilters,
+  buildCatalogFilterModel,
+  buildCatalogServerViewportRange,
+  createAuthHeaders,
+  isAbortLikeError,
+  resolveCatalogPullFilterModel,
+  resolveCatalogServerViewportSize,
+  resolveViewportRangeSize,
+  serializeCatalogFilterModel,
+  serializeCatalogQueryScope,
+  apiUrl,
+  API_BASE_URL,
+} from './app/catalogWorkspaceHelpers'
+import type {
+  AnalysisConfigCategoryRule,
+  AnalysisConfigLegalRiskRules,
+  AnalysisConfigResponse,
+  ApiAuctionSummary,
+  ApiColumn,
+  ApiDebtor,
+  ApiDocument,
+  ApiField,
+  ApiLotImage,
+  ApiLotRow,
+  ApiLotSummary,
+  ApiOrganizer,
+  ApiPriceScheduleStep,
+  ApiSource,
+  AuctionDetailResponse,
+  AuctionPipelineHealthResponse,
+  AuctionPipelineSourceSyncStatus,
+  AuctionWorkspaceExposed,
+  CatalogAuctionServerDataSource,
+  CatalogColumnHistogramRequest,
+  CatalogDataSource,
+  CatalogRowModel,
+  DatasetPeriod,
+  FilterPreset,
+  GridApi,
+  GridChangeFeedResponse,
+  GridColumnWidthsState,
+  GridHistoryMutationResponse,
+  GridHistoryRowSnapshot,
+  GridHistoryStatusLike,
+  GridLotRow,
+  GridSelectionSnapshot,
+  GridWorkSnapshot,
+  HistoryStatusSource,
+  LotChangeSummary,
+  LotDetailResponse,
+  LotEconomy,
+  LotFieldChange,
+  LotHistogramPayload,
+  LotWorkItem,
+  LotWorkspaceEnrichmentState,
+  LotWorkspaceRefreshResponse,
+  LotWorkspaceResponse,
+  LotsResponse,
+  OwnerScoringProfile,
+  ProcurementAttractiveness,
+  ProcurementLot,
+  ProcurementLotListResponse,
+  RatingBreakdown,
+  ScoringDimensionWeights,
+  ServerQuickFiltersState,
+  WorkDraft,
+  MobileInlineEditTarget,
+} from './app/types'
 import {
   clampDetailPaneWidth,
   persistServerFilters as persistStoredServerFilters,
@@ -85,7 +147,6 @@ import SourceDiagnosticsView from './components/SourceDiagnosticsView.vue'
 import {
   createAuctionServerDatasource,
   type AuctionServerDatasource,
-  type AuctionServerGridFilters,
   type AuctionServerGridSummary,
 } from './datagrid/auctionServerDatasource'
 import { AUCTION_GRID_EDITABLE_COLUMN_IDS } from './datagrid/auctionGridEdits'
@@ -103,670 +164,6 @@ import { workspaceDataGridTheme } from './theme/dataGridTheme'
 import type { ActionRecommendation, DecisionLevel, LotDecisionReport } from './types/decisionReport'
 import type { LotScoringProfilePayload, UserInterestProfile } from './types/userInterestProfiles'
 import howItWorksMarkdown from '../../docs/how-it-works.md?raw'
-
-type ApiColumn = {
-  key: string
-  title: string
-  data_type: string
-  width: number | null
-}
-
-type ApiSource = {
-  code: string
-  title: string
-  website: string
-  enabled: boolean
-}
-
-type AuctionPipelineSourceSyncStatus = {
-  code: string
-  title: string
-  enabled: boolean
-  last_sync_started_at: string | null
-  last_sync_completed_at: string | null
-  next_sync_not_before: string | null
-  next_sync_not_after: string | null
-  last_sync_error: string | null
-}
-
-type ProcurementAttractiveness = {
-  score: number
-  level: string
-  reasons: string[]
-}
-
-type ProcurementLot = {
-  id: number
-  source: string
-  registry_number: string
-  law: string | null
-  title: string | null
-  status: string | null
-  customer_name: string | null
-  procedure_type: string | null
-  initial_price_value: string | number | null
-  publication_at: string | null
-  application_deadline_at: string | null
-  notice_url: string | null
-  is_new: boolean
-  attractiveness: ProcurementAttractiveness
-}
-
-type ProcurementLotListResponse = {
-  items: ProcurementLot[]
-  total: number
-  page: number
-  page_size: number
-}
-
-type AuctionPipelineHealthResponse = {
-  counters: {
-    enrichment_requested: number
-    enrichment_due_now: number
-    enrichment_claimed_active: number
-    enrichment_retry_waiting: number
-    enrichment_failed_with_error: number
-    enrichment_maxed_out: number
-    scoring_stale_or_incomplete: number
-    scored_current: number
-  }
-  sources: AuctionPipelineSourceSyncStatus[]
-}
-
-type ApiLotImage = {
-  url: string
-  thumbnail_url: string | null
-  alt: string | null
-  source: string | null
-}
-
-type DetailImage = {
-  url: string
-  thumbnailUrl: string
-  name: string | null
-}
-
-type ApiPriceScheduleStep = {
-  starts_at: string
-  price: string
-}
-
-type ApiLotRow = {
-  row_id: string
-  source: string
-  source_title: string
-  auction_id: string | null
-  auction_number: string | null
-  auction_name: string | null
-  auction_url: string | null
-  publication_date: string | null
-  lot_id: string | null
-  lot_number: string | null
-  lot_name: string | null
-  lot_description: string | null
-  lot_url: string | null
-  category: string | null
-  location: string | null
-  location_region: string | null
-  location_city: string | null
-  location_address: string | null
-  location_coordinates: string | null
-  debtor_name: string | null
-  model_category: string | null
-  status: string | null
-  initial_price: string | null
-  initial_price_value: string | number | null
-  current_price: string | null
-  current_price_value: string | number | null
-  minimum_price: string | null
-  minimum_price_value: string | number | null
-  price_schedule: ApiPriceScheduleStep[]
-  images: ApiLotImage[]
-  primary_image_url: string | null
-  image_count: number
-  organizer_name: string | null
-  application_deadline: string | null
-  auction_date: string | null
-  market_value: string | number | null
-  platform_fee: string | number | null
-  delivery_cost: string | number | null
-  dismantling_cost: string | number | null
-  repair_cost: string | number | null
-  storage_cost: string | number | null
-  legal_cost: string | number | null
-  other_costs: string | number | null
-  target_profit: string | number | null
-  total_expenses: string | number | null
-  full_entry_cost: string | number | null
-  potential_profit: string | number | null
-  roi: string | number | null
-  market_discount: string | number | null
-  formula_max_purchase_price: string | number | null
-  exclude_from_analysis: boolean
-  exclusion_reason: string | null
-  freshness: {
-    is_new: boolean
-    first_seen_at: string | null
-    last_seen_at: string | null
-    status_changed_at: string | null
-  }
-  rating: {
-    score: number
-    level: string
-    reasons: string[]
-    breakdown?: RatingBreakdown | null
-  }
-  analysis: {
-    status: string
-    color: string
-    label: string
-    category: string | null
-    matched_keyword: string | null
-    is_excluded: boolean
-    exclusion_keyword: string | null
-    legal_risk: string
-    completeness: string
-    has_documents: boolean
-    has_photos: boolean
-    hours_to_deadline: number | null
-    reasons: string[]
-  }
-  work_decision_status: string | null
-  lifecycle_status: string | null
-  actuality_checked_at: string | null
-}
-
-type ApiDocument = {
-  external_id: string | null
-  received_at: string | null
-  name: string | null
-  url: string | null
-  signature_status: string | null
-  comment: string | null
-  document_type: string | null
-}
-
-type ApiField = {
-  name: string
-  value: string
-}
-
-type ApiOrganizer = {
-  name: string | null
-  inn: string | null
-  website: string | null
-  contact_name: string | null
-  phone: string | null
-  fax: string | null
-}
-
-type ApiDebtor = {
-  debtor_type: string | null
-  name: string | null
-  inn: string | null
-  snils: string | null
-  bankruptcy_case_number: string | null
-  arbitration_court: string | null
-  arbitration_manager: string | null
-  managers_organization: string | null
-  region: string | null
-}
-
-type ApiAuctionSummary = {
-  external_id: string | null
-  number: string | null
-  name: string | null
-  url: string | null
-  publication_date: string | null
-  participant_form: string | null
-  price_offer_form: string | null
-  auction_date: string | null
-  application_start: string | null
-  application_deadline: string | null
-  winner_selection_order: string | null
-  application_order: string | null
-  repeat: string | null
-  efrsb_message_number: string | null
-}
-
-type ApiLotSummary = {
-  external_id: string | null
-  number: string | null
-  name: string | null
-  url: string | null
-  category: string | null
-  location: string | null
-  region: string | null
-  city: string | null
-  address: string | null
-  coordinates: string | null
-  classifier: string | null
-  currency: string | null
-  initial_price: string | null
-  current_price: string | null
-  minimum_price: string | null
-  market_value: string | null
-  status: string | null
-  step_percent: string | null
-  step_amount: string | null
-  deposit_amount: string | null
-  deposit_method: string | null
-  deposit_payment_date: string | null
-  deposit_return_date: string | null
-  deposit_order: string | null
-  applications_count: string | null
-  description: string | null
-  inspection_order: string | null
-  price_schedule: ApiPriceScheduleStep[]
-  images: ApiLotImage[]
-  primary_image_url: string | null
-}
-
-type LotDetailResponse = {
-  source: string
-  url: string
-  auction: ApiAuctionSummary
-  lot: ApiLotSummary
-  organizer: ApiOrganizer | null
-  debtor: ApiDebtor | null
-  documents: ApiDocument[]
-  raw_fields: ApiField[]
-  raw_tables: string[][]
-}
-
-type LotWorkItem = {
-  id: number | null
-  lot_record_id: number
-  decision_status: string | null
-  assignee: string | null
-  comment: string | null
-  inspection_at: string | null
-  inspection_result: string | null
-  final_decision: string | null
-  investor: string | null
-  deposit_status: string | null
-  application_status: string | null
-  exclude_from_analysis: boolean | null
-  exclusion_reason: string | null
-  category_override: string | null
-  max_purchase_price: string | number | null
-  market_value: string | number | null
-  platform_fee: string | number | null
-  delivery_cost: string | number | null
-  dismantling_cost: string | number | null
-  repair_cost: string | number | null
-  storage_cost: string | number | null
-  legal_cost: string | number | null
-  other_costs: string | number | null
-  target_profit: string | number | null
-  analogs: Array<Record<string, unknown>>
-  created_at: string | null
-  updated_at: string | null
-}
-
-type LotEconomy = {
-  current_price: string | number | null
-  market_value: string | number | null
-  total_expenses: string | number | null
-  full_entry_cost: string | number | null
-  potential_profit: string | number | null
-  roi: string | number | null
-  market_discount: string | number | null
-  target_profit: string | number | null
-  max_purchase_price: string | number | null
-}
-
-type LotFieldChange = {
-  label: string
-  previous: string | null
-  current: string | null
-  change_type: string
-}
-
-type LotChangeSummary = {
-  observations_count: number
-  detail_observations_count: number
-  last_observed_at: string | null
-  previous_observed_at: string | null
-  last_detail_observed_at: string | null
-  previous_detail_observed_at: string | null
-  status_changed_at: string | null
-  content_changed: boolean
-  detail_changed: boolean
-  fields: LotFieldChange[]
-}
-
-type LotWorkspaceResponse = {
-  record_id: number
-  row: ApiLotRow
-  lot_detail: LotDetailResponse | null
-  auction_detail: AuctionDetailResponse | null
-  detail_cached_at: string | null
-  work_item: LotWorkItem
-  economy: LotEconomy
-  changes: LotChangeSummary
-  current_enrichment_state: LotWorkspaceEnrichmentState | null
-}
-
-type LotWorkspaceEnrichmentState = {
-  requested_at: string | null
-  requested_reason: string | null
-  last_attempt_at: string | null
-  attempt_count: number
-  next_attempt_at: string | null
-  last_error: string | null
-  claimed_at: string | null
-  claimed_by: string | null
-  claim_expires_at: string | null
-}
-
-type LotWorkspaceRefreshResponse = {
-  status: 'queued' | 'rate_limited' | 'already_pending'
-  queued: boolean
-  next_allowed_at: string | null
-  current_enrichment_state: LotWorkspaceEnrichmentState
-}
-
-type AuctionDetailResponse = {
-  source: string
-  url: string
-  auction: ApiAuctionSummary
-  organizer: ApiOrganizer
-  debtor: ApiDebtor
-  lots: ApiLotSummary[]
-  documents: ApiDocument[]
-  raw_fields: ApiField[]
-  raw_tables: string[][]
-}
-
-type DetailField = {
-  label: string
-  value: string
-}
-
-type WorkDraft = {
-  decision_status: string
-  assignee: string
-  comment: string
-  inspection_at: string
-  inspection_result: string
-  final_decision: string
-  investor: string
-  deposit_status: string
-  application_status: string
-  exclude_from_analysis: boolean
-  exclusion_reason: string
-  category_override: string
-  market_value: string
-  platform_fee: string
-  delivery_cost: string
-  dismantling_cost: string
-  repair_cost: string
-  storage_cost: string
-  legal_cost: string
-  other_costs: string
-  target_profit: string
-}
-
-type LotsResponse = {
-  columns: ApiColumn[]
-  rows: ApiLotRow[]
-  total: number
-  pagination: {
-    page: number
-    page_size: number
-    total: number
-    total_pages: number
-  }
-  available_sources: ApiSource[]
-}
-
-type CatalogColumnHistogramRequest = Parameters<NonNullable<DataGridDataSource<GridLotRow>['getColumnHistogram']>>[0]
-
-type LotHistogramPayload = {
-  column_id: string
-  options: Record<string, unknown>
-  period: string
-  source: string | null
-  status: string | null
-  analysis_color: string | null
-  min_price: number | null
-  max_price: number | null
-  only_new: boolean
-  shortlist: boolean
-  min_rating: number | null
-  sort_model: readonly DataGridSortState[]
-  grid_filter: DataGridFilterSnapshot | null
-}
-
-type GridChangeFeedResponse = {
-  datasetVersion: number
-  changes: Array<{
-    type: 'row_updated' | 'row_inserted' | 'row_deleted' | 'invalidation'
-    rowId: string | null
-    payload: Record<string, unknown>
-  }>
-  hasMore: boolean
-}
-
-type GridLotRow = {
-  id: string
-  rowRevision: number
-  analysisStatus: string
-  analysisColor: string
-  analysisLabel: string
-  analysisCategory: string
-  analysisReasons: string[]
-  source: string
-  sourceTitle: string
-  auctionId: string
-  auctionNumber: string
-  auctionName: string
-  publicationDate: Date | null
-  lotId: string
-  lotNumber: string
-  lotName: string
-  lotDescription: string
-  location: string
-  locationRegion: string
-  locationCity: string
-  locationAddress: string
-  locationCoordinates: string
-  debtorName: string
-  status: string
-  initialPrice: number | null
-  price: number | null
-  minimumPrice: number | null
-  marketValue: number | null
-  priceSchedule: ApiPriceScheduleStep[]
-  platformFee: number | null
-  deliveryCost: number | null
-  dismantlingCost: number | null
-  repairCost: number | null
-  storageCost: number | null
-  legalCost: number | null
-  otherCosts: number | null
-  targetProfit: number | null
-  totalExpenses: number | null
-  fullEntryCost: number | null
-  potentialProfit: number | null
-  roiValue: number | null
-  marketDiscount: number | null
-  formulaMaxPurchasePrice: number | null
-  excludeFromAnalysis: boolean
-  exclusionReason: string
-  organizer: string
-  applicationDeadline: Date | null
-  auctionDate: Date | null
-  isNew: boolean
-  firstSeenAt: Date | null
-  lastSeenAt: Date | null
-  lifecycleStatus: string
-  actualityCheckedAt: Date | null
-  ratingScore: number
-  ratingLevel: string
-  ratingReasons: string[]
-  ratingBreakdown: RatingBreakdown | null
-  workDecisionStatus: string
-  lotUrl: string
-  auctionUrl: string
-  images: ApiLotImage[]
-  primaryImageUrl: string
-  imageCount: number
-}
-
-type RatingDimensionBreakdown = {
-  key?: string
-  label?: string
-  score?: number
-  reasons?: string[]
-}
-
-type RatingCapBreakdown = {
-  key?: string
-  label?: string
-  max_score?: number
-  reason?: string
-}
-
-type RatingBreakdown = {
-  dimensions?: Record<string, RatingDimensionBreakdown>
-  caps?: RatingCapBreakdown[]
-}
-type GridApi = NonNullable<ReturnType<DataGridExposed<GridLotRow>['getApi']>>
-type GridSelectionSnapshot = ReturnType<GridApi['selection']['getSnapshot']>
-
-type CatalogDataSource = DataGridDataSource<GridLotRow>
-type CatalogAuctionServerDataSource = AuctionServerDatasource<ApiLotRow, GridLotRow>
-  & {
-    applyInvalidation?: (invalidation: unknown, options?: { datasetVersion?: unknown }) => void
-  }
-
-type CatalogRowModel = DataSourceBackedRowModel<GridLotRow> & {
-  patchRows?: (
-    updates: readonly { rowId: string | number; data: Partial<GridLotRow> }[],
-    options?: {
-      recomputeSort?: boolean
-      recomputeFilter?: boolean
-      recomputeGroup?: boolean
-      emit?: boolean
-      signal?: AbortSignal | null
-    },
-  ) => void | Promise<void>
-  dataSource: CatalogDataSource
-}
-
-type AuctionWorkspaceExposed = {
-  getApi: DataGridExposed<GridLotRow>['getApi']
-  getRuntime: DataGridExposed<GridLotRow>['getRuntime']
-  getSavedView: DataGridExposed<GridLotRow>['getSavedView']
-  applySavedView: DataGridExposed<GridLotRow>['applySavedView']
-  restoreFocusAnchor: DataGridExposed<GridLotRow>['restoreFocusAnchor']
-  captureFocusAnchor: DataGridExposed<GridLotRow>['captureFocusAnchor']
-}
-
-type GridHistoryStatusLike = {
-  canUndo?: boolean
-  canRedo?: boolean
-  latestUndoOperationId?: string | null
-  latestRedoOperationId?: string | null
-  datasetVersion?: number | null
-}
-
-type GridHistoryRowSnapshot<TApiRow> = {
-  id?: string | number
-  rowId?: string | number
-  index?: number
-  row?: TApiRow | GridLotRow | unknown
-}
-
-type GridHistoryMutationResponse<TApiRow> = GridHistoryStatusLike & {
-  operationId?: string | null
-  action?: 'undo' | 'redo'
-  rows?: GridHistoryRowSnapshot<TApiRow>[]
-  updatedRows?: GridHistoryRowSnapshot<TApiRow>[]
-  invalidation?: unknown
-  rejected?: readonly unknown[]
-}
-
-type HistoryStatusSource = {
-  subscribeHistoryStatus?: (listener: (status: GridHistoryStatusLike) => void) => () => void
-}
-
-type DatasetPeriod = 'week' | 'month' | 'year'
-
-type FilterPreset = {
-  id: string
-  name: string
-  filters: ServerQuickFiltersState
-  grid_view: unknown | null
-  is_favorite: boolean
-  created_at: string | null
-  updated_at: string | null
-}
-
-type AnalysisConfigCategoryRule = {
-  category: string
-  keywords: string[]
-}
-
-type AnalysisConfigLegalRiskRules = {
-  high_keywords: string[]
-  medium_keywords: string[]
-  medium_categories: string[]
-}
-
-type OwnerScoringProfile = {
-  target_regions: string[]
-  target_categories: string[]
-  min_budget: string | number | null
-  max_budget: string | number | null
-  minimum_roi: string | number | null
-  minimum_market_discount: string | number | null
-  excluded_terms: string[]
-  discouraged_terms: string[]
-  max_delivery_distance_km: string | number | null
-  allow_dismantling: boolean
-  legal_risk_tolerance: 'low' | 'medium' | 'high'
-  require_documents: boolean
-  require_photos: boolean
-}
-
-type ScoringDimensionWeights = {
-  economics: string | number
-  risk: string | number
-  urgency: string | number
-  data_quality: string | number
-  operational_readiness: string | number
-  owner_fit: string | number
-  manual_intent: string | number
-}
-
-type AnalysisConfigResponse = {
-  id: string
-  category_rules: AnalysisConfigCategoryRule[]
-  exclusion_keywords: string[]
-  legal_risk_rules: AnalysisConfigLegalRiskRules
-  owner_profile: OwnerScoringProfile
-  dimension_weights: ScoringDimensionWeights
-  created_at: string
-  updated_at: string
-}
-
-type ServerQuickFiltersState = {
-  period: DatasetPeriod
-  source: string
-  analysisColor: string
-  status: string
-  minPrice: string
-  maxPrice: string
-  onlyNew: boolean
-  shortlist: boolean
-  minRating: number
-  includeArchived: boolean
-}
-
-type GridColumnWidthsState = Record<string, number | null>
 
 const allRows = ref<GridLotRow[]>([])
 const catalogTotal = ref(0)
@@ -935,20 +332,6 @@ const emptyWorkDraft = (): WorkDraft => ({
 
 const EDITABLE_GRID_COLUMN_KEYS = AUCTION_GRID_EDITABLE_COLUMN_IDS
 
-type GridWorkSnapshot = {
-  marketValue: number | null
-  platformFee: number | null
-  deliveryCost: number | null
-  dismantlingCost: number | null
-  repairCost: number | null
-  storageCost: number | null
-  legalCost: number | null
-  otherCosts: number | null
-  targetProfit: number | null
-  excludeFromAnalysis: boolean
-  exclusionReason: string
-}
-
 const savedGridWorkSnapshots = new Map<string, string>()
 const loadedGridRowIds = new Set<string>()
 const workDraft = reactive<WorkDraft>(emptyWorkDraft())
@@ -1094,249 +477,56 @@ const activeRowsCount = computed(() => catalogSummary.value.activeCount)
 const newCount = computed(() => catalogSummary.value.newCount)
 const highRatingCount = computed(() => catalogSummary.value.highRatingCount)
 
-const detailTitle = computed(() => selectedLotDetails.value?.lot.name || selectedLot.value?.lotName || 'Без названия')
-const liveAuction = computed(() => selectedAuctionDetails.value?.auction ?? selectedLotDetails.value?.auction ?? null)
-const liveLot = computed(() => selectedLotDetails.value?.lot ?? null)
-const liveOrganizer = computed(() => selectedLotDetails.value?.organizer ?? selectedAuctionDetails.value?.organizer ?? null)
-const liveDebtor = computed(() => selectedLotDetails.value?.debtor ?? selectedAuctionDetails.value?.debtor ?? null)
-const detailLotUrl = computed(() => selectedLotDetails.value?.lot.url || selectedLotDetails.value?.url || selectedLot.value?.lotUrl || '')
-const detailAuctionUrl = computed(() => liveAuction.value?.url || selectedAuctionDetails.value?.url || selectedLot.value?.auctionUrl || '')
-
-const detailFields = computed<DetailField[]>(() => {
-  if (!selectedLot.value) return []
-  return makeFields([
-    ['Аналитический сигнал', selectedLot.value.analysisLabel],
-    ['Категория', liveLot.value?.category || selectedLot.value.analysisCategory],
-    ['Наименование', selectedLot.value.lotName],
-    ['Должник', selectedLot.value.debtorName],
-    ['Локация', selectedLot.value.location],
-    ['Регион', selectedLot.value.locationRegion],
-    ['Город', selectedLot.value.locationCity],
-    ['Адрес', selectedLot.value.locationAddress],
-    ['Координаты', selectedLot.value.locationCoordinates],
-    ['Ручное исключение', selectedLot.value.excludeFromAnalysis ? 'Да' : 'Нет'],
-    ['Причина исключения', selectedLot.value.exclusionReason],
-    ['Площадка', selectedLot.value.sourceTitle],
-    ['Аукцион', liveAuction.value?.number || selectedLot.value.auctionNumber],
-    ['Название аукциона', liveAuction.value?.name || selectedLot.value.auctionName],
-    ['Публикация', liveAuction.value?.publication_date || formatDateTime(selectedLot.value.publicationDate)],
-    ['Лот', liveLot.value?.number || selectedLot.value.lotNumber],
-    ['ID лота', selectedLot.value.lotId],
-    ['Статус', liveLot.value?.status || selectedLot.value.status],
-    ['Начальная цена', liveLot.value?.initial_price || formatCurrency(selectedLot.value.initialPrice)],
-    ['Текущая цена', liveLot.value?.current_price || formatCurrency(selectedLot.value.price)],
-    ['Минимальная цена', liveLot.value?.minimum_price || formatCurrency(selectedLot.value.minimumPrice)],
-    ['Организатор', liveOrganizer.value?.name || selectedLot.value.organizer],
-    ['Заявки до', liveAuction.value?.application_deadline || formatDateTime(selectedLot.value.applicationDeadline)],
-    ['Торги', liveAuction.value?.auction_date || formatDateTime(selectedLot.value.auctionDate)],
-    ['Первое наблюдение', formatDateTime(selectedLot.value.firstSeenAt)],
-    ['Последнее наблюдение', formatDateTime(selectedLot.value.lastSeenAt)],
-  ])
-})
-
-const lotInfoFields = computed(() =>
-  makeFields([
-    ['Локация', liveLot.value?.location],
-    ['Регион', liveLot.value?.region],
-    ['Город', liveLot.value?.city],
-    ['Адрес', liveLot.value?.address],
-    ['Координаты', liveLot.value?.coordinates],
-    ['Категория', liveLot.value?.category],
-    ['Классификатор ЕФРСБ', liveLot.value?.classifier],
-    ['Валюта цены по ОКВ', liveLot.value?.currency],
-    ['Начальная цена', liveLot.value?.initial_price],
-    ['Текущая цена', liveLot.value?.current_price],
-    ['Минимальная цена', liveLot.value?.minimum_price],
-    ['Шаг, % от начальной цены', liveLot.value?.step_percent],
-    ['Шаг, руб.', liveLot.value?.step_amount],
-    ['Размер задатка, руб.', liveLot.value?.deposit_amount],
-    ['Способ расчета обеспечения', liveLot.value?.deposit_method],
-    ['Дата внесения задатка', liveLot.value?.deposit_payment_date],
-    ['Дата возврата задатка', liveLot.value?.deposit_return_date],
-    ['Всего подано заявок', liveLot.value?.applications_count],
-  ]),
-)
-
-const lotTextFields = computed(() =>
-  makeFields([
-    ['Описание имущества', liveLot.value?.description || selectedLot.value?.lotDescription],
-    ['Порядок ознакомления', liveLot.value?.inspection_order],
-    ['Порядок внесения и возврата задатка', liveLot.value?.deposit_order],
-  ]),
-)
-
-const priceScheduleSteps = computed(() => {
-  if (selectedLot.value?.priceSchedule?.length) return selectedLot.value.priceSchedule
-  if (liveLot.value?.price_schedule?.length) return liveLot.value.price_schedule
-  return []
-})
-
-const priceScheduleFields = computed(() =>
-  priceScheduleSteps.value.slice(0, DETAIL_RENDER_PRICE_SCHEDULE_LIMIT).map((step, index) => ({
-    label: `${index + 1}. ${step.starts_at}`,
-    value: step.price,
-  })),
-)
-
-const organizerFields = computed(() =>
-  makeFields([
-    ['Сокращенное наименование', liveOrganizer.value?.name],
-    ['ИНН', liveOrganizer.value?.inn],
-    ['Адрес сайта', liveOrganizer.value?.website],
-    ['Контактное лицо', liveOrganizer.value?.contact_name],
-    ['Телефон', liveOrganizer.value?.phone],
-    ['Факс', liveOrganizer.value?.fax],
-  ]),
-)
-
-const auctionInfoFields = computed(() =>
-  makeFields([
-    ['Наименование', liveAuction.value?.name],
-    ['Форма торга по составу участников', liveAuction.value?.participant_form],
-    ['Форма представления предложений о цене', liveAuction.value?.price_offer_form],
-    ['Дата проведения', liveAuction.value?.auction_date],
-    ['Дата начала представления заявок', liveAuction.value?.application_start],
-    ['Дата окончания представления заявок', liveAuction.value?.application_deadline],
-    ['Повторные торги', liveAuction.value?.repeat],
-    ['Номер сообщения в ЕФРСБ', liveAuction.value?.efrsb_message_number],
-    ['Порядок определения победителя', liveAuction.value?.winner_selection_order],
-    ['Порядок представления заявок', liveAuction.value?.application_order],
-  ]),
-)
-
-const debtorFields = computed(() =>
-  makeFields([
-    ['Тип должника', liveDebtor.value?.debtor_type],
-    ['ФИО / наименование должника', liveDebtor.value?.name],
-    ['ИНН', liveDebtor.value?.inn],
-    ['СНИЛС', liveDebtor.value?.snils],
-    ['Наименование арбитражного суда', liveDebtor.value?.arbitration_court],
-    ['Номер дела о банкротстве', liveDebtor.value?.bankruptcy_case_number],
-    ['Арбитражный управляющий', liveDebtor.value?.arbitration_manager],
-    ['СРО арбитражных управляющих', liveDebtor.value?.managers_organization],
-    ['Регион', liveDebtor.value?.region],
-  ]),
-)
-
-const rawLotFields = computed(() => normalizeRawFields(selectedLotDetails.value?.raw_fields ?? []))
-const rawAuctionFields = computed(() => normalizeRawFields(selectedAuctionDetails.value?.raw_fields ?? []))
-const auctionLots = computed(() => selectedAuctionDetails.value?.lots ?? [])
-const activeDetailImageIndex = ref(0)
-const economyFields = computed(() =>
-  makeFields([
-    ['Текущая цена', formatApiMoney(selectedLot.value?.price ?? selectedWorkspace.value?.economy.current_price)],
-    ['Рыночная стоимость', formatApiMoney(selectedLot.value?.marketValue ?? selectedWorkspace.value?.economy.market_value)],
-    ['Все расходы', formatApiMoney(selectedLot.value?.totalExpenses ?? selectedWorkspace.value?.economy.total_expenses)],
-    ['Целевая прибыль', formatApiMoney(selectedLot.value?.targetProfit ?? selectedWorkspace.value?.economy.target_profit)],
-    ['Полная стоимость входа', formatApiMoney(selectedLot.value?.fullEntryCost ?? selectedWorkspace.value?.economy.full_entry_cost)],
-    ['Потенциальная прибыль', formatApiMoney(selectedLot.value?.potentialProfit ?? selectedWorkspace.value?.economy.potential_profit)],
-    ['ROI', formatApiPercent(selectedLot.value?.roiValue ?? selectedWorkspace.value?.economy.roi)],
-    ['Дисконт к рынку', formatApiPercent(selectedLot.value?.marketDiscount ?? selectedWorkspace.value?.economy.market_discount)],
-    ['Макс. цена покупки', formatApiMoney(selectedLot.value?.formulaMaxPurchasePrice ?? selectedWorkspace.value?.economy.max_purchase_price)],
-  ]),
-)
-const decisionReportSummaryFields = computed(() => {
-  const report = selectedDecisionReport.value
-  if (!report) return []
-  return makeFields([
-    ['Решение', formatDecisionLevel(report.decision_level)],
-    ['Рекомендация', formatActionRecommendation(report.recommendation)],
-    ['Рейтинг', `${report.rating_score} / ${report.rating_level}`],
-    ['Макс. цена покупки', formatApiMoney(report.economics?.max_buy_price)],
-    ['Сгенерирован', formatDateTime(report.generated_at)],
-  ])
-})
-const decisionReportReasons = computed(() => selectedDecisionReport.value?.reasons ?? [])
-const decisionReportRisks = computed(() => selectedDecisionReport.value?.risks ?? [])
-const decisionReportNextActions = computed(() => selectedDecisionReport.value?.next_actions ?? [])
-const analysisReasonItems = computed(() =>
-  (selectedLot.value?.analysisReasons ?? []).filter((reason) => !(detailImages.value.length && isNoPhotoReason(reason))),
-)
-const detailCachedAt = computed(() => formatDateTime(selectedWorkspace.value?.detail_cached_at ?? null))
-const selectedSourceSyncStatus = computed(() => {
-  const sourceCode = selectedLot.value?.source
-  if (!sourceCode) return null
-  return auctionPipelineHealth.value?.sources.find((source) => source.code === sourceCode) ?? null
-})
-const selectedCurrentEnrichmentState = computed(() => selectedWorkspace.value?.current_enrichment_state ?? null)
-const detailActualityFields = computed(() =>
-  makeFields([
-    ['Статус актуальности', formatLifecycleStatus(selectedLot.value?.lifecycleStatus)],
-    ['Проверка актуальности', formatDateTime(selectedLot.value?.actualityCheckedAt ?? null)],
-    ['Последний кэш детали', detailCachedAt.value],
-    ['Очередь enrichment', formatEnrichmentState(selectedCurrentEnrichmentState.value)],
-    ['Следующий скан источника', formatSourceSyncWindow(selectedSourceSyncStatus.value)],
-    ['Ошибка источника', selectedSourceSyncStatus.value?.last_sync_error],
-  ]),
-)
-const ratingReasonItems = computed(() => selectedLot.value?.ratingReasons ?? [])
-const ratingBreakdown = computed(() => selectedLot.value?.ratingBreakdown ?? null)
-const changeFields = computed(() =>
-  (selectedWorkspace.value?.changes.fields ?? []).slice(0, DETAIL_RENDER_CHANGE_FIELDS_LIMIT).map((field) => ({
-    ...field,
-    previous: field.previous ? truncateDetailText(field.previous) : field.previous,
-    current: field.current ? truncateDetailText(field.current) : field.current,
-  })),
-)
-const changeSummaryFields = computed(() =>
-  makeFields([
-    ['Наблюдений списка', selectedWorkspace.value?.changes.observations_count?.toString()],
-    ['Наблюдений деталей', selectedWorkspace.value?.changes.detail_observations_count?.toString()],
-    ['Последнее наблюдение', formatDateTime(selectedWorkspace.value?.changes.last_observed_at ?? null)],
-    ['Предыдущее наблюдение', formatDateTime(selectedWorkspace.value?.changes.previous_observed_at ?? null)],
-    ['Последние live-детали', formatDateTime(selectedWorkspace.value?.changes.last_detail_observed_at ?? null)],
-    ['Предыдущие live-детали', formatDateTime(selectedWorkspace.value?.changes.previous_detail_observed_at ?? null)],
-    ['Изменение статуса', formatDateTime(selectedWorkspace.value?.changes.status_changed_at ?? null)],
-  ]),
-)
-const detailDocuments = computed(() =>
-  uniqueDocuments([...(selectedLotDetails.value?.documents ?? []), ...(selectedAuctionDetails.value?.documents ?? [])]),
-)
-const detailImages = computed<DetailImage[]>(() => {
-  const primaryImage = selectedLot.value?.primaryImageUrl
-    ? [
-        {
-          url: selectedLot.value.primaryImageUrl,
-          thumbnail_url: selectedLot.value.primaryImageUrl,
-          alt: selectedLot.value.lotName,
-          source: selectedLot.value.source,
-        },
-      ]
-    : []
-  const selectedRowImages = [...(selectedLot.value?.images ?? []), ...primaryImage]
-  const liveDetailImages = liveLot.value?.images ?? []
-  const documentImages = detailDocuments.value
-    .filter((document) => belongsToSelectedLotMedia(document, selectedLot.value?.lotNumber) && isImageDocument(document) && document.url)
-    .map((document) => ({ url: document.url || '', thumbnailUrl: document.url || '', name: document.name }))
-  const fallbackImages = [...liveDetailImages, ...selectedRowImages]
-  const images = documentImages.length ? documentImages : fallbackImages
-  return uniqueDetailImages(images).filter((image) => isRelevantDetailImage(image.url, selectedLot.value?.source) && !isLockedTbankrotImageUrl(image.url))
-})
-const lockedTbankrotImageCount = computed(() => {
-  const images = uniqueDetailImages([...(selectedLot.value?.images ?? []), ...(liveLot.value?.images ?? [])])
-  return images.filter((image) => isLockedTbankrotImageUrl(image.url)).length
-})
-const mediaDocuments = computed(() =>
-  detailDocuments.value.filter((document) => {
-    const text = [document.name, document.document_type, document.comment].filter(Boolean).join(' ')
-    return (
-      belongsToSelectedLotMedia(document, selectedLot.value?.lotNumber) &&
-      !isImageDocument(document) &&
-      (/фото|photo|изображ/i.test(text) || /\.(rar|zip|7z)(\?|$)/i.test(document.url || document.name || ''))
-    )
-  }),
-)
-const fileDocuments = computed(() => detailDocuments.value.filter((document) => !isImageDocument(document)))
-const activeDetailImage = computed(() => detailImages.value[activeDetailImageIndex.value] ?? detailImages.value[0] ?? null)
-
-watch(detailImages, (images) => {
-  if (activeDetailImageIndex.value >= images.length) {
-    activeDetailImageIndex.value = 0
-  }
-})
-
-watch(() => selectedLot.value?.id, () => {
-  activeDetailImageIndex.value = 0
+const {
+  detailTitle,
+  liveAuction,
+  liveLot,
+  liveOrganizer,
+  liveDebtor,
+  detailLotUrl,
+  detailAuctionUrl,
+  detailFields,
+  lotInfoFields,
+  lotTextFields,
+  priceScheduleSteps,
+  priceScheduleFields,
+  organizerFields,
+  auctionInfoFields,
+  debtorFields,
+  rawLotFields,
+  rawAuctionFields,
+  auctionLots,
+  economyFields,
+  decisionReportSummaryFields,
+  decisionReportReasons,
+  decisionReportRisks,
+  decisionReportNextActions,
+  analysisReasonItems,
+  detailCachedAt,
+  selectedSourceSyncStatus,
+  selectedCurrentEnrichmentState,
+  detailActualityFields,
+  ratingReasonItems,
+  ratingBreakdown,
+  changeFields,
+  changeSummaryFields,
+  detailDocuments,
+  detailImages,
+  lockedTbankrotImageCount,
+  mediaDocuments,
+  fileDocuments,
+  activeDetailImageIndex,
+  activeDetailImage,
+  selectDetailImage,
+  showPreviousDetailImage,
+  showNextDetailImage,
+} = useAuctionDetailState({
+  selectedLot,
+  selectedLotDetails,
+  selectedAuctionDetails,
+  selectedWorkspace,
+  selectedDecisionReport,
+  auctionPipelineHealth,
 })
 
 watch(
@@ -1362,20 +552,6 @@ watch(activeModule, (module) => {
     catalogSoftRefreshAbortController = null
 })
 
-function selectDetailImage(index: number) {
-  activeDetailImageIndex.value = index
-}
-
-function showPreviousDetailImage() {
-  if (detailImages.value.length < 2) return
-  activeDetailImageIndex.value = (activeDetailImageIndex.value - 1 + detailImages.value.length) % detailImages.value.length
-}
-
-function showNextDetailImage() {
-  if (detailImages.value.length < 2) return
-  activeDetailImageIndex.value = (activeDetailImageIndex.value + 1) % detailImages.value.length
-}
-
 function setGridColumnWidths(widths: unknown, options: { persist?: boolean } = {}) {
   const nextWidths = sanitizeGridColumnWidths(widths)
   gridColumnWidths.value = nextWidths
@@ -1385,21 +561,15 @@ function setGridColumnWidths(widths: unknown, options: { persist?: boolean } = {
   return nextWidths
 }
 
-function resolveViewportRangeSize(range?: { start: number; end: number } | null) {
-  return range && Number.isFinite(range.start) && Number.isFinite(range.end) ? Math.trunc(range.end - range.start + 1) : 0
-}
-
-function resolveCatalogServerViewportSize(preferredRange?: { start: number; end: number } | null) {
-  const range = preferredRange ?? catalogRowModel.value?.getSnapshot().viewportRange
-  const size = resolveViewportRangeSize(range)
-  if (size > 1) {
-    return Math.min(CATALOG_SERVER_FETCH_LIMIT, Math.max(SERVER_ROW_MODEL_INITIAL_FETCH_SIZE, size))
-  }
-  return SERVER_ROW_MODEL_INITIAL_FETCH_SIZE
-}
-
 function ensureCatalogServerViewport(preferredRange?: { start: number; end: number } | null) {
-  const size = resolveCatalogServerViewportSize(preferredRange)
+  const size = resolveCatalogServerViewportSize(
+    preferredRange,
+    catalogRowModel.value?.getSnapshot().viewportRange,
+    {
+      initialFetchSize: SERVER_ROW_MODEL_INITIAL_FETCH_SIZE,
+      serverFetchLimit: CATALOG_SERVER_FETCH_LIMIT,
+    },
+  )
   const rowModel = catalogRowModel.value
   if (!rowModel) return false
 
@@ -1409,11 +579,6 @@ function ensureCatalogServerViewport(preferredRange?: { start: number; end: numb
   rowModel.setViewportRange(nextRange)
   const appliedRange = rowModel.getSnapshot().viewportRange
   return currentRange.start !== appliedRange.start || currentRange.end !== appliedRange.end
-}
-
-function buildCatalogServerViewportRange(preferredRange?: { start: number; end: number } | null) {
-  const size = resolveCatalogServerViewportSize(preferredRange)
-  return { start: 0, end: size - 1 }
 }
 
 function expandCollapsedCatalogServerViewport() {
@@ -1446,111 +611,6 @@ function writeGridSavedView(view: unknown | null) {
   scheduleGridSummaryRefresh()
 }
 
-function authHeaders() {
-  if (!accessToken.value) {
-    return new Headers()
-  }
-
-  return new Headers({
-    Authorization: `Bearer ${accessToken.value}`,
-  })
-}
-
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
-
-class ApiRequestError extends Error {
-  constructor(
-    message: string,
-    readonly status: number,
-    readonly body: unknown,
-  ) {
-    super(message)
-    this.name = 'ApiRequestError'
-  }
-}
-
-function apiUrl(path: string) {
-  if (/^https?:\/\//i.test(path)) return path
-  return `${API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`
-}
-
-function isAbortLikeError(error: unknown) {
-  return error instanceof DOMException && error.name === 'AbortError'
-}
-
-function isApiRequestStatus(error: unknown, status: number) {
-  return error instanceof ApiRequestError && error.status === status
-}
-
-function buildAuctionServerGridFilters(): AuctionServerGridFilters {
-  return {
-    period: filters.period,
-    source: null,
-    status: null,
-    analysis_color: null,
-    min_price: null,
-    max_price: null,
-    only_new: false,
-    shortlist: false,
-    min_rating: null,
-    include_archived: filters.includeArchived,
-  }
-}
-
-function buildCatalogFilterModel(): DataGridFilterSnapshot | null {
-  const conditions: Record<string, unknown>[] = []
-  const minPrice = parseFilterNumber(filters.minPrice)
-  const maxPrice = parseFilterNumber(filters.maxPrice)
-
-  if (filters.source && filters.source !== 'all') {
-    conditions.push({ kind: 'condition', key: 'source', operator: 'equals', value: filters.source })
-  }
-  if (filters.status) {
-    conditions.push({ kind: 'condition', key: 'status', operator: 'equals', value: filters.status })
-  }
-  if (filters.analysisColor) {
-    conditions.push({ kind: 'condition', key: 'analysisColor', operator: 'equals', value: filters.analysisColor })
-  }
-  if (minPrice !== null) {
-    conditions.push({ kind: 'condition', key: 'price', operator: 'gte', value: minPrice })
-  }
-  if (maxPrice !== null) {
-    conditions.push({ kind: 'condition', key: 'price', operator: 'lte', value: maxPrice })
-  }
-  if (filters.onlyNew) {
-    conditions.push({ kind: 'condition', key: 'isNew', operator: 'equals', value: true })
-  }
-  if (filters.shortlist) {
-    conditions.push({ kind: 'condition', key: '__shortlist', operator: 'equals', value: true })
-  }
-  if (filters.minRating > 0) {
-    conditions.push({ kind: 'condition', key: 'ratingScore', operator: 'gte', value: filters.minRating })
-  }
-
-  if (!conditions.length) return null
-  return {
-    advancedExpression:
-      conditions.length === 1
-        ? conditions[0]
-        : {
-            kind: 'group',
-            operator: 'and',
-            children: conditions,
-          },
-  } as DataGridFilterSnapshot
-}
-
-function serializeCatalogFilterModel() {
-  return JSON.stringify(buildCatalogFilterModel())
-}
-
-function serializeCatalogQueryScope() {
-  return JSON.stringify({
-    period: filters.period,
-    includeArchived: filters.includeArchived,
-  })
-}
-
 function clearCatalogFilterSyncTimer() {
   if (catalogFilterSyncTimer === null) return
   window.clearTimeout(catalogFilterSyncTimer)
@@ -1561,15 +621,15 @@ function syncCatalogFilterModel() {
   clearCatalogFilterSyncTimer()
   const rowModel = catalogRowModel.value
   if (!rowModel) return
-  const nextFilterSignature = serializeCatalogFilterModel()
-  const nextQueryScopeSignature = serializeCatalogQueryScope()
+  const nextFilterSignature = serializeCatalogFilterModel(filters)
+  const nextQueryScopeSignature = serializeCatalogQueryScope(filters)
   const filterChanged = nextFilterSignature !== catalogFilterSyncSignature
   const queryScopeChanged = nextQueryScopeSignature !== catalogQueryScopeSyncSignature
   if (!filterChanged && !queryScopeChanged) return
   catalogFilterSyncSignature = nextFilterSignature
   catalogQueryScopeSyncSignature = nextQueryScopeSignature
   if (filterChanged) {
-    rowModel.setFilterModel(buildCatalogFilterModel())
+    rowModel.setFilterModel(buildCatalogFilterModel(filters))
     return
   }
   void rowModel.refresh('manual')
@@ -1609,7 +669,7 @@ function createAuctionServerCatalogDataSource(): CatalogAuctionServerDataSource 
   return createAuctionServerDatasource<ApiLotRow, GridLotRow>({
     postJson: postAuctionServerGridJson,
     getJson: (path, signal) => fetchJson(path, { signal }),
-    getFilters: buildAuctionServerGridFilters,
+    getFilters: () => buildAuctionServerGridFilters(filters),
     hasFilterModel: hasGridFilterModel,
     mapRow: mapApiRow,
     allocateRowRevision() {
@@ -1751,7 +811,11 @@ function createCatalogDataSource(): CatalogDataSource {
         }
       }
       try {
-        const effectiveFilterModel = resolveCatalogPullFilterModel(request.filterModel, request.reason)
+        const effectiveFilterModel = resolveCatalogPullFilterModel(
+          request.filterModel,
+          request.reason,
+          catalogRowModel.value?.getSnapshot().filterModel ?? null,
+        )
         const result = await auctionServerDataSource.pull({
           ...request,
           range: request.range,
@@ -1794,20 +858,12 @@ function createCatalogDataSource(): CatalogDataSource {
   }
 }
 
-function resolveCatalogPullFilterModel(filterModel: DataGridFilterSnapshot | null | undefined, reason: string) {
-  if (hasGridFilterModel(filterModel)) return filterModel ?? null
-  if (reason === 'filter-change') return filterModel ?? null
-
-  const snapshotFilterModel = catalogRowModel.value?.getSnapshot().filterModel ?? null
-  return hasGridFilterModel(snapshotFilterModel) ? snapshotFilterModel : filterModel ?? null
-}
-
 function createCatalogRowModel(): CatalogRowModel {
   const rowModel = createDataSourceBackedRowModel({
     dataSource: createCatalogDataSource(),
     resolveRowId: resolveClientGridRowId,
     initialTotal: Math.min(CATALOG_TOTAL_ROW_LIMIT, Math.max(catalogTotal.value || 0, SERVER_ROW_MODEL_INITIAL_FETCH_SIZE)),
-    initialFilterModel: buildCatalogFilterModel(),
+    initialFilterModel: buildCatalogFilterModel(filters),
     rowCacheLimit: CATALOG_ROW_CACHE_LIMIT,
     prefetch: catalogRowModelPrefetchOptions,
   }) as CatalogRowModel
@@ -2059,7 +1115,14 @@ function resolveCatalogReloadRange() {
   const snapshot = catalogRowModel.value?.getSnapshot()
   const viewportRange = snapshot?.viewportRange
   const rowCount = snapshot?.rowCount ?? catalogTotal.value
-  const size = resolveCatalogServerViewportSize(viewportRange)
+  const size = resolveCatalogServerViewportSize(
+    viewportRange,
+    snapshot?.viewportRange,
+    {
+      initialFetchSize: SERVER_ROW_MODEL_INITIAL_FETCH_SIZE,
+      serverFetchLimit: CATALOG_SERVER_FETCH_LIMIT,
+    },
+  )
   const start = Math.max(0, viewportRange?.start ?? 0)
   const maxStart = Math.max(0, rowCount - 1)
   const safeStart = Math.min(start, maxStart)
@@ -2132,8 +1195,8 @@ function resetCatalogRowModel() {
   }
   catalogGridHasLoadedOnce.value = false
   catalogRowModel.value = createCatalogRowModel()
-  catalogFilterSyncSignature = serializeCatalogFilterModel()
-  catalogQueryScopeSyncSignature = serializeCatalogQueryScope()
+  catalogFilterSyncSignature = serializeCatalogFilterModel(filters)
+  catalogQueryScopeSyncSignature = serializeCatalogQueryScope(filters)
 }
 
 async function loadLots() {
@@ -2452,7 +1515,7 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
     response = await fetch(resolvedUrl, {
       ...init,
       headers: new Headers({
-        ...Object.fromEntries(authHeaders().entries()),
+        ...Object.fromEntries(createAuthHeaders(accessToken.value).entries()),
         ...Object.fromEntries(new Headers(init?.headers ?? {}).entries()),
       }),
     })
@@ -2483,7 +1546,7 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
     } catch {
       body = null
     }
-    throw new ApiRequestError(`API вернул ${response.status}`, response.status, body)
+    throw new ApiClientRequestError(`API вернул ${response.status}`, response.status, body)
   }
   if (response.status === 204) {
     return undefined as T
@@ -3140,13 +2203,6 @@ async function restoreDetailGridFocus() {
   } catch {
     // The row may have left the current filtered/sorted viewport before focus is restored.
   }
-}
-
-type MobileInlineEditTarget = {
-  rowId: string | number
-  rowIndex: number
-  columnIndex: number
-  columnKey: string
 }
 
 const mobileInlineEditTarget = computed<MobileInlineEditTarget | null>(() => {
