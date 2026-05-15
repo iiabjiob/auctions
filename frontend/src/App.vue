@@ -39,6 +39,35 @@ import { createDialogFocusOrchestrator, useDialogController } from '@affino/dial
 import { ApiRequestError as ApiClientRequestError } from './api/http'
 import { fetchLotDecisionReport } from './api/decisionReports'
 import {
+  buildLifecycleStatusTooltip,
+  formatActionRecommendation,
+  formatApiMoney,
+  formatApiPercent,
+  formatCurrency,
+  formatDateTime,
+  formatDecisionLevel,
+  formatEnrichmentState,
+  formatLifecycleStatus,
+  formatSourceSyncWindow,
+  lifecycleStatusTone,
+  parseDateTime,
+  parseNumber,
+} from './app/formatters'
+import { belongsToSelectedLotMedia, isImageDocument, isLockedTbankrotImageUrl, isNoPhotoReason, isRelevantDetailImage, makeFields, normalizeRawFields, truncateDetailText, uniqueDetailImages, uniqueDocuments } from './app/detail'
+import { hasGridFilterModel } from './app/gridFilters'
+import { renderHelpMarkdown } from './app/markdown'
+import {
+  clampDetailPaneWidth,
+  persistServerFilters as persistStoredServerFilters,
+  readStoredDetailPaneWidth,
+  readStoredGridColumnWidths,
+  readStoredServerFilters,
+  sanitizeGridColumnWidths,
+  sanitizeGridSavedView,
+  sanitizeServerFilters,
+  saveDetailPaneWidth,
+} from './app/persistence'
+import {
   createUserInterestProfile,
   createUserInterestProfileFromPreset,
   deleteUserInterestProfile,
@@ -844,10 +873,14 @@ const LOADING_SKELETON_MIN_ROWS = 16
 const LOADING_SKELETON_TOOLBAR_HEIGHT = 42
 const LOADING_SKELETON_HEADER_HEIGHT = 34
 const LOADING_SKELETON_ROW_HEIGHT = 26
-const detailPaneWidth = ref(readStoredDetailPaneWidth())
+const detailPaneWidth = ref(readStoredDetailPaneWidth(DETAIL_PANE_WIDTH_STORAGE_KEY, {
+  defaultWidth: DETAIL_PANE_DEFAULT_WIDTH,
+  minWidth: DETAIL_PANE_MIN_WIDTH,
+  maxWidth: DETAIL_PANE_MAX_WIDTH,
+}))
 const gridRef = ref<AuctionWorkspaceExposed | null>(null)
 const gridSurfaceRef = ref<HTMLElement | null>(null)
-const gridColumnWidths = ref<GridColumnWidthsState>(readStoredGridColumnWidths())
+const gridColumnWidths = ref(readStoredGridColumnWidths(GRID_COLUMN_WIDTHS_STORAGE_KEY))
 const gridRowsById = shallowRef(new Map<string, GridLotRow>())
 const catalogGridHasLoadedOnce = ref(false)
 const gridRowRevision = ref(0)
@@ -902,7 +935,7 @@ const DEFAULT_SERVER_FILTERS: ServerQuickFiltersState = {
 }
 const SHORTLIST_DECISIONS = new Set(['watch', 'calculate', 'inspection', 'bid'])
 
-const filters = reactive(readStoredServerFilters())
+const filters = reactive(readStoredServerFilters(SERVER_FILTERS_STORAGE_KEY, DEFAULT_SERVER_FILTERS))
 
 const emptyWorkDraft = (): WorkDraft => ({
   decision_status: '',
@@ -1548,85 +1581,6 @@ const currentUserInitials = computed(() => {
     .join('')
 })
 
-function renderHelpMarkdown(markdown: string): string {
-  const html: string[] = []
-  let listOpen = false
-  let blockquoteOpen = false
-
-  const closeList = () => {
-    if (!listOpen) return
-    html.push('</ul>')
-    listOpen = false
-  }
-  const closeBlockquote = () => {
-    if (!blockquoteOpen) return
-    html.push('</blockquote>')
-    blockquoteOpen = false
-  }
-  const closeBlocks = () => {
-    closeList()
-    closeBlockquote()
-  }
-
-  for (const rawLine of markdown.split(/\r?\n/)) {
-    const line = rawLine.trim()
-    if (!line) {
-      closeBlocks()
-      continue
-    }
-
-    const heading = /^(#{1,4})\s+(.+)$/.exec(line)
-    if (heading) {
-      closeBlocks()
-      const marker = heading[1] ?? ''
-      const title = heading[2] ?? ''
-      const level = marker.length
-      html.push(`<h${level}>${renderInlineMarkdown(title)}</h${level}>`)
-      continue
-    }
-
-    const listItem = /^-\s+(.+)$/.exec(line)
-    if (listItem) {
-      closeBlockquote()
-      if (!listOpen) {
-        html.push('<ul>')
-        listOpen = true
-      }
-      html.push(`<li>${renderInlineMarkdown(listItem[1] ?? '')}</li>`)
-      continue
-    }
-
-    const quote = /^>\s?(.+)$/.exec(line)
-    if (quote) {
-      closeList()
-      if (!blockquoteOpen) {
-        html.push('<blockquote>')
-        blockquoteOpen = true
-      }
-      html.push(`<p>${renderInlineMarkdown(quote[1] ?? '')}</p>`)
-      continue
-    }
-
-    closeBlocks()
-    html.push(`<p>${renderInlineMarkdown(line)}</p>`)
-  }
-
-  closeBlocks()
-  return html.join('')
-}
-
-function renderInlineMarkdown(value: string): string {
-  return escapeHtml(value).replace(/`([^`]+)`/g, '<code>$1</code>')
-}
-
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
-}
 const selectedPreset = computed(() => presets.value.find((preset) => preset.id === selectedPresetId.value) ?? null)
 const presetsMenuRef = ref<InstanceType<typeof UiMenu> | null>(null)
 const accountMenuRef = ref<InstanceType<typeof UiMenu> | null>(null)
@@ -1878,11 +1832,11 @@ const detailImages = computed<DetailImage[]>(() => {
   const selectedRowImages = [...(selectedLot.value?.images ?? []), ...primaryImage]
   const liveDetailImages = liveLot.value?.images ?? []
   const documentImages = detailDocuments.value
-    .filter((document) => belongsToSelectedLotMedia(document) && isImageDocument(document) && document.url)
+    .filter((document) => belongsToSelectedLotMedia(document, selectedLot.value?.lotNumber) && isImageDocument(document) && document.url)
     .map((document) => ({ url: document.url || '', thumbnailUrl: document.url || '', name: document.name }))
   const fallbackImages = [...liveDetailImages, ...selectedRowImages]
   const images = documentImages.length ? documentImages : fallbackImages
-  return uniqueDetailImages(images).filter((image) => isRelevantDetailImage(image.url) && !isLockedTbankrotImageUrl(image.url))
+  return uniqueDetailImages(images).filter((image) => isRelevantDetailImage(image.url, selectedLot.value?.source) && !isLockedTbankrotImageUrl(image.url))
 })
 const lockedTbankrotImageCount = computed(() => {
   const images = uniqueDetailImages([...(selectedLot.value?.images ?? []), ...(liveLot.value?.images ?? [])])
@@ -1892,7 +1846,7 @@ const mediaDocuments = computed(() =>
   detailDocuments.value.filter((document) => {
     const text = [document.name, document.document_type, document.comment].filter(Boolean).join(' ')
     return (
-      belongsToSelectedLotMedia(document) &&
+      belongsToSelectedLotMedia(document, selectedLot.value?.lotNumber) &&
       !isImageDocument(document) &&
       (/фото|photo|изображ/i.test(text) || /\.(rar|zip|7z)(\?|$)/i.test(document.url || document.name || ''))
     )
@@ -1934,88 +1888,6 @@ watch(activeModule, (module) => {
     catalogSoftRefreshAbortController = null
 })
 
-function makeFields(entries: Array<[string, unknown]>): DetailField[] {
-  return entries
-    .map(([label, value]) => ({ label, value: truncateDetailText(normalizeTextValue(value)) }))
-    .filter((field) => field.value && field.value !== 'Не задано')
-}
-
-function normalizeTextValue(value: unknown) {
-  if (value === null || value === undefined) return ''
-  if (value instanceof Date) return formatDateTime(value)
-  return String(value).trim()
-}
-
-function normalizeRawFields(fields: ApiField[]): DetailField[] {
-  const seen = new Set<string>()
-  return fields
-    .slice(0, DETAIL_RENDER_RAW_FIELDS_LIMIT)
-    .map((field) => ({
-      label: field.name.trim(),
-      value: truncateDetailText(field.value.trim()),
-    }))
-    .filter((field) => {
-      if (!field.label || !field.value) return false
-      if (/^\d+$/.test(field.label)) return false
-      if (field.label === '---' || field.label === '№') return false
-
-      const key = `${field.label}\n${field.value}`
-      if (seen.has(key)) return false
-      seen.add(key)
-      return true
-    })
-}
-
-function uniqueDocuments(documents: ApiDocument[]) {
-  const seen = new Set<string>()
-  return documents.slice(0, DETAIL_RENDER_DOCUMENTS_LIMIT).filter((document) => {
-    const key = document.external_id || document.url || `${document.name || ''}\n${document.received_at || ''}`
-    if (!key.trim() || seen.has(key)) return false
-    seen.add(key)
-    return true
-  })
-}
-
-function uniqueDetailImages(images: Array<ApiLotImage | DetailImage>): DetailImage[] {
-  const seen = new Set<string>()
-  return images
-    .slice(0, DETAIL_RENDER_IMAGES_LIMIT)
-    .map((image) => {
-      const url = image.url
-      const thumbnailUrl = 'thumbnailUrl' in image ? image.thumbnailUrl : image.thumbnail_url || image.url
-      const name = 'name' in image ? image.name : image.alt
-      return { url, thumbnailUrl, name }
-    })
-    .filter((image) => {
-      if (!image.url || seen.has(image.url)) return false
-      seen.add(image.url)
-      return true
-    })
-}
-
-function truncateDetailText(value: string, limit = DETAIL_RENDER_TEXT_LIMIT) {
-  return value.length > limit ? `${value.slice(0, limit).trim()}...` : value
-}
-
-function isNoPhotoReason(reason: string) {
-  return reason.trim().toLowerCase() === 'нет фото'
-}
-
-function isLockedTbankrotImageUrl(url: string) {
-  return /\/img\/blur\/|\/blur_/i.test(url)
-}
-
-function isImageDocument(document: ApiDocument) {
-  const documentType = (document.document_type || '').trim().toLowerCase()
-  const text = [document.url, document.name, document.comment].filter(Boolean).join(' ')
-  return documentType === 'photo' || /фото|photo|изображ/i.test(text) || /\.(png|jpe?g|gif|webp)(\?|$)/i.test(text)
-}
-
-function isRelevantDetailImage(url: string) {
-  if (selectedLot.value?.source !== 'tbankrot') return true
-  return /files\.tbankrot\.ru\//i.test(url) || /webapi\.torgi\.cdtrf\.ru\/doc\/public\/file/i.test(url)
-}
-
 function selectDetailImage(index: number) {
   activeDetailImageIndex.value = index
 }
@@ -2030,99 +1902,6 @@ function showNextDetailImage() {
   activeDetailImageIndex.value = (activeDetailImageIndex.value + 1) % detailImages.value.length
 }
 
-function belongsToSelectedLotMedia(document: ApiDocument) {
-  const lotNumber = selectedLot.value?.lotNumber
-  if (!lotNumber) return true
-
-  const text = [document.name, document.document_type, document.comment].filter(Boolean).join(' ').toLowerCase()
-  const explicitLotMatch = text.match(/(?:лот|lot)\s*0*(\d+)/i)
-  return !explicitLotMatch || explicitLotMatch[1] === lotNumber.replace(/^0+/, '')
-}
-
-function clampDetailPaneWidth(value: number) {
-  return Math.min(DETAIL_PANE_MAX_WIDTH, Math.max(DETAIL_PANE_MIN_WIDTH, value))
-}
-
-function readStoredDetailPaneWidth() {
-  const stored = window.localStorage.getItem(DETAIL_PANE_WIDTH_STORAGE_KEY)
-  const parsed = stored ? Number(stored) : DETAIL_PANE_DEFAULT_WIDTH
-  return Number.isFinite(parsed) ? clampDetailPaneWidth(parsed) : DETAIL_PANE_DEFAULT_WIDTH
-}
-
-function saveDetailPaneWidth() {
-  window.localStorage.setItem(DETAIL_PANE_WIDTH_STORAGE_KEY, String(Math.round(detailPaneWidth.value)))
-}
-
-function isDatasetPeriod(value: unknown): value is DatasetPeriod {
-  return value === 'week' || value === 'month' || value === 'year'
-}
-
-function sanitizeServerFilters(value: Partial<ServerQuickFiltersState> | null | undefined): ServerQuickFiltersState {
-  const hasPeriod = isDatasetPeriod(value?.period)
-  const period: DatasetPeriod = hasPeriod ? (value.period as DatasetPeriod) : DEFAULT_SERVER_FILTERS.period
-  const source = hasPeriod && typeof value?.source === 'string' && value.source.trim() === 'tbankrot' ? 'tbankrot' : DEFAULT_SERVER_FILTERS.source
-  const analysisColor = typeof value?.analysisColor === 'string' ? value.analysisColor : DEFAULT_SERVER_FILTERS.analysisColor
-  const status = typeof value?.status === 'string' ? value.status : DEFAULT_SERVER_FILTERS.status
-  const minPrice = typeof value?.minPrice === 'string' ? value.minPrice : DEFAULT_SERVER_FILTERS.minPrice
-  const maxPrice = typeof value?.maxPrice === 'string' ? value.maxPrice : DEFAULT_SERVER_FILTERS.maxPrice
-  const onlyNew = value?.onlyNew === true
-  const shortlist = value?.shortlist === true
-  const minRating = Number.isFinite(value?.minRating)
-    ? Math.min(100, Math.max(0, Number(value?.minRating)))
-    : DEFAULT_SERVER_FILTERS.minRating
-  const includeArchived = value?.includeArchived === true
-
-  return {
-    period,
-    source,
-    analysisColor,
-    status,
-    minPrice,
-    maxPrice,
-    onlyNew,
-    shortlist,
-    minRating,
-    includeArchived,
-  }
-}
-
-function readStoredServerFilters(): ServerQuickFiltersState {
-  const stored = window.localStorage.getItem(SERVER_FILTERS_STORAGE_KEY)
-  if (!stored) return { ...DEFAULT_SERVER_FILTERS }
-
-  try {
-    return sanitizeServerFilters(JSON.parse(stored) as Partial<ServerQuickFiltersState>)
-  } catch {
-    return { ...DEFAULT_SERVER_FILTERS }
-  }
-}
-
-function persistServerFilters() {
-  window.localStorage.setItem(SERVER_FILTERS_STORAGE_KEY, JSON.stringify(sanitizeServerFilters(filters)))
-}
-
-function sanitizeGridColumnWidths(value: unknown): GridColumnWidthsState {
-  if (!value || typeof value !== 'object') return {}
-
-  const widths: GridColumnWidthsState = {}
-  for (const [key, width] of Object.entries(value as Record<string, unknown>)) {
-    if (!key.trim()) continue
-    widths[key] = Number.isFinite(width) ? Math.max(0, Math.trunc(width as number)) : null
-  }
-  return widths
-}
-
-function readStoredGridColumnWidths(): GridColumnWidthsState {
-  const stored = window.localStorage.getItem(GRID_COLUMN_WIDTHS_STORAGE_KEY)
-  if (!stored) return {}
-
-  try {
-    return sanitizeGridColumnWidths(JSON.parse(stored))
-  } catch {
-    return {}
-  }
-}
-
 function setGridColumnWidths(widths: unknown, options: { persist?: boolean } = {}) {
   const nextWidths = sanitizeGridColumnWidths(widths)
   gridColumnWidths.value = nextWidths
@@ -2130,38 +1909,6 @@ function setGridColumnWidths(widths: unknown, options: { persist?: boolean } = {
     window.localStorage.setItem(GRID_COLUMN_WIDTHS_STORAGE_KEY, JSON.stringify(nextWidths))
   }
   return nextWidths
-}
-
-function sanitizeGridSavedView<TRow extends Record<string, unknown>>(
-  savedView: DataGridSavedViewSnapshot<TRow>,
-  options: { dropSort?: boolean } = {},
-): DataGridSavedViewSnapshot<TRow> {
-  const rowSnapshot = savedView.state.rows.snapshot
-  const rowCount = Math.max(0, rowSnapshot.rowCount)
-
-  return {
-    ...savedView,
-    state: {
-      ...savedView.state,
-      rows: {
-        ...savedView.state.rows,
-        snapshot: {
-          ...rowSnapshot,
-          sortModel: options.dropSort ? [] : rowSnapshot.sortModel,
-          pagination: {
-            ...rowSnapshot.pagination,
-            enabled: false,
-            pageSize: 0,
-            currentPage: 0,
-            pageCount: rowCount > 0 ? 1 : 0,
-            totalRowCount: rowCount,
-            startIndex: rowCount > 0 ? 0 : -1,
-            endIndex: rowCount > 0 ? rowCount - 1 : -1,
-          },
-        },
-      },
-    },
-  }
 }
 
 function resolveViewportRangeSize(range?: { start: number; end: number } | null) {
@@ -2251,74 +1998,6 @@ class ApiRequestError extends Error {
 function apiUrl(path: string) {
   if (/^https?:\/\//i.test(path)) return path
   return `${API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`
-}
-
-function hasGridFilterModel(filterModel: DataGridFilterSnapshot | null | undefined) {
-  if (!filterModel) return false
-  const quickFilter = (filterModel as { quickFilter?: { query?: unknown } }).quickFilter
-  return (
-    hasMeaningfulColumnFilters(filterModel.columnFilters) ||
-    hasMeaningfulAdvancedFilters(filterModel.advancedFilters) ||
-    hasMeaningfulAdvancedExpression(filterModel.advancedExpression) ||
-    (typeof quickFilter?.query === 'string' && quickFilter.query.trim().length > 0)
-  )
-}
-
-function hasMeaningfulColumnFilters(value: unknown) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
-
-  for (const payload of Object.values(value as Record<string, unknown>)) {
-    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) continue
-    const filter = payload as Record<string, unknown>
-    if (filter.kind === 'valueSet') {
-      const tokens = filter.tokens
-      if (Array.isArray(tokens) && tokens.length > 0) return true
-      continue
-    }
-    if (filter.kind === 'predicate') {
-      if (isMeaningfulAdvancedClause(filter)) return true
-    }
-  }
-  return false
-}
-
-function hasMeaningfulAdvancedFilters(value: unknown) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
-
-  for (const payload of Object.values(value as Record<string, unknown>)) {
-    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) continue
-    const clauses = (payload as { clauses?: unknown }).clauses
-    if (Array.isArray(clauses) && clauses.some(isMeaningfulAdvancedClause)) return true
-  }
-  return false
-}
-
-function isMeaningfulAdvancedClause(value: unknown) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
-  const clause = value as Record<string, unknown>
-  const operator = typeof clause.operator === 'string' ? clause.operator.trim() : ''
-  if (!operator) return false
-  if (['isNull', 'notNull', 'is-null', 'not-null', 'isEmpty', 'notEmpty', 'is-empty', 'not-empty'].includes(operator)) {
-    return true
-  }
-  const clauseValue = clause.value
-  return clauseValue !== null && clauseValue !== undefined && String(clauseValue).trim().length > 0
-}
-
-function hasMeaningfulAdvancedExpression(value: unknown): boolean {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
-
-  const expression = value as Record<string, unknown>
-  if (expression.kind === 'condition') {
-    return isMeaningfulAdvancedClause(expression)
-  }
-  if (expression.kind === 'group') {
-    return Array.isArray(expression.children) && expression.children.some(hasMeaningfulAdvancedExpression)
-  }
-  if (expression.kind === 'not') {
-    return hasMeaningfulAdvancedExpression(expression.child)
-  }
-  return false
 }
 
 function isAbortLikeError(error: unknown) {
@@ -3265,104 +2944,6 @@ function rememberGridWorkSnapshot(row: GridLotRow) {
   savedGridWorkSnapshots.set(row.id, serializeGridWorkState(row))
 }
 
-function parseNumber(value: string | number | null) {
-  if (value === null || value === '') return null
-  const parsed = Number(value)
-  return Number.isFinite(parsed) ? parsed : null
-}
-
-function parseDateTime(value: string | null) {
-  if (!value) return null
-  const normalized = value.trim()
-  const russianDateTime = normalized.match(/^(\d{1,2})[./](\d{1,2})[./](\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/)
-  if (russianDateTime) {
-    const [, day, month, year, hour = '0', minute = '0', second = '0'] = russianDateTime
-    return new Date(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second))
-  }
-
-  const date = new Date(normalized)
-  return Number.isNaN(date.getTime()) ? null : date
-}
-
-function formatDateTime(value: Date | string | null) {
-  if (!value) return ''
-  if (value instanceof Date) return value.toLocaleString('ru-RU')
-
-  const date = parseDateTime(value)
-  return date ? date.toLocaleString('ru-RU') : value
-}
-
-function formatLifecycleStatus(value: string | null | undefined) {
-  const status = (value || '').trim().toLowerCase()
-  if (!status) return 'Неизвестно'
-  if (status === 'active') return 'Активен'
-  if (status === 'expired') return 'Истек'
-  if (status === 'stale') return 'Устарел'
-  if (status === 'archived') return 'Архив'
-  return value || 'Неизвестно'
-}
-
-function lifecycleStatusTone(value: string | null | undefined) {
-  const status = (value || '').trim().toLowerCase()
-  if (status === 'active') return 'active'
-  if (status === 'expired') return 'warning'
-  if (status === 'stale') return 'warning'
-  if (status === 'archived') return 'muted'
-  return 'muted'
-}
-
-function buildLifecycleStatusTooltip(row: GridLotRow) {
-  const details = [
-    `Последнее наблюдение: ${formatDateTime(row.lastSeenAt) || 'нет данных'}`,
-    `Проверка актуальности: ${formatDateTime(row.actualityCheckedAt) || 'нет данных'}`,
-  ]
-  return details.join('\n')
-}
-
-function formatEnrichmentState(state: LotWorkspaceEnrichmentState | null | undefined) {
-  if (!state) return 'Не запрошено'
-  if (state.claimed_at) {
-    return `В работе${state.claimed_by ? ` · ${state.claimed_by}` : ''}`
-  }
-  if (state.requested_at) {
-    return state.next_attempt_at ? `В очереди до ${formatDateTime(state.next_attempt_at)}` : 'В очереди'
-  }
-  return 'Не запрошено'
-}
-
-function formatSourceSyncWindow(source: AuctionPipelineSourceSyncStatus | null | undefined) {
-  if (!source) return 'Нет данных'
-  if (!source.next_sync_not_before && !source.next_sync_not_after) return 'Не запланировано'
-  const windowStart = formatDateTime(source.next_sync_not_before)
-  const windowEnd = formatDateTime(source.next_sync_not_after)
-  if (windowStart && windowEnd) return `${windowStart} - ${windowEnd}`
-  return windowStart || windowEnd || 'Не запланировано'
-}
-
-function formatCurrency(value: number | null) {
-  if (value === null || Number.isNaN(value)) return 'Не указана'
-  return new Intl.NumberFormat('ru-RU', {
-    style: 'currency',
-    currency: 'RUB',
-    currencyDisplay: 'symbol',
-    maximumFractionDigits: 2,
-  }).format(value)
-}
-
-function formatApiMoney(value: string | number | null | undefined) {
-  const parsed = parseNumber(value ?? null)
-  return parsed === null ? '' : formatCurrency(parsed)
-}
-
-function formatApiPercent(value: string | number | null | undefined) {
-  const parsed = parseNumber(value ?? null)
-  if (parsed === null) return ''
-  return new Intl.NumberFormat('ru-RU', {
-    style: 'percent',
-    maximumFractionDigits: 1,
-  }).format(parsed)
-}
-
 async function loadAuctionPipelineHealth() {
   if (!isAuthenticated.value) return
 
@@ -3387,27 +2968,6 @@ async function loadProcurementLots() {
   } finally {
     procurementLoading.value = false
   }
-}
-
-function formatDecisionLevel(value: DecisionLevel) {
-  return {
-    ignore: 'Игнорировать',
-    watch: 'Наблюдать',
-    inspect: 'Осмотреть',
-    calculate: 'Посчитать',
-    bid_candidate: 'Кандидат на торги',
-  }[value]
-}
-
-function formatActionRecommendation(value: ActionRecommendation) {
-  return {
-    ignore: 'Игнорировать',
-    monitor: 'Мониторить',
-    request_docs: 'Запросить документы',
-    inspect: 'Осмотреть лот',
-    calculate_max_bid: 'Посчитать максимум',
-    prepare_bid: 'Готовить заявку',
-  }[value]
 }
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -3578,7 +3138,7 @@ async function loadUserInterestProfiles() {
 function buildPresetPayload(name?: string) {
   return {
     name: (name ?? selectedPreset.value?.name ?? '').trim(),
-    filters: sanitizeServerFilters(filters),
+    filters: sanitizeServerFilters(filters, DEFAULT_SERVER_FILTERS),
     grid_view: gridRef.value?.getSavedView() ?? null,
     is_favorite: selectedPreset.value?.is_favorite ?? false,
   }
@@ -3612,7 +3172,7 @@ async function applyPresetById(presetId: string) {
   const preset = presets.value.find((item) => item.id === presetId)
   if (!preset) return
 
-  const nextFilters = sanitizeServerFilters(preset.filters)
+  const nextFilters = sanitizeServerFilters(preset.filters, DEFAULT_SERVER_FILTERS)
   Object.assign(filters, nextFilters)
   await nextTick()
   writeGridSavedView(preset.grid_view)
@@ -4521,7 +4081,7 @@ function stopDetailResize() {
   window.removeEventListener('pointermove', handleDetailResize)
   window.removeEventListener('pointerup', stopDetailResize)
   window.removeEventListener('pointercancel', stopDetailResize)
-  saveDetailPaneWidth()
+  saveDetailPaneWidth(DETAIL_PANE_WIDTH_STORAGE_KEY, detailPaneWidth.value)
 }
 
 function handleGlobalKeydown(event: KeyboardEvent) {
@@ -4657,7 +4217,7 @@ function stopAuctionEvents() {
 
 watch(filters, () => {
   if (!isAuctionsModule.value) return
-  persistServerFilters()
+  persistStoredServerFilters(SERVER_FILTERS_STORAGE_KEY, filters, DEFAULT_SERVER_FILTERS)
   scheduleCatalogFilterSync()
 }, { deep: true })
 
