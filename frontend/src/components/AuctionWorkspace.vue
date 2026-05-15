@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, type PropType } from 'vue'
+import { nextTick, ref, watch, type PropType } from 'vue'
 import {
   DataGrid,
   type DataGridExposed,
+  type DataGridSelectionSnapshot,
 } from '@affino/datagrid-vue-app'
 
 const props = defineProps({
@@ -38,6 +39,75 @@ const emit = defineEmits<{
 }>()
 
 const gridRef = ref<DataGridExposed<unknown> | null>(null)
+const initialFocusApplied = ref(false)
+
+function createFirstCellSelectionSnapshot() {
+  const api = gridRef.value?.getApi()
+  const runtime = gridRef.value?.getRuntime()
+  if (!api?.selection.hasSelectionSupport() || !runtime) return null
+
+  const firstRow = runtime.getBodyRowAtIndex(0)
+  const firstColumn = runtime.columnSnapshot.value.visibleColumns[0]
+  if (!firstRow || !firstColumn) return null
+
+  const point = {
+    rowIndex: 0,
+    colIndex: 0,
+    rowId: firstRow.rowId,
+  }
+
+  return {
+    ranges: [
+      {
+        startRow: 0,
+        endRow: 0,
+        startCol: 0,
+        endCol: 0,
+        startRowId: firstRow.rowId,
+        endRowId: firstRow.rowId,
+        anchor: point,
+        focus: point,
+      },
+    ],
+    activeRangeIndex: 0,
+    activeCell: point,
+  } satisfies DataGridSelectionSnapshot<unknown>
+}
+
+async function focusFirstCell() {
+  const api = gridRef.value?.getApi()
+  const runtime = gridRef.value?.getRuntime()
+  if (!api?.selection.hasSelectionSupport() || !runtime) return false
+
+  const snapshot = createFirstCellSelectionSnapshot()
+  if (!snapshot) return false
+
+  api.selection.setSelectionSnapshot(snapshot)
+  await nextTick()
+
+  const anchor = gridRef.value?.captureFocusAnchor({
+    includeSelection: true,
+    includeRowSelection: true,
+  })
+  if (!anchor) return false
+
+  return gridRef.value?.restoreFocusAnchor(anchor, {
+    scrollIntoView: true,
+    preventScroll: true,
+    retries: 3,
+  }) ?? false
+}
+
+watch(
+  () => props.rowModel && (props.catalogGridHasLoadedOnce || !props.loading || props.allRowsLength > 0),
+  async (ready) => {
+    if (!ready || initialFocusApplied.value) return
+    if (await focusFirstCell()) {
+      initialFocusApplied.value = true
+    }
+  },
+  { immediate: true, flush: 'post' },
+)
 
 defineExpose({
   getApi: () => gridRef.value?.getApi(),

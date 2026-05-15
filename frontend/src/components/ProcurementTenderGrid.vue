@@ -8,6 +8,7 @@ import {
   type DataGridCellStyleResolver,
   type DataGridExposed,
   type DataGridHistoryProp,
+  type DataGridSelectionSnapshot,
 } from '@affino/datagrid-vue-app'
 import {
   createDataSourceBackedRowModel,
@@ -54,6 +55,24 @@ const props = defineProps<{
 const emit = defineEmits<{
   toggleMobileRail: []
 }>()
+
+function resolveSignalTone(level: string) {
+  const normalized = level.trim().toLowerCase()
+  if (normalized === 'priority') return 'green'
+  if (normalized === 'watch') return 'yellow'
+  if (normalized === 'low') return 'orange'
+  if (normalized === 'reject') return 'red'
+  return 'gray'
+}
+
+function formatSignalLevel(level: string) {
+  const normalized = level.trim().toLowerCase()
+  if (normalized === 'priority') return 'Приоритет'
+  if (normalized === 'watch') return 'Наблюдать'
+  if (normalized === 'low') return 'Слабый'
+  if (normalized === 'reject') return 'Отказ'
+  return level
+}
 
 type PresetDialogMode = 'create' | 'update' | 'delete'
 
@@ -293,6 +312,7 @@ const DETAIL_PANE_MAX_WIDTH = 920
 const PROCUREMENT_FILTER_SYNC_DELAY_MS = 400
 
 const gridRef = ref<DataGridExposed<ProcurementGridRow> | null>(null)
+const initialFocusApplied = ref(false)
 const workspaceRef = ref<HTMLElement | null>(null)
 const rowModel = shallowRef<ProcurementRowModel | null>(null)
 const datasourceRef = shallowRef<ProcurementServerGridDataSource | null>(null)
@@ -500,6 +520,74 @@ const hasAppliedFilters = computed(
 )
 const canUpdatePreset = computed(() => Boolean(selectedPreset.value) && hasAppliedFilters.value)
 
+function createFirstCellSelectionSnapshot() {
+  const api = gridRef.value?.getApi()
+  const runtime = gridRef.value?.getRuntime()
+  if (!api?.selection.hasSelectionSupport() || !runtime) return null
+
+  const firstRow = runtime.getBodyRowAtIndex(0)
+  const firstColumn = runtime.columnSnapshot.value.visibleColumns[0]
+  if (!firstRow || !firstColumn) return null
+
+  const point = {
+    rowIndex: 0,
+    colIndex: 0,
+    rowId: firstRow.rowId,
+  }
+
+  return {
+    ranges: [
+      {
+        startRow: 0,
+        endRow: 0,
+        startCol: 0,
+        endCol: 0,
+        startRowId: firstRow.rowId,
+        endRowId: firstRow.rowId,
+        anchor: point,
+        focus: point,
+      },
+    ],
+    activeRangeIndex: 0,
+    activeCell: point,
+  } satisfies DataGridSelectionSnapshot<ProcurementGridRow>
+}
+
+async function focusFirstCell() {
+  const api = gridRef.value?.getApi()
+  const runtime = gridRef.value?.getRuntime()
+  if (!api?.selection.hasSelectionSupport() || !runtime) return false
+
+  const snapshot = createFirstCellSelectionSnapshot()
+  if (!snapshot) return false
+
+  api.selection.setSelectionSnapshot(snapshot)
+  await nextTick()
+
+  const anchor = gridRef.value?.captureFocusAnchor({
+    includeSelection: true,
+    includeRowSelection: true,
+  })
+  if (!anchor) return false
+
+  return gridRef.value?.restoreFocusAnchor(anchor, {
+    scrollIntoView: true,
+    preventScroll: true,
+    retries: 3,
+  }) ?? false
+}
+
+watch(
+  () => rowModel.value && (loadedOnce.value || !loading.value || total.value > 0),
+  async (ready) => {
+    if (!ready || initialFocusApplied.value) return
+    if (await focusFirstCell()) {
+      initialFocusApplied.value = true
+    }
+  },
+  { immediate: true, flush: 'post' },
+)
+
 function sortPresets(items: FilterPreset[]) {
   return [...items].sort((left, right) => {
     if (left.is_favorite !== right.is_favorite) {
@@ -674,12 +762,22 @@ const columns = defineDataGridColumns<ProcurementGridRow>()([
     presentation: { align: 'right', headerAlign: 'right' },
     capabilities: { sortable: true, filterable: true },
     filter: predicateFilterOnly,
+    cellRenderer: ({ row }) => (row ? h('span', { class: 'grid-score-pill' }, String(row.score)) : ''),
+  },
+  {
+    key: 'scoreLevel',
+    label: 'Сигнал',
+    initialState: { width: 108 },
+    capabilities: { sortable: true, filterable: true },
     cellRenderer: ({ row }) =>
       row
-        ? h('span', { class: ['procurement-score-pill', `procurement-score-pill--${row.scoreLevel}`] }, String(row.score))
+        ? h(
+            'span',
+            { class: ['grid-signal-pill', `grid-signal-pill--${resolveSignalTone(row.scoreLevel)}`] },
+            formatSignalLevel(row.scoreLevel),
+          )
         : '',
   },
-  { key: 'scoreLevel', label: 'Сигнал', initialState: { width: 108 }, capabilities: { sortable: true, filterable: true } },
   { key: 'workflowStatus', label: 'Этап', initialState: { width: 150 }, capabilities: { sortable: true, filterable: true, editable: true } },
   { key: 'source', label: 'Площадка', initialState: { width: 120 }, capabilities: { sortable: true, filterable: true } },
   {

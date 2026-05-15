@@ -6,7 +6,6 @@ import {
   type DataGridAppFilterValueNormalizationContext,
 } from '@affino/datagrid-vue-app'
 import AnalysisSignalTooltip from '@/components/AnalysisSignalTooltip.vue'
-import LotNameCell from '@/components/LotNameCell.vue'
 import { catalogColumnMenuOptions } from '@/datagrid/auctionGridUiConfig'
 import {
   buildLifecycleStatusTooltip,
@@ -22,6 +21,12 @@ const percentPredicateFilter = {
   normalizeValue: normalizePercentFilterValue,
 } satisfies DataGridAppColumnFilterOptions
 
+function resolveSignalTone(value: string | null | undefined) {
+  const tone = (value || '').trim().toLowerCase()
+  if (tone === 'green' || tone === 'yellow' || tone === 'orange' || tone === 'red') return tone
+  return 'gray'
+}
+
 export function normalizePercentFilterValue(context: DataGridAppFilterValueNormalizationContext) {
   const value = context.value
   if (value === null || value === undefined || value === '') return value
@@ -34,6 +39,35 @@ export function normalizePercentFilterValue(context: DataGridAppFilterValueNorma
 export function createAuctionGridColumns(openLotDetails: (row: any) => void) {
   return defineDataGridColumns<any>()([
     {
+      key: 'openAction',
+      label: '',
+      initialState: { width: 92 },
+      capabilities: { sortable: false, filterable: false },
+      cellInteraction: {
+        click: true,
+        keyboard: ['enter', 'space'],
+        role: 'button',
+        label: ({ row }) => (row ? `Открыть карточку ${row.lotName}` : 'Открыть карточку'),
+        onInvoke: ({ row }) => {
+          if (row) void openLotDetails(row)
+        },
+      },
+      cellRenderer: ({ row, interactive }) =>
+        row
+          ? h(
+              'span',
+              {
+                class: ['auction-detail-trigger', { 'auction-detail-trigger--disabled': interactive?.enabled === false }],
+                onClick: (event: MouseEvent) => {
+                  event.stopPropagation()
+                  interactive?.activate('click')
+                },
+              },
+              'Открыть',
+            )
+          : '',
+    },
+    {
       key: 'ratingScore',
       label: 'Рейтинг',
       dataType: 'number',
@@ -41,6 +75,7 @@ export function createAuctionGridColumns(openLotDetails: (row: any) => void) {
       presentation: { align: 'right', headerAlign: 'right' },
       capabilities: { sortable: true, filterable: true, aggregatable: true },
       filter: predicateFilterOnly,
+      cellRenderer: ({ row }) => (row ? h('span', { class: 'grid-score-pill' }, String(row.ratingScore)) : ''),
     },
     {
       key: 'analysisLabel',
@@ -54,7 +89,7 @@ export function createAuctionGridColumns(openLotDetails: (row: any) => void) {
         const pill = h(
           'span',
           {
-            class: ['analysis-pill', `analysis-pill--${row.analysisColor || 'yellow'}`],
+            class: ['grid-signal-pill', `grid-signal-pill--${resolveSignalTone(row.analysisColor)}`],
           },
           row.analysisLabel,
         )
@@ -117,23 +152,7 @@ export function createAuctionGridColumns(openLotDetails: (row: any) => void) {
       label: 'Наименование',
       initialState: { width: 430 },
       filter: predicateFilterOnly,
-      cellInteraction: {
-        click: true,
-        keyboard: ['enter'],
-        role: 'button',
-        label: ({ row }) => (row ? `Открыть ${row.lotName}` : 'Открыть лот'),
-        onInvoke: ({ row }) => {
-          if (row) void openLotDetails(row)
-        },
-      },
-      cellRenderer: ({ displayValue, row }) =>
-        row
-          ? h(LotNameCell, {
-              row,
-              label: String(displayValue || 'Без названия'),
-              onOpen: (lot: unknown) => void openLotDetails(lot),
-            })
-          : String(displayValue || 'Без названия'),
+      cellRenderer: ({ displayValue }) => String(displayValue || 'Без названия'),
     },
     {
       key: 'location',

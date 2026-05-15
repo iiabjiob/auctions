@@ -139,7 +139,6 @@ import {
 import { createTelegramConnectToken } from './api/telegram'
 import AuthLoginScreen from './components/AuthLoginScreen.vue'
 import AffinoCombobox from './components/AffinoCombobox.vue'
-import RatingInfoTooltip from './components/RatingInfoTooltip.vue'
 import AuctionWorkspace from './components/AuctionWorkspace.vue'
 import ProcurementTenderGrid from './components/ProcurementTenderGrid.vue'
 import AnalysisConfigRoute from './views/AnalysisConfigRoute.vue'
@@ -492,8 +491,6 @@ const {
   selectedSourceSyncStatus,
   selectedCurrentEnrichmentState,
   detailActualityFields,
-  ratingReasonItems,
-  ratingBreakdown,
   changeFields,
   changeSummaryFields,
   detailDocuments,
@@ -1190,7 +1187,10 @@ async function loadLots() {
   resetCatalogRowModel()
   savedGridWorkSnapshots.clear()
   await nextTick()
-  ensureCatalogServerViewport({ start: 0, end: SERVER_ROW_MODEL_INITIAL_FETCH_SIZE - 1 })
+  const viewportChanged = ensureCatalogServerViewport({ start: 0, end: SERVER_ROW_MODEL_INITIAL_FETCH_SIZE - 1 })
+  if (!viewportChanged) {
+    await catalogRowModel.value?.refresh('manual')
+  }
   void loadAuctionPipelineHealth()
 }
 
@@ -3000,11 +3000,6 @@ onUnmounted(() => {
               <div class="detail-pane__score">
                 <strong>{{ selectedLot.ratingScore }}</strong>
                 <span>{{ selectedLot.ratingLevel }}</span>
-                <RatingInfoTooltip
-                  :reasons="ratingReasonItems"
-                  :dimensions="ratingBreakdown?.dimensions ?? null"
-                  :caps="ratingBreakdown?.caps ?? null"
-                />
                 <span :class="['analysis-pill', `analysis-pill--${selectedLot.analysisColor || 'yellow'}`]">
                   {{ selectedLot.analysisLabel }}
                 </span>
