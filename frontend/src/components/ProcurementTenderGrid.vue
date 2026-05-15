@@ -605,11 +605,9 @@ function createGridRowModel(): ProcurementRowModel {
     rowCacheLimit: ROW_CACHE_LIMIT,
     prefetch: prefetchOptions,
   }) as ProcurementRowModel
-  if (typeof model.patchRows !== 'function') {
-    model.patchRows = async (updates) => {
-      if (!updates.length) return
-      await datasource.commitEdits?.({ edits: updates })
-    }
+  model.patchRows = async (updates) => {
+    if (!updates.length) return
+    await datasource.commitEdits?.({ edits: updates })
   }
   return model
 }
