@@ -5,7 +5,8 @@ import logging
 
 from app.core.config import get_settings
 from app.infrastructure.db.database import AsyncSessionLocal
-from app.services.telegram_sender import TelegramSenderBatchResult, send_pending_procurement_telegram_notifications, send_pending_telegram_notifications
+from app.services.telegram_sender import send_pending_procurement_telegram_notifications
+from app.services.telegram_sender import send_pending_telegram_notifications
 from app.worker.safety import safe_worker_sleep_seconds
 
 
@@ -18,37 +19,33 @@ async def run_sender_batch() -> dict[str, int]:
         auction_result = await send_pending_telegram_notifications(
             session,
             bot_token=settings.telegram_bot_token,
-            chat_id=settings.telegram_chat_id,
             limit=settings.telegram_sender_batch_limit,
             dry_run=settings.telegram_sender_dry_run,
             max_attempts=settings.telegram_sender_max_attempts,
             base_backoff_seconds=settings.telegram_sender_base_backoff_seconds,
         )
-        remaining_limit = max(0, settings.telegram_sender_batch_limit - auction_result.selected)
         procurement_result = await send_pending_procurement_telegram_notifications(
             session,
             bot_token=settings.telegram_bot_token,
-            chat_id=settings.telegram_chat_id,
-            limit=remaining_limit,
+            chat_id=None,
+            limit=settings.telegram_sender_batch_limit,
             dry_run=settings.telegram_sender_dry_run,
             max_attempts=settings.telegram_sender_max_attempts,
             base_backoff_seconds=settings.telegram_sender_base_backoff_seconds,
         )
         await session.commit()
-    result = _merge_batch_results(auction_result, procurement_result)
-    payload = result.model_dump(mode="json")
+    payload = _sum_batch_results(auction_result, procurement_result)
     logger.info("Telegram sender batch completed: %s", payload)
     return payload
 
 
-def _merge_batch_results(first: TelegramSenderBatchResult, second: TelegramSenderBatchResult) -> TelegramSenderBatchResult:
-    return TelegramSenderBatchResult(
-        selected=first.selected + second.selected,
-        sent=first.sent + second.sent,
-        failed=first.failed + second.failed,
-        retried=first.retried + second.retried,
-        dry_run=first.dry_run + second.dry_run,
-    )
+def _sum_batch_results(*results) -> dict[str, int]:
+    total = {"selected": 0, "sent": 0, "failed": 0, "retried": 0, "dry_run": 0}
+    for result in results:
+        payload = result.model_dump(mode="json")
+        for key in total:
+            total[key] += int(payload.get(key, 0) or 0)
+    return total
 
 
 async def run_worker(*, run_once: bool = False) -> dict[str, int] | None:

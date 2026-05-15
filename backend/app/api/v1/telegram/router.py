@@ -76,7 +76,6 @@ async def handle_telegram_webhook(
         session,
         update,
         bot_token=settings.telegram_bot_token,
-        channel_url=settings.telegram_channel_url,
     )
     if result.response_payload is not None:
         return result.response_payload

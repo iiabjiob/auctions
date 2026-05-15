@@ -4,33 +4,55 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from app.models.procurement import ProcurementLotRecord, ProcurementTelegramNotificationOutbox
+from app.models import UserInterestProfileModel, UserTelegramBindingModel
+from app.models.filter_preset import FilterPresetModel
+from app.models.procurement import ProcurementLotRecord
 from app.schemas.lot_decision_report import TelegramNotificationStatus
-from app.services.procurement_notifications import (
-    enqueue_procurement_telegram_notifications,
-    evaluate_procurement_notification_events,
-)
+from app.services.procurement_notifications import enqueue_procurement_telegram_notifications, build_saved_slice_hash
 
 
 NOW = datetime(2026, 5, 13, 12, tzinfo=UTC)
 
 
 class FakeSession:
-    def __init__(self, existing: object | None = None) -> None:
-        self.existing = existing
+    def __init__(
+        self,
+        scalar_results: list[object | None] | None = None,
+        scalars_results: list[list[object]] | None = None,
+    ) -> None:
+        self.scalar_results = list(scalar_results or [])
+        self.scalars_results = list(scalars_results or [])
         self.added: list[object] = []
         self.flushes = 0
         self.scalar_calls = 0
+        self.scalars_calls = 0
+        self.statements: list[object] = []
 
     async def scalar(self, statement: object) -> object | None:
         self.scalar_calls += 1
-        return self.existing
+        self.statements.append(statement)
+        if self.scalar_results:
+            return self.scalar_results.pop(0)
+        return None
+
+    async def scalars(self, statement: object):
+        self.scalars_calls += 1
+        self.statements.append(statement)
+        return FakeScalars(self.scalars_results.pop(0) if self.scalars_results else [])
 
     def add(self, value: object) -> None:
         self.added.append(value)
 
     async def flush(self) -> None:
         self.flushes += 1
+
+
+class FakeScalars:
+    def __init__(self, values: list[object]) -> None:
+        self.values = values
+
+    def all(self) -> list[object]:
+        return self.values
 
 
 def make_record(**overrides: object) -> ProcurementLotRecord:
@@ -63,56 +85,115 @@ def make_record(**overrides: object) -> ProcurementLotRecord:
     return ProcurementLotRecord(**values)
 
 
+def make_preset(**overrides: object) -> FilterPresetModel:
+    values = {
+        "id": "preset_proc_1",
+        "owner_user_id": "user-1",
+        "scope": "procurement",
+        "name": "Спецодежда срез",
+        "filters": {
+            "source": "zakupki",
+            "status": "Подача заявок",
+            "category": "Спецодежда",
+            "minScore": 75,
+        },
+        "grid_view": {
+            "state": {
+                "rows": {
+                    "snapshot": {
+                        "filterModel": {
+                            "quickFilter": {"query": "спецодежды"},
+                        },
+                    },
+                },
+            },
+        },
+        "is_favorite": False,
+    }
+    values.update(overrides)
+    return FilterPresetModel(**values)
+
+
+def make_interest_profile(**overrides: object) -> UserInterestProfileModel:
+    values = {
+        "id": "uip_1",
+        "owner_user_id": "user-1",
+        "source_filter_preset_id": "preset_proc_1",
+        "name": "Procurement slice",
+        "profile_payload": {},
+        "min_rating": 0,
+        "notification_priority_threshold": "medium",
+        "telegram_enabled": True,
+        "is_active": True,
+    }
+    values.update(overrides)
+    return UserInterestProfileModel(**values)
+
+
+def make_binding(**overrides: object) -> UserTelegramBindingModel:
+    values = {
+        "user_id": "user-1",
+        "telegram_chat_id": "123456789",
+        "username": "procurement_user",
+    }
+    values.update(overrides)
+    return UserTelegramBindingModel(**values)
+
+
 class ProcurementNotificationTests(unittest.IsolatedAsyncioTestCase):
-    def test_eligibility_detects_priority_profitability_profit_and_deadline_events(self) -> None:
-        record = make_record(application_deadline_at=NOW + timedelta(hours=40))
+    async def test_enqueue_creates_pending_entry_for_matching_saved_slice(self) -> None:
+        record = make_record()
+        preset = make_preset()
+        profile = make_interest_profile()
+        session = FakeSession(
+            scalar_results=[preset, 1, None, None],
+            scalars_results=[[profile], [make_binding()]],
+        )
 
-        events = evaluate_procurement_notification_events(record, now=NOW)
-        event_types = {event.event_type for event in events}
+        entries = await enqueue_procurement_telegram_notifications(session, record, now=NOW)
 
-        self.assertIn("priority_tender", event_types)
-        self.assertIn("net_profit_gt_500k", event_types)
-        self.assertIn("profitability_gt_20", event_types)
-        self.assertIn("deadline_under_48h", event_types)
-        self.assertEqual(next(event.priority for event in events if event.event_type == "deadline_under_48h"), "urgent")
-
-    def test_owner_decision_ready_event_uses_workflow_status(self) -> None:
-        events = evaluate_procurement_notification_events(make_record(workflow_status="decision"), now=NOW)
-
-        self.assertIn("owner_decision_ready", {event.event_type for event in events})
-
-    async def test_enqueue_creates_pending_entries_and_message_payloads(self) -> None:
-        session = FakeSession()
-
-        entries = await enqueue_procurement_telegram_notifications(session, make_record(), now=NOW)
-
-        self.assertGreaterEqual(len(entries), 3)
+        self.assertEqual(len(entries), 1)
         self.assertEqual(session.flushes, 1)
         self.assertTrue(all(entry.status == TelegramNotificationStatus.PENDING.value for entry in entries))
         self.assertTrue(all(entry.procurement_lot_record_id == 7 for entry in entries))
-        self.assertTrue(all(entry.dedupe_key.startswith("procurement-telegram:7:") for entry in entries))
-        self.assertIn("Тендер требует внимания", entries[0].message_payload["text"])
+        self.assertTrue(all(entry.dedupe_key.startswith("procurement-telegram:user-1:uip_1:7:") for entry in entries))
+        self.assertIn("Тендер попал в сохраненный срез", entries[0].message_payload["text"])
+        self.assertIn("Спецодежда срез", entries[0].message_payload["text"])
         self.assertEqual(entries[0].message_payload["parse_mode"], "HTML")
 
-    async def test_duplicate_suppression_skips_existing_pending_or_sent_event(self) -> None:
-        existing = ProcurementTelegramNotificationOutbox(
-            procurement_lot_record_id=7,
-            event_type="priority_tender",
-            dedupe_key="existing",
-            cooldown_key="existing",
-            status=TelegramNotificationStatus.PENDING.value,
-            priority="high",
-            message_payload={},
-            event_hash="hash",
-            scheduled_at=NOW,
+    async def test_enqueue_skips_when_no_saved_slice_matches(self) -> None:
+        record = make_record(status="Черновик")
+        preset = make_preset()
+        profile = make_interest_profile()
+        session = FakeSession(
+            scalar_results=[preset, None],
+            scalars_results=[[profile], [make_binding()]],
         )
-        session = FakeSession(existing=existing)
 
-        entries = await enqueue_procurement_telegram_notifications(session, make_record(), now=NOW)
+        entries = await enqueue_procurement_telegram_notifications(session, record, now=NOW)
 
         self.assertEqual(entries, [])
         self.assertEqual(session.added, [])
         self.assertEqual(session.flushes, 0)
+
+    async def test_enqueue_skips_duplicate_delivery_for_same_user_across_profiles(self) -> None:
+        record = make_record()
+        preset = make_preset()
+        first = make_interest_profile(id="uip_1")
+        second = make_interest_profile(id="uip_2")
+        session = FakeSession(
+            scalar_results=[preset, 1, None, None, preset, 1],
+            scalars_results=[[first, second], [make_binding()]],
+        )
+
+        entries = await enqueue_procurement_telegram_notifications(session, record, now=NOW)
+
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0].user_id, "user-1")
+        self.assertEqual(entries[0].cooldown_key, "procurement-telegram:user-1:7")
+        self.assertEqual(entries[0].event_type, "saved_slice:user-1")
+        self.assertEqual(entries[0].dedupe_key, f"procurement-telegram:user-1:uip_1:7:{build_saved_slice_hash(preset)}")
+        self.assertEqual(session.flushes, 1)
 
 
 if __name__ == "__main__":

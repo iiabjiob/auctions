@@ -32,7 +32,6 @@ class TelegramWebhookService:
         update: dict[str, Any],
         *,
         bot_token: str | None = None,
-        channel_url: str | None = None,
     ) -> TelegramWebhookResult:
         message = update.get("message")
         if not isinstance(message, dict):
@@ -52,9 +51,9 @@ class TelegramWebhookService:
                 return TelegramWebhookResult(action="invalid_chat")
 
             if self._is_start_command(text):
-                return self._reply_result(action="help", chat_id=chat_id, text=self._help_message(channel_url))
+                return self._reply_result(action="help", chat_id=chat_id, text=self._help_message())
 
-            return await self._status_reply_result(session, chat_id=chat_id, channel_url=channel_url)
+            return await self._status_reply_result(session, chat_id=chat_id)
 
         chat_id = self._message_chat_id(message)
         if chat_id is None:
@@ -77,7 +76,7 @@ class TelegramWebhookService:
         return self._reply_result(
             action="connected",
             chat_id=chat_id,
-            text=self._connected_message(channel_url),
+            text=self._connected_message(),
         )
 
     def _is_start_command(self, text: str) -> bool:
@@ -109,39 +108,27 @@ class TelegramWebhookService:
         token = payload.removeprefix(TELEGRAM_START_PREFIX).strip()
         return token or None
 
-    def _help_message(self, channel_url: str | None) -> str:
-        message = "\n\n".join(
+    def _help_message(self) -> str:
+        return "\n\n".join(
             [
                 _markdown_v2("Чтобы подключить уведомления, откройте приложение и нажмите кнопку подключения Telegram."),
-                _markdown_v2("После подключения используйте /status, чтобы увидеть активные подборки."),
+                _markdown_v2("После подключения используйте /status, чтобы увидеть активные срезы."),
             ]
         )
-        if channel_url:
-            message += f"\n\n{_markdown_v2('После подключения также откройте канал с публикациями')}: {self._channel_link(channel_url)}"
-        return message
 
-    def _connected_message(self, channel_url: str | None) -> str:
-        message = "\n\n".join(
+    def _connected_message(self) -> str:
+        return "\n\n".join(
             [
-                _markdown_v2("Telegram подключен. Теперь уведомления будут приходить по выбранным профилям интересов."),
-                _markdown_v2("Следующий шаг: откройте канал с публикациями, чтобы видеть общий поток интересных лотов."),
+                _markdown_v2("Telegram подключен. Теперь уведомления будут приходить по выбранным срезам."),
+                _markdown_v2("Команда /status покажет активные срезы."),
             ]
         )
-        if channel_url:
-            message += f"\n{_markdown_v2('Канал с публикациями')}: {self._channel_link(channel_url)}"
-        message += f"\n\n{_markdown_v2('Команда /status покажет активные подборки.')}"
-        return message
-
-    def _channel_link(self, channel_url: str) -> str:
-        safe_url = channel_url.strip()
-        return f"[{_markdown_v2(safe_url)}]({_markdown_v2_link_url(safe_url)})"
 
     async def _status_reply_result(
         self,
         session: AsyncSession,
         *,
         chat_id: str,
-        channel_url: str | None,
     ) -> TelegramWebhookResult:
         binding = await self._binding_service.get_model_for_chat_id(session, chat_id)
         if binding is None:
@@ -159,21 +146,13 @@ class TelegramWebhookService:
         profiles = await self._active_telegram_profiles(session, binding.user_id)
         if not profiles:
             message = _markdown_v2("Telegram подключен, но активных подборок с уведомлениями пока нет.")
-            if channel_url:
-                message += f"\n\n{_markdown_v2('Канал с публикациями')}: {self._channel_link(channel_url)}"
-            return self._reply_result(
-                action="status",
-                chat_id=chat_id,
-                text=message,
-            )
+            return self._reply_result(action="status", chat_id=chat_id, text=message)
 
         visible_profiles = profiles[:10]
-        lines = [_markdown_v2("Telegram подключен. Активные подборки:")]
+        lines = [_markdown_v2("Telegram подключен. Активные срезы:")]
         lines.extend(f"\\- {_markdown_v2(profile.name)}" for profile in visible_profiles)
         if len(profiles) > len(visible_profiles):
             lines.append(_markdown_v2(f"и еще {len(profiles) - len(visible_profiles)}"))
-        if channel_url:
-            lines.extend(["", f"{_markdown_v2('Канал с публикациями')}: {self._channel_link(channel_url)}"])
         return self._reply_result(action="status", chat_id=chat_id, text="\n".join(lines))
 
     async def _active_telegram_profiles(self, session: AsyncSession, user_id: str) -> list[UserInterestProfileModel]:
@@ -201,10 +180,6 @@ class TelegramWebhookService:
 
 def _markdown_v2(value: object) -> str:
     return re.sub(r"([_*\[\]()~`>#+\-=|{}.!\\])", r"\\\1", str(value))
-
-
-def _markdown_v2_link_url(value: str) -> str:
-    return re.sub(r"([)\\])", r"\\\1", value)
 
 
 telegram_webhook_service = TelegramWebhookService()

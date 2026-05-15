@@ -21,10 +21,10 @@ from app.models.procurement import (
 )
 from app.schemas.procurements import ProcurementLotItem, ProcurementSourceInfo, ProcurementSyncResult
 from app.services.procurement_classification import ProcurementClassification, classify_procurement_lot
-from app.services.procurement_notifications import enqueue_procurement_telegram_notifications
 from app.services.procurement_enrichment import classify_procurement_enrichment, schedule_procurement_lot_enrichment
 from app.services.procurement_scoring import apply_procurement_score
 from app.services.procurement_grid_state import bump_procurement_lot_dataset_version
+from app.services.procurement_notifications import enqueue_procurement_telegram_notifications
 from app.services.auction_analysis_config import auction_analysis_config_service, AnalysisRuntimeConfig
 from app.services.procurement_sources import (
     get_procurement_source_provider,
@@ -426,7 +426,6 @@ async def _sync_procurement_items(
             requested_at=observed_at,
             force=content_changed,
         )
-        await enqueue_procurement_telegram_notifications(session, record, now=observed_at)
         if status_changed:
             record.status_changed_at = observed_at
             result.status_changed += 1
@@ -446,6 +445,7 @@ async def _sync_procurement_items(
             )
         else:
             result.unchanged += 1
+        await enqueue_procurement_telegram_notifications(session, record, now=observed_at)
 
 
 def _provider_search_keywords(provider: ProcurementSourceProvider) -> tuple[str, ...]:

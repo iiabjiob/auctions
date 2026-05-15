@@ -6,6 +6,7 @@ from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 
 from app.models import UserInterestProfileModel, UserTelegramBindingModel
+from app.models.filter_preset import FilterPresetModel
 from app.models.auction import AuctionLotDecisionReport, TelegramNotificationOutbox
 from app.schemas.lot_decision_report import (
     ActionRecommendation,
@@ -156,6 +157,35 @@ def make_interest_profile(**overrides: object) -> UserInterestProfileModel:
     return UserInterestProfileModel(**values)
 
 
+def make_preset(**overrides: object) -> FilterPresetModel:
+    values = {
+        "id": "preset_1",
+        "owner_user_id": "user-1",
+        "scope": "auction",
+        "name": "Tracked excavator slice",
+        "filters": {
+            "period": "month",
+            "source": "tbankrot",
+            "status": "Идет прием заявок",
+            "minRating": 80,
+        },
+        "grid_view": {
+            "state": {
+                "rows": {
+                    "snapshot": {
+                        "filterModel": {
+                            "quickFilter": {"query": "Экскаватор"},
+                        },
+                    },
+                },
+            },
+        },
+        "is_favorite": False,
+    }
+    values.update(overrides)
+    return FilterPresetModel(**values)
+
+
 def make_telegram_binding(**overrides: object) -> UserTelegramBindingModel:
     values = {
         "user_id": "user-1",
@@ -277,15 +307,19 @@ class TelegramNotificationOutboxTests(unittest.IsolatedAsyncioTestCase):
         record = make_record()
         record.rating_score = 92
         report = make_report(record_id=record.id)
-        matching = make_interest_profile(id="uip_match", owner_user_id="user-1")
+        preset = make_preset()
+        matching = make_interest_profile(
+            id="uip_match",
+            owner_user_id="user-1",
+            source_filter_preset_id=preset.id,
+        )
         non_matching = make_interest_profile(
             id="uip_bmw",
             owner_user_id="user-2",
-            profile_payload={"target_categories": ["Автомобили"], "desired_keywords": ["BMW"]},
-            min_rating=80,
+            source_filter_preset_id=preset.id,
         )
         session = FakeSession(
-            scalar_results=[None, None, None],
+            scalar_results=[preset, 1, None, None, None, preset, None],
             scalars_results=[[matching, non_matching], [make_telegram_binding(user_id="user-1")]],
         )
 
@@ -321,9 +355,15 @@ class TelegramNotificationOutboxTests(unittest.IsolatedAsyncioTestCase):
             decision_level=DecisionLevel.WATCH,
             recommendation=ActionRecommendation.MONITOR,
         )
-        profile = make_interest_profile(id="uip_transport", owner_user_id="user-1", min_rating=50)
+        preset = make_preset()
+        profile = make_interest_profile(
+            id="uip_transport",
+            owner_user_id="user-1",
+            source_filter_preset_id=preset.id,
+            min_rating=50,
+        )
         session = FakeSession(
-            scalar_results=[None, None, None],
+            scalar_results=[preset, 1, None, None, None],
             scalars_results=[[profile], [make_telegram_binding(user_id="user-1")]],
         )
 
@@ -347,10 +387,11 @@ class TelegramNotificationOutboxTests(unittest.IsolatedAsyncioTestCase):
         record = make_record()
         record.rating_score = 92
         report = make_report(record_id=record.id)
-        first = make_interest_profile(id="uip_1", owner_user_id="user-1")
-        second = make_interest_profile(id="uip_2", owner_user_id="user-2")
+        preset = make_preset()
+        first = make_interest_profile(id="uip_1", owner_user_id="user-1", source_filter_preset_id=preset.id)
+        second = make_interest_profile(id="uip_2", owner_user_id="user-2", source_filter_preset_id=preset.id)
         session = FakeSession(
-            scalar_results=[None, None, None, None, None, None],
+            scalar_results=[preset, 1, None, None, None, preset, 1, None, None, None],
             scalars_results=[
                 [first, second],
                 [
@@ -380,10 +421,11 @@ class TelegramNotificationOutboxTests(unittest.IsolatedAsyncioTestCase):
         record = make_record()
         record.rating_score = 92
         report = make_report(record_id=record.id)
-        first = make_interest_profile(id="uip_1", owner_user_id="user-1")
-        second = make_interest_profile(id="uip_2", owner_user_id="user-1")
+        preset = make_preset()
+        first = make_interest_profile(id="uip_1", owner_user_id="user-1", source_filter_preset_id=preset.id)
+        second = make_interest_profile(id="uip_2", owner_user_id="user-1", source_filter_preset_id=preset.id)
         session = FakeSession(
-            scalar_results=[None, None, None],
+            scalar_results=[preset, 1, None, None, None, preset, 1],
             scalars_results=[[first, second], [make_telegram_binding(user_id="user-1")]],
         )
 
@@ -405,13 +447,18 @@ class TelegramNotificationOutboxTests(unittest.IsolatedAsyncioTestCase):
         record = make_record()
         record.rating_score = 92
         report = make_report(record_id=record.id)
-        profile = make_interest_profile(id="uip_2", owner_user_id="user-1")
+        preset = make_preset()
+        profile = make_interest_profile(
+            id="uip_2",
+            owner_user_id="user-1",
+            source_filter_preset_id=preset.id,
+        )
         existing = make_outbox_entry(report, status=TelegramNotificationStatus.SENT)
         existing.user_id = "user-1"
         existing.interest_profile_id = "uip_1"
         existing.dedupe_key = f"telegram:user-1:uip_1:{record.id}:old-report-hash"
         existing.cooldown_key = f"telegram:user-1:uip_1:{record.id}"
-        session = FakeSession(scalar_results=[existing], scalars_results=[[profile], [make_telegram_binding()]])
+        session = FakeSession(scalar_results=[preset, 1, existing], scalars_results=[[profile], [make_telegram_binding()]])
 
         entries = await enqueue_user_scoped_lot_telegram_notifications(
             session,
@@ -431,13 +478,17 @@ class TelegramNotificationOutboxTests(unittest.IsolatedAsyncioTestCase):
         record.rating_score = 92
         report = make_report(record_id=record.id)
         snapshot = make_snapshot(report)
-        profile = make_interest_profile(id="uip_1", owner_user_id="user-1")
+        preset = make_preset()
+        profile = make_interest_profile(id="uip_1", owner_user_id="user-1", source_filter_preset_id=preset.id)
         existing = make_outbox_entry(report, status=TelegramNotificationStatus.PENDING)
         existing.user_id = "user-1"
         existing.interest_profile_id = "uip_1"
         existing.dedupe_key = f"telegram:user-1:uip_1:{record.id}:{snapshot.report_hash}"
         existing.cooldown_key = f"telegram:user-1:uip_1:{record.id}"
-        session = FakeSession(scalar_results=[existing], scalars_results=[[profile], [make_telegram_binding()]])
+        session = FakeSession(
+            scalar_results=[preset, 1, None, existing],
+            scalars_results=[[profile], [make_telegram_binding()]],
+        )
 
         entries = await enqueue_user_scoped_lot_telegram_notifications(
             session,
@@ -459,10 +510,10 @@ class TelegramNotificationOutboxTests(unittest.IsolatedAsyncioTestCase):
         profile = make_interest_profile(
             id="uip_bmw",
             owner_user_id="user-1",
-            profile_payload={"target_categories": ["Автомобили"], "desired_keywords": ["BMW"]},
+            source_filter_preset_id="preset_1",
             min_rating=80,
         )
-        session = FakeSession(scalars_results=[[profile], []])
+        session = FakeSession(scalar_results=[None], scalars_results=[[profile], []])
 
         entries = await enqueue_user_scoped_lot_telegram_notifications(
             session,
@@ -476,6 +527,30 @@ class TelegramNotificationOutboxTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(entries, [])
         self.assertEqual(session.added, [])
         self.assertEqual(session.flushes, 0)
+
+    async def test_user_scoped_profile_query_requires_saved_slice_link(self) -> None:
+        record = make_record()
+        record.rating_score = 92
+        report = make_report(record_id=record.id)
+        linked_profile = make_interest_profile(id="uip_slice", owner_user_id="user-1", source_filter_preset_id="preset-1")
+        generic_profile = make_interest_profile(id="uip_generic", owner_user_id="user-1", source_filter_preset_id=None)
+        session = FakeSession(
+            scalars_results=[[linked_profile, generic_profile], [make_telegram_binding()]],
+        )
+
+        await enqueue_user_scoped_lot_telegram_notifications(
+            session,
+            make_snapshot(report),
+            record,
+            detail_cache=make_detail_cache(),
+            report=report,
+            now=GENERATED_AT,
+        )
+
+        self.assertGreaterEqual(len(session.scalars_statements), 1)
+        sql = str(session.scalars_statements[0])
+        self.assertIn("source_filter_preset_id", sql)
+        self.assertIn("IS NOT NULL", sql)
 
     async def test_generate_snapshot_flow_invokes_user_scoped_enqueue(self) -> None:
         record = make_record()

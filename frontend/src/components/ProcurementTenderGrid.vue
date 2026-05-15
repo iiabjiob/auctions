@@ -494,7 +494,10 @@ const presetOptions = computed(() => [
 
 const selectedPreset = computed(() => presets.value.find((preset) => preset.id === selectedPresetId.value) ?? null)
 const currentFilterModel = computed(() => buildNativeFilterModel())
-const hasAppliedFilters = computed(() => currentFilterModel.value !== null)
+const activeRowModelFilterModel = computed(() => rowModel.value?.getSnapshot().filterModel ?? null)
+const hasAppliedFilters = computed(
+  () => hasFilterModel(currentFilterModel.value) || hasFilterModel(activeRowModelFilterModel.value),
+)
 const canSavePreset = computed(() => hasAppliedFilters.value)
 const canUpdatePreset = computed(() => Boolean(selectedPreset.value) && hasAppliedFilters.value)
 

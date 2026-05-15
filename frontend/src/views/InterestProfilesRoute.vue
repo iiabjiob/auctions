@@ -6,7 +6,7 @@ const props = defineProps<{
 }>()
 
 onMounted(() => {
-  void props.bindings.loadPresets()
+  void props.bindings.loadTelegramPresets()
   void props.bindings.loadUserInterestProfiles()
 })
 </script>
@@ -14,15 +14,15 @@ onMounted(() => {
 <template>
   <section class="route-page route-page--interests" aria-labelledby="interest-profiles-route-title">
     <header class="route-page__header">
-      <div>
-        <span class="eyebrow">Персональные сигналы</span>
-        <h1 id="interest-profiles-route-title">Профили интересов</h1>
-        <p>
-          Профиль интересов управляет тем, какие рейтинговые лоты попадут в персональные Telegram-уведомления.
-          Срез таблицы остается только UI-фильтром.
-        </p>
-      </div>
-    </header>
+        <div>
+          <span class="eyebrow">Персональные сигналы</span>
+          <h1 id="interest-profiles-route-title">Профили интересов</h1>
+          <p>
+          Telegram-подписка привязывается к сохраненному срезу и получает только лоты, которые попадают
+          в этот срез по всем примененным фильтрам, для аукционов и тендеров.
+          </p>
+        </div>
+      </header>
 
     <div v-if="bindings.interestProfilesError.value" class="error-banner">{{ bindings.interestProfilesError.value }}</div>
 
@@ -50,9 +50,9 @@ onMounted(() => {
           <div class="interest-profile-panel__header">
             <div>
               <h3>Подключить срез к Telegram</h3>
-              <p>Выберите сохраненный срез. Backend превратит его фильтры в профиль интересов.</p>
+              <p>Выберите сохраненный срез. Telegram будет постить только лоты, которые проходят этот фильтрованный срез.</p>
             </div>
-            <button class="secondary-button" type="button" :disabled="bindings.presetsLoading.value" @click="void bindings.loadPresets()">
+            <button class="secondary-button" type="button" :disabled="bindings.presetsLoading.value" @click="void bindings.loadTelegramPresets()">
               Обновить срезы
             </button>
           </div>
@@ -60,10 +60,10 @@ onMounted(() => {
           <div class="interest-profile-preset-row">
             <label class="app-dialog__field">
               <span>Срез для Telegram</span>
-              <select v-model="bindings.telegramPresetIdDraft.value" :disabled="!bindings.presets.value.length || bindings.interestProfilesSaving.value">
+              <select v-model="bindings.telegramPresetIdDraft.value" :disabled="!bindings.telegramPresets.value.length || bindings.interestProfilesSaving.value">
                 <option value="">Выберите срез</option>
-                <option v-for="preset in bindings.presets.value" :key="preset.id" :value="preset.id">
-                  {{ preset.name }}
+                <option v-for="preset in bindings.telegramPresets.value" :key="preset.id" :value="preset.id">
+                  {{ bindings.telegramPresetLabel(preset) }}
                 </option>
               </select>
             </label>

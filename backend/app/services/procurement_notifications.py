@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import html
 import json
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -11,24 +10,15 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models import FilterPresetModel, UserInterestProfileModel, UserTelegramBindingModel
 from app.models.procurement import ProcurementLotRecord, ProcurementTelegramNotificationOutbox
 from app.schemas.lot_decision_report import TelegramNotificationStatus
+from app.schemas.procurement_grid import ProcurementLotsGridQueryOptions
+from app.services.procurement_grid import _build_procurement_lots_statement, _merge_query_options_into_filter_model
 
 
-PRIORITY_SCORE_THRESHOLD = 75
-PROFIT_THRESHOLD = Decimal("500000")
-PROFITABILITY_THRESHOLD = Decimal("0.20")
-DEADLINE_HOURS_THRESHOLD = 48
-READY_WORKFLOW_STATUSES = {"decision"}
 BLOCKING_STATUSES = (TelegramNotificationStatus.PENDING.value, TelegramNotificationStatus.SENT.value)
-
-
-@dataclass(frozen=True, slots=True)
-class ProcurementNotificationEvent:
-    event_type: str
-    priority: str
-    reasons: list[str]
-    event_hash: str
+DEFAULT_COOLDOWN_SECONDS = 6 * 60 * 60
 
 
 async def enqueue_procurement_telegram_notifications(
@@ -36,97 +26,166 @@ async def enqueue_procurement_telegram_notifications(
     record: ProcurementLotRecord,
     *,
     now: datetime | None = None,
+    cooldown_seconds: int = DEFAULT_COOLDOWN_SECONDS,
 ) -> list[ProcurementTelegramNotificationOutbox]:
+    del cooldown_seconds
+
+    if record.id is None:
+        return []
+
     current_time = now or datetime.now(UTC)
+    profiles = await _active_telegram_interest_profiles(session)
+    telegram_bindings = await _telegram_bindings_by_user_id(session, {profile.owner_user_id for profile in profiles})
     entries: list[ProcurementTelegramNotificationOutbox] = []
-    for event in evaluate_procurement_notification_events(record, now=current_time):
-        existing = await _existing_delivery(session, record=record, event_type=event.event_type)
-        if existing is not None:
+    seen_user_lot_keys: set[tuple[str, int]] = set()
+
+    for interest_profile in profiles:
+        user_lot_key = (interest_profile.owner_user_id, int(record.id))
+        if user_lot_key in seen_user_lot_keys:
             continue
+        preset = await _get_owned_preset(session, interest_profile.owner_user_id, interest_profile.source_filter_preset_id)
+        if preset.scope != "procurement":
+            continue
+        if not await _record_matches_saved_slice(session, record, preset):
+            continue
+
+        binding = telegram_bindings.get(interest_profile.owner_user_id)
+        if binding is None or not binding.telegram_chat_id:
+            continue
+
+        seen_user_lot_keys.add(user_lot_key)
+        event_type = _delivery_event_type(interest_profile.owner_user_id)
+        existing_user_lot_delivery = await _existing_user_lot_delivery(
+            session,
+            user_id=interest_profile.owner_user_id,
+            record_id=int(record.id),
+            event_type=event_type,
+        )
+        if existing_user_lot_delivery is not None:
+            entries.append(existing_user_lot_delivery)
+            continue
+
+        slice_hash = build_saved_slice_hash(preset)
+        dedupe_key = _dedupe_key(
+            user_id=interest_profile.owner_user_id,
+            profile_id=interest_profile.id,
+            record_id=int(record.id),
+            slice_hash=slice_hash,
+        )
+        existing = await session.scalar(
+            select(ProcurementTelegramNotificationOutbox).where(
+                ProcurementTelegramNotificationOutbox.dedupe_key == dedupe_key,
+            )
+        )
+        if existing is not None:
+            entries.append(existing)
+            continue
+
+        cooldown_key = _cooldown_key(
+            user_id=interest_profile.owner_user_id,
+            record_id=int(record.id),
+        )
         entry = ProcurementTelegramNotificationOutbox(
             procurement_lot_record_id=int(record.id),
-            event_type=event.event_type,
-            dedupe_key=_dedupe_key(record, event),
-            cooldown_key=_cooldown_key(record, event),
+            event_type=event_type,
+            user_id=interest_profile.owner_user_id,
+            telegram_chat_id=binding.telegram_chat_id,
+            dedupe_key=dedupe_key,
+            cooldown_key=cooldown_key,
             status=TelegramNotificationStatus.PENDING.value,
-            priority=event.priority,
-            message_payload=_message_payload(record, event),
-            event_hash=event.event_hash,
+            priority=_priority_for_record(record),
+            message_payload=_message_payload(record, preset),
+            event_hash=_stable_hash(
+                {
+                    "record_id": record.id,
+                    "slice_hash": slice_hash,
+                    "record_hash": record.content_hash,
+                    "preset_id": preset.id,
+                }
+            ),
             scheduled_at=current_time,
         )
         session.add(entry)
         entries.append(entry)
+
     if entries:
         await session.flush()
     return entries
 
 
-def evaluate_procurement_notification_events(
+async def _active_telegram_interest_profiles(session: AsyncSession) -> list[UserInterestProfileModel]:
+    statement = (
+        select(UserInterestProfileModel)
+        .where(UserInterestProfileModel.is_active.is_(True))
+        .where(UserInterestProfileModel.telegram_enabled.is_(True))
+        .where(UserInterestProfileModel.source_filter_preset_id.is_not(None))
+        .order_by(UserInterestProfileModel.owner_user_id.asc(), UserInterestProfileModel.id.asc())
+    )
+    return list((await session.scalars(statement)).all())
+
+
+async def _record_matches_saved_slice(
+    session: AsyncSession,
     record: ProcurementLotRecord,
-    *,
-    now: datetime | None = None,
-) -> list[ProcurementNotificationEvent]:
-    current_time = now or datetime.now(UTC)
-    events: list[ProcurementNotificationEvent] = []
-
-    if int(record.attractiveness_score or 0) > PRIORITY_SCORE_THRESHOLD:
-        events.append(
-            _event(
-                "priority_tender",
-                "high",
-                record,
-                ["score_above_75", f"score:{record.attractiveness_score}"],
-            )
-        )
-    if record.net_profit is not None and record.net_profit > PROFIT_THRESHOLD:
-        events.append(
-            _event(
-                "net_profit_gt_500k",
-                "high",
-                record,
-                ["net_profit_gt_500k", f"net_profit:{record.net_profit}"],
-            )
-        )
-    if record.profitability is not None and record.profitability > PROFITABILITY_THRESHOLD:
-        events.append(
-            _event(
-                "profitability_gt_20",
-                "high",
-                record,
-                ["profitability_gt_20", f"profitability:{record.profitability}"],
-            )
-        )
-    hours_to_deadline = _hours_to_deadline(record, current_time)
-    if hours_to_deadline is not None and 0 <= hours_to_deadline <= DEADLINE_HOURS_THRESHOLD:
-        events.append(
-            _event(
-                "deadline_under_48h",
-                "urgent",
-                record,
-                ["deadline_under_48h", f"hours_to_deadline:{hours_to_deadline}"],
-            )
-        )
-    if (record.workflow_status or "").strip().lower() in READY_WORKFLOW_STATUSES:
-        events.append(
-            _event(
-                "owner_decision_ready",
-                "urgent",
-                record,
-                ["owner_decision_ready", f"workflow_status:{record.workflow_status}"],
-            )
-        )
-    return events
+    preset: FilterPresetModel,
+) -> bool:
+    statement = build_saved_slice_match_statement(int(record.id), preset)
+    return await session.scalar(statement) is not None
 
 
-async def _existing_delivery(
+def build_saved_slice_hash(preset: FilterPresetModel) -> str:
+    payload = {
+        "scope": getattr(preset, "scope", None),
+        "filters": _normalize_saved_slice_filters(preset.filters),
+        "grid_filter": _normalize_saved_slice_grid_filter(preset.grid_view),
+    }
+    return _stable_hash(payload)
+
+
+def build_saved_slice_match_statement(record_id: int, preset: FilterPresetModel):
+    query = _saved_slice_query_options(preset.filters, preset.grid_view)
+    grid_filter = _merge_query_options_into_filter_model(query.filter_model, query)
+    statement = _build_procurement_lots_statement(grid_filter=grid_filter)
+    return statement.where(ProcurementLotRecord.id == record_id).with_only_columns(ProcurementLotRecord.id).limit(1)
+
+
+async def _get_owned_preset(
+    session: AsyncSession,
+    owner_user_id: str,
+    preset_id: str,
+) -> FilterPresetModel:
+    statement = select(FilterPresetModel).where(
+        FilterPresetModel.id == preset_id,
+        FilterPresetModel.owner_user_id == owner_user_id,
+    )
+    preset = await session.scalar(statement)
+    if preset is None:
+        raise ValueError("Preset not found")
+    return preset
+
+
+async def _telegram_bindings_by_user_id(
+    session: AsyncSession,
+    user_ids: set[str],
+) -> dict[str, UserTelegramBindingModel]:
+    if not user_ids:
+        return {}
+    statement = select(UserTelegramBindingModel).where(UserTelegramBindingModel.user_id.in_(sorted(user_ids)))
+    bindings = (await session.scalars(statement)).all()
+    return {binding.user_id: binding for binding in bindings}
+
+
+async def _existing_user_lot_delivery(
     session: AsyncSession,
     *,
-    record: ProcurementLotRecord,
+    user_id: str,
+    record_id: int,
     event_type: str,
 ) -> ProcurementTelegramNotificationOutbox | None:
     return await session.scalar(
         select(ProcurementTelegramNotificationOutbox)
-        .where(ProcurementTelegramNotificationOutbox.procurement_lot_record_id == record.id)
+        .where(ProcurementTelegramNotificationOutbox.user_id == user_id)
+        .where(ProcurementTelegramNotificationOutbox.procurement_lot_record_id == record_id)
         .where(ProcurementTelegramNotificationOutbox.event_type == event_type)
         .where(ProcurementTelegramNotificationOutbox.status.in_(BLOCKING_STATUSES))
         .order_by(
@@ -138,38 +197,82 @@ async def _existing_delivery(
     )
 
 
-def _event(
-    event_type: str,
-    priority: str,
-    record: ProcurementLotRecord,
-    reasons: list[str],
-) -> ProcurementNotificationEvent:
-    payload = {
-        "event_type": event_type,
-        "record_id": record.id,
-        "source": record.source_code,
-        "external_id": record.external_id,
-        "registry_number": record.registry_number,
-        "score": record.attractiveness_score,
-        "net_profit": str(record.net_profit) if record.net_profit is not None else None,
-        "profitability": str(record.profitability) if record.profitability is not None else None,
-        "workflow_status": record.workflow_status,
-        "deadline": record.application_deadline_at.isoformat() if record.application_deadline_at else None,
-        "reasons": reasons,
-    }
-    return ProcurementNotificationEvent(
-        event_type=event_type,
-        priority=priority,
-        reasons=reasons,
-        event_hash=_stable_hash(payload),
+def _saved_slice_query_options(filters: dict, grid_view: dict | None = None) -> ProcurementLotsGridQueryOptions:
+    return ProcurementLotsGridQueryOptions(
+        source=_text_filter(filters, "source", default=None),
+        law=_text_filter(filters, "law", default=None),
+        status=_text_filter(filters, "status", default=None),
+        workflow_status=_text_filter(filters, "workflowStatus", "workflow_status", default=None),
+        assignee=_text_filter(filters, "assignee", default=None),
+        category=_text_filter(filters, "category", default=None),
+        min_price=_decimal_filter(filters, "minPrice", "min_price"),
+        max_price=_decimal_filter(filters, "maxPrice", "max_price"),
+        min_score=_int_filter(filters, "minScore", "min_score"),
+        only_new=bool(filters.get("onlyNew") or filters.get("only_new")),
+        filter_model=_normalize_saved_slice_grid_filter(grid_view) or None,
     )
 
 
-def _message_payload(record: ProcurementLotRecord, event: ProcurementNotificationEvent) -> dict[str, str]:
+def _normalize_saved_slice_filters(filters: dict | None) -> dict[str, object]:
+    if not isinstance(filters, dict):
+        return {}
+    normalized: dict[str, object] = {}
+    for key, value in filters.items():
+        if key == "source":
+            text = _text_filter({key: value}, key, default=None)
+            if text is not None:
+                normalized[key] = text
+        elif key in {"law", "status", "workflowStatus", "workflow_status", "assignee", "category"}:
+            text = str(value).strip() if value is not None else ""
+            if text:
+                normalized[key] = text
+        elif key in {"minPrice", "maxPrice", "min_price"}:
+            number = _decimal_filter({key: value}, key)
+            if number is not None:
+                normalized[key] = str(number)
+        elif key in {"minScore", "min_score"}:
+            number = _int_filter({key: value}, key)
+            if number is not None:
+                normalized[key] = number
+        elif key in {"onlyNew", "only_new"}:
+            normalized[key] = bool(value)
+        else:
+            normalized[key] = value
+    return dict(sorted(normalized.items(), key=lambda item: item[0]))
+
+
+def _normalize_saved_slice_grid_filter(grid_view: dict | None) -> dict[str, object]:
+    if not isinstance(grid_view, dict):
+        return {}
+    state = grid_view.get("state")
+    if not isinstance(state, dict):
+        return {}
+    rows = state.get("rows")
+    if not isinstance(rows, dict):
+        return {}
+    snapshot = rows.get("snapshot")
+    if not isinstance(snapshot, dict):
+        return {}
+    filter_model = snapshot.get("filterModel")
+    return filter_model if isinstance(filter_model, dict) else {}
+
+
+def _priority_for_record(record: ProcurementLotRecord) -> str:
+    status = (record.workflow_status or "").strip().lower()
+    if status == "decision":
+        return "urgent"
+    if int(record.attractiveness_score or 0) >= 75:
+        return "high"
+    if int(record.attractiveness_score or 0) >= 50:
+        return "medium"
+    return "low"
+
+
+def _message_payload(record: ProcurementLotRecord, preset: FilterPresetModel) -> dict[str, str]:
     lines = [
-        "<b>Тендер требует внимания</b>",
-        f"Событие: {html.escape(_event_label(event.event_type))}",
-        f"Балл: {int(record.attractiveness_score or 0)} ({html.escape(record.attractiveness_level or '-')})",
+        "<b>Тендер попал в сохраненный срез</b>",
+        f"Срез: {html.escape(preset.name)}",
+        f"Рейтинг: {int(record.attractiveness_score or 0)} ({html.escape(record.attractiveness_level or '-')})",
         f"Номер: {html.escape(record.registry_number)}",
         f"Предмет: {html.escape((record.title or 'Без названия')[:240])}",
     ]
@@ -185,34 +288,56 @@ def _message_payload(record: ProcurementLotRecord, event: ProcurementNotificatio
         lines.append(f"Заявки до: {html.escape(record.application_deadline_at.isoformat())}")
     if record.notice_url:
         lines.append(f'<a href="{html.escape(record.notice_url, quote=True)}">Открыть закупку</a>')
-    if event.reasons:
-        lines.append("Причины: " + html.escape(", ".join(event.reasons[:4])))
     return {"text": "\n".join(lines), "parse_mode": "HTML"}
 
 
-def _dedupe_key(record: ProcurementLotRecord, event: ProcurementNotificationEvent) -> str:
-    return f"procurement-telegram:{record.id}:{event.event_type}:{event.event_hash}"
+def _delivery_event_type(user_id: str) -> str:
+    return f"saved_slice:{user_id}"
 
 
-def _cooldown_key(record: ProcurementLotRecord, event: ProcurementNotificationEvent) -> str:
-    return f"procurement-telegram:{record.id}:{event.event_type}"
+def _dedupe_key(*, user_id: str, profile_id: str, record_id: int, slice_hash: str) -> str:
+    return f"procurement-telegram:{user_id}:{profile_id}:{record_id}:{slice_hash}"
 
 
-def _hours_to_deadline(record: ProcurementLotRecord, now: datetime) -> int | None:
-    if record.application_deadline_at is None:
-        return None
-    delta = record.application_deadline_at - now
-    return int(delta.total_seconds() // 3600)
+def _cooldown_key(*, user_id: str, record_id: int) -> str:
+    return f"procurement-telegram:{user_id}:{record_id}"
 
 
-def _event_label(event_type: str) -> str:
-    return {
-        "priority_tender": "новый приоритетный тендер",
-        "net_profit_gt_500k": "чистая прибыль выше 500k",
-        "profitability_gt_20": "маржинальность выше 20%",
-        "deadline_under_48h": "дедлайн меньше 48 часов",
-        "owner_decision_ready": "тендер готов к решению владельца",
-    }.get(event_type, event_type)
+def _text_filter(filters: dict, *keys: str, default: str | None = "") -> str | None:
+    for key in keys:
+        value = filters.get(key)
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                continue
+            if text.lower() == "all":
+                return None
+            return text
+    return default
+
+
+def _decimal_filter(filters: dict, *keys: str):
+    for key in keys:
+        value = filters.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            return Decimal(str(value).replace(" ", "").replace(",", "."))
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _int_filter(filters: dict, *keys: str) -> int | None:
+    for key in keys:
+        value = filters.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 def _money(value: Decimal) -> str:

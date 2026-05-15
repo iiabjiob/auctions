@@ -176,6 +176,7 @@ const catalogSummary = ref<AuctionServerGridSummary>({
   highRatingCount: 0,
 })
 const presets = ref<FilterPreset[]>([])
+const telegramPresets = ref<FilterPreset[]>([])
 const userInterestProfiles = ref<UserInterestProfile[]>([])
 const analysisConfig = ref<AnalysisConfigResponse | null>(null)
 const auctionPipelineHealth = ref<AuctionPipelineHealthResponse | null>(null)
@@ -1644,6 +1645,26 @@ async function loadPresets() {
   }
 }
 
+async function loadTelegramPresets() {
+  if (!isAuthenticated.value) return
+
+  presetsLoading.value = true
+  try {
+    const [auctionPresets, procurementPresets] = await Promise.all([
+      fetchJson<FilterPreset[]>('/api/v1/auctions/filter-presets'),
+      fetchJson<FilterPreset[]>('/api/v1/procurements/filter-presets'),
+    ])
+    telegramPresets.value = sortPresets([...auctionPresets, ...procurementPresets])
+    if (telegramPresetIdDraft.value && !telegramPresets.value.some((preset) => preset.id === telegramPresetIdDraft.value)) {
+      telegramPresetIdDraft.value = ''
+    }
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : 'Не удалось загрузить срезы Telegram'
+  } finally {
+    presetsLoading.value = false
+  }
+}
+
 async function loadUserInterestProfiles() {
   if (!isAuthenticated.value) return
 
@@ -1665,6 +1686,20 @@ function buildPresetPayload(name?: string) {
     grid_view: gridRef.value?.getSavedView() ?? null,
     is_favorite: selectedPreset.value?.is_favorite ?? false,
   }
+}
+
+function telegramPresetLabel(preset: FilterPreset) {
+  return `${preset.scope === 'procurement' ? 'Тендер' : 'Торги'} · ${preset.name}`
+}
+
+function telegramPresetMinRating(preset: FilterPreset) {
+  const filters = preset.filters as Record<string, unknown>
+  const auctionFilters = sanitizeServerFilters(preset.filters, DEFAULT_SERVER_FILTERS)
+  const procurementMinScore =
+    typeof filters.minScore === 'number' && Number.isFinite(filters.minScore)
+      ? Math.max(0, Math.min(100, filters.minScore))
+      : null
+  return auctionFilters.minRating > 0 ? auctionFilters.minRating : procurementMinScore ?? 0
 }
 
 async function applyPresetById(presetId: string) {
@@ -1792,22 +1827,14 @@ function openInterestProfilesDialog(event?: Event) {
 }
 
 function interestProfileNote(profile: UserInterestProfile) {
-  const payload = profile.profile_payload ?? {}
   const parts = []
-  const categories = payload.target_categories ?? []
-  const keywords = payload.desired_keywords ?? []
-  if (categories.length) parts.push(categories.join(', '))
-  if (keywords.length) parts.push(`слова: ${keywords.join(', ')}`)
-  if (payload.budget_min || payload.budget_max) {
-    parts.push(`бюджет ${payload.budget_min ?? '0'}-${payload.budget_max ?? '∞'}`)
-  }
-  if (profile.source_filter_preset_id) parts.push('из среза')
+  parts.push(profile.source_filter_preset_id ? 'Срез Telegram' : 'Профиль интересов')
   parts.push(`рейтинг ${profile.min_rating}+`)
   return parts.join(' · ')
 }
 
 async function createInterestProfileFromSelectedPreset() {
-  const preset = presets.value.find((item) => item.id === telegramPresetIdDraft.value)
+  const preset = telegramPresets.value.find((item) => item.id === telegramPresetIdDraft.value)
   if (!preset) {
     interestProfilesError.value = 'Выберите сохраненный срез для Telegram'
     return
@@ -1819,7 +1846,7 @@ async function createInterestProfileFromSelectedPreset() {
     const profile = await createUserInterestProfileFromPreset({
       preset_id: preset.id,
       name: preset.name,
-      min_rating: filters.minRating > 0 ? filters.minRating : null,
+      min_rating: telegramPresetMinRating(preset) > 0 ? telegramPresetMinRating(preset) : null,
       telegram_enabled: true,
       is_active: true,
     })
@@ -2026,6 +2053,7 @@ async function confirmDeletePreset() {
 
 const interestProfilesRouteBindings = {
   presets,
+  telegramPresets,
   presetsLoading,
   userInterestProfiles,
   interestProfilesLoading,
@@ -2037,8 +2065,10 @@ const interestProfilesRouteBindings = {
   telegramPresetIdDraft,
   formatDateTime,
   loadPresets,
+  loadTelegramPresets,
   loadUserInterestProfiles,
   createInterestProfileFromSelectedPreset,
+  telegramPresetLabel,
   connectTelegramBot,
   toggleInterestProfileActive,
   toggleInterestProfileTelegram,

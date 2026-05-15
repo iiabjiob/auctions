@@ -134,7 +134,7 @@ class TelegramSenderTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(context.exception.retryable)
 
     async def test_successful_send_marks_entry_sent(self) -> None:
-        entry = make_entry()
+        entry = make_entry(telegram_chat_id="chat")
         sender = FakeSender()
         session = FakeSession([entry])
 
@@ -159,7 +159,10 @@ class TelegramSenderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.flushes, 1)
 
     async def test_photo_payload_sends_photo_with_caption(self) -> None:
-        entry = make_entry(message_payload={"text": "Lot message", "parse_mode": "MarkdownV2", "photo_url": "https://example.test/lot.jpg"})
+        entry = make_entry(
+            telegram_chat_id="chat",
+            message_payload={"text": "Lot message", "parse_mode": "MarkdownV2", "photo_url": "https://example.test/lot.jpg"},
+        )
         sender = FakeSender()
         session = FakeSession([entry])
 
@@ -198,7 +201,7 @@ class TelegramSenderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sender.calls[0]["chat_id"], "personal-chat")
         self.assertEqual(entry.status, "sent")
 
-    async def test_global_chat_id_is_fallback_for_legacy_entries(self) -> None:
+    async def test_global_chat_id_is_not_used_for_legacy_entries(self) -> None:
         entry = make_entry(telegram_chat_id=None)
         sender = FakeSender()
         session = FakeSession([entry])
@@ -213,8 +216,9 @@ class TelegramSenderTests(unittest.IsolatedAsyncioTestCase):
             now=NOW,
         )
 
-        self.assertEqual(result, TelegramSenderBatchResult(selected=1, sent=1))
-        self.assertEqual(sender.calls[0]["chat_id"], "global-chat")
+        self.assertEqual(result, TelegramSenderBatchResult(selected=1, failed=1))
+        self.assertEqual(sender.calls, [])
+        self.assertEqual(entry.status, "failed")
 
     async def test_missing_chat_id_fails_entry_without_crashing_batch(self) -> None:
         entry = make_entry(telegram_chat_id=None)
@@ -279,7 +283,7 @@ class TelegramSenderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sender.calls, [])
 
     async def test_retryable_failure_schedules_backoff(self) -> None:
-        entry = make_entry()
+        entry = make_entry(telegram_chat_id="chat")
         sender = FakeSender(TelegramSenderError("rate limited", retryable=True))
         session = FakeSession([entry])
 
@@ -329,13 +333,13 @@ class TelegramSenderTests(unittest.IsolatedAsyncioTestCase):
         session = FakeSession()
         settings = SimpleNamespace(
             telegram_bot_token="token",
-            telegram_chat_id="chat",
             telegram_sender_batch_limit=7,
             telegram_sender_dry_run=True,
             telegram_sender_max_attempts=4,
             telegram_sender_base_backoff_seconds=30,
         )
         result = TelegramSenderBatchResult(selected=1, dry_run=1)
+        procurement_result = TelegramSenderBatchResult(selected=2, sent=1)
 
         with (
             patch.object(telegram_sender_worker, "settings", settings),
@@ -344,20 +348,21 @@ class TelegramSenderTests(unittest.IsolatedAsyncioTestCase):
             patch.object(
                 telegram_sender_worker,
                 "send_pending_procurement_telegram_notifications",
-                AsyncMock(return_value=TelegramSenderBatchResult()),
+                AsyncMock(return_value=procurement_result),
             ) as send_procurement_batch,
         ):
             payload = await telegram_sender_worker.run_sender_batch()
 
-        self.assertEqual(payload, result.model_dump(mode="json"))
+        self.assertEqual(payload, {"selected": 3, "sent": 1, "failed": 0, "retried": 0, "dry_run": 1})
         self.assertEqual(session.commits, 1)
         send_batch.assert_awaited_once()
         self.assertEqual(send_batch.await_args.kwargs["bot_token"], "token")
-        self.assertEqual(send_batch.await_args.kwargs["chat_id"], "chat")
         self.assertEqual(send_batch.await_args.kwargs["limit"], 7)
         self.assertTrue(send_batch.await_args.kwargs["dry_run"])
         send_procurement_batch.assert_awaited_once()
-        self.assertEqual(send_procurement_batch.await_args.kwargs["limit"], 6)
+        self.assertEqual(send_procurement_batch.await_args.kwargs["bot_token"], "token")
+        self.assertEqual(send_procurement_batch.await_args.kwargs["limit"], 7)
+        self.assertTrue(send_procurement_batch.await_args.kwargs["dry_run"])
 
 
 if __name__ == "__main__":

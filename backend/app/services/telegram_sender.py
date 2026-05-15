@@ -381,11 +381,11 @@ async def _pending_entries(session: AsyncSession, *, limit: int, now: datetime) 
 
 
 def _target_chat_id(entry: TelegramNotificationOutbox, *, fallback_chat_id: str | None) -> str | None:
+    del fallback_chat_id
     entry_chat_id = str(entry.telegram_chat_id or "").strip()
     if entry_chat_id:
         return entry_chat_id
-    fallback = str(fallback_chat_id or "").strip()
-    return fallback or None
+    return None
 
 
 async def _pending_procurement_entries(

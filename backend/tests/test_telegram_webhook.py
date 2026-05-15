@@ -101,15 +101,13 @@ class TelegramWebhookServiceTests(unittest.IsolatedAsyncioTestCase):
             object(),
             {"message": {"text": "/start connect_plain-token", "chat": {"id": 123456}}},
             bot_token="bot-token",
-            channel_url="https://t.me/torgi_radar",
         )
 
         self.assertEqual(result.action, "connected")
         self.assertEqual(result.response_payload["chat_id"], "123456")
         text = self._reply_text(result)
         self.assertIn("/status", text)
-        self.assertIn("[https://t\\.me/torgi\\_radar](https://t.me/torgi_radar)", text)
-        self.assertIn("Канал", text)
+        self.assertIn("по выбранным срезам", text)
 
     async def test_handle_update_replies_with_help_for_plain_start(self) -> None:
         connect_service = FakeConnectService(SimpleNamespace(user_id="user-1"))
@@ -125,7 +123,6 @@ class TelegramWebhookServiceTests(unittest.IsolatedAsyncioTestCase):
             object(),
             {"message": {"text": "/start", "chat": {"id": 123456}}},
             bot_token="bot-token",
-            channel_url="https://t.me/torgi_radar",
         )
 
         self.assertEqual(result.action, "help")
@@ -133,7 +130,7 @@ class TelegramWebhookServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(binding_service.calls, [])
         text = self._reply_text(result)
         self.assertIn("кнопку подключения Telegram", text)
-        self.assertIn("[https://t\\.me/torgi\\_radar](https://t.me/torgi_radar)", text)
+        self.assertIn("активные срезы", text)
 
     async def test_handle_update_replies_with_status_profiles(self) -> None:
         connect_service = FakeConnectService(SimpleNamespace(user_id="user-1"))
@@ -149,17 +146,15 @@ class TelegramWebhookServiceTests(unittest.IsolatedAsyncioTestCase):
             FakeSession([SimpleNamespace(name="BMW <x5>"), SimpleNamespace(name="Коммерческая техника")]),
             {"message": {"text": "/status", "chat": {"id": 123456}}},
             bot_token="bot-token",
-            channel_url="https://t.me/torgi_radar?a=1&b=2",
         )
 
         self.assertEqual(result.action, "status")
         self.assertEqual(connect_service.tokens, [])
         self.assertEqual(binding_service.chat_ids, ["123456"])
         text = self._reply_text(result)
-        self.assertIn("Активные подборки", text)
+        self.assertIn("Активные срезы", text)
         self.assertIn("\\- BMW <x5\\>", text)
-        self.assertIn("Канал с публикациями", text)
-        self.assertIn("[https://t\\.me/torgi\\_radar?a\\=1&b\\=2](https://t.me/torgi_radar?a=1&b=2)", text)
+        self.assertNotIn("Канал", text)
 
     async def test_handle_update_replies_with_status_when_chat_is_not_connected(self) -> None:
         connect_service = FakeConnectService(SimpleNamespace(user_id="user-1"))

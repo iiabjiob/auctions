@@ -37,7 +37,6 @@ from app.services.auction_datagrid_payload import validate_datagrid_row_payload
 from app.services.lot_evidence import build_lot_evidence
 from app.services.scoring_profile_fit import evaluate_lot_profile_fit
 from app.services.user_interest_matching import (
-    build_lot_scoring_profile_from_interest,
     evaluate_user_interest_match,
 )
 
@@ -394,9 +393,10 @@ async def enqueue_user_scoped_lot_telegram_notifications(
     seen_user_lot_keys: set[tuple[str, int]] = set()
 
     for interest_profile in profiles:
-        match = evaluate_user_interest_match(
+        match = await evaluate_user_interest_match(
             record,
             interest_profile,
+            session=session,
             detail_cache=detail_cache,
             work_item=work_item,
             report=resolved_report,
@@ -404,7 +404,6 @@ async def enqueue_user_scoped_lot_telegram_notifications(
         if not match.matches:
             continue
 
-        scoring_profile = build_lot_scoring_profile_from_interest(interest_profile)
         profile_report = resolved_report.model_copy(
             update={
                 "profile_hash": match.profile_hash,
@@ -414,7 +413,6 @@ async def enqueue_user_scoped_lot_telegram_notifications(
         eligibility = _evaluate_interest_profile_notification_eligibility(
             profile_report,
             interest_profile,
-            profile=scoring_profile,
         )
         if not eligibility.should_notify:
             continue
@@ -981,17 +979,15 @@ def _notification_priority(report: LotDecisionReport, *, blocked: bool) -> str:
 def _evaluate_interest_profile_notification_eligibility(
     report: LotDecisionReport,
     interest_profile: UserInterestProfileModel,
-    *,
-    profile: LotScoringProfile,
 ) -> LotNotificationEligibility:
-    eligibility = evaluate_lot_notification_eligibility(report, profile=profile)
+    eligibility = evaluate_lot_notification_eligibility(report)
     if eligibility.should_notify:
         return eligibility
 
     blockers = _interest_profile_notification_blockers(report, interest_profile)
     should_notify = not blockers
     priority = _interest_profile_notification_priority(report)
-    profile_hash = report.profile_hash or build_lot_scoring_profile_hash(profile)
+    profile_hash = report.profile_hash
     return LotNotificationEligibility(
         should_notify=should_notify,
         priority=priority if should_notify else "low",
@@ -1116,6 +1112,7 @@ async def _active_telegram_interest_profiles(session: AsyncSession) -> list[User
         select(UserInterestProfileModel)
         .where(UserInterestProfileModel.is_active.is_(True))
         .where(UserInterestProfileModel.telegram_enabled.is_(True))
+        .where(UserInterestProfileModel.source_filter_preset_id.is_not(None))
         .order_by(UserInterestProfileModel.owner_user_id.asc(), UserInterestProfileModel.id.asc())
     )
     return list((await session.scalars(statement)).all())

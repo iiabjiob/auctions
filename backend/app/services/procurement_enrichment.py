@@ -215,7 +215,6 @@ async def enrich_procurement_lot_record(
     )
     _apply_detail_to_record(record, detail_payload=detail_payload, documents=documents, observed_at=current_time)
     apply_procurement_score(record, current_time=current_time)
-    await enqueue_procurement_telegram_notifications(session, record, now=current_time)
     if changed:
         await bump_procurement_lot_dataset_version(
             session,
@@ -223,6 +222,7 @@ async def enrich_procurement_lot_record(
             event_type="row_updated",
             payload={"source": "procurement_enrichment", "changed_fields": ["detail_cache", "documents"]},
         )
+    await enqueue_procurement_telegram_notifications(session, record, now=current_time)
     return changed
 
 
