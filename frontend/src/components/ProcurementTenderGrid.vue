@@ -20,6 +20,12 @@ import {
 import { normalizeDatasourceInvalidation } from '@affino/datagrid-server-client'
 import { PROCUREMENT_GRID_EDITABLE_COLUMN_IDS } from '@/datagrid/procurementGridEdits'
 import {
+  PROCUREMENT_ADVANCED_FILTER_OPTIONS,
+  PROCUREMENT_PREFETCH_OPTIONS,
+  PROCUREMENT_QUICK_FILTER,
+  PROCUREMENT_VIRTUALIZATION_OPTIONS,
+} from '@/datagrid/procurementGridUiConfig'
+import {
   createProcurementServerDatasource,
   type ProcurementServerDatasource,
   type ProcurementServerGridFilters,
@@ -442,13 +448,7 @@ const editableCellStyle: DataGridCellStyleResolver = (_row, _rowIndex, column) =
   if (!PROCUREMENT_GRID_EDITABLE_COLUMN_IDS.has(column.key)) return null
   return { backgroundColor: 'rgba(255, 244, 199, 0.28)' }
 }
-const quickFilter = {
-  placeholder: 'Поиск: номер, заказчик, ИНН, регион, предмет',
-  columns: ['registryNumber', 'title', 'customerName', 'customerInn', 'deliveryRegion', 'category', 'assignee'],
-  mode: 'tokens' as const,
-  applyMode: 'debounce' as const,
-  debounceMs: 400,
-}
+const quickFilter = PROCUREMENT_QUICK_FILTER
 const loadingSkeletonColumns = [
   { key: 'score', label: 'Рейтинг', placeholderWidth: '42px' },
   { key: 'source', label: 'Площадка', placeholderWidth: '72px' },
@@ -460,9 +460,7 @@ const loadingSkeletonColumns = [
 ] as const
 const loadingSkeletonRows = Array.from({ length: 16 }, (_, index) => index)
 const loadingSkeletonTemplate = loadingSkeletonColumns.map((column) => column.placeholderWidth).join(' ')
-const advancedFilterOptions = {
-  buttonLabel: 'Фильтр',
-}
+const advancedFilterOptions = PROCUREMENT_ADVANCED_FILTER_OPTIONS
 const columnLayoutOptions = {
   buttonLabel: 'Колонки',
 }
@@ -477,20 +475,8 @@ const columnMenuOptions = defineDataGridColumnMenu({
     selectedValuesSummary: 'Выбрано {selected} из {total}',
   },
 })
-const virtualizationOptions = {
-  rows: true,
-  columns: true,
-  rowOverscan: 18,
-  columnOverscan: 2,
-}
-const prefetchOptions = {
-  enabled: true,
-  triggerViewportFactor: 1,
-  windowViewportFactor: 1,
-  minBatchSize: 96,
-  maxBatchSize: 192,
-  directionalBias: 'scroll-direction' as const,
-}
+const virtualizationOptions = PROCUREMENT_VIRTUALIZATION_OPTIONS
+const prefetchOptions = PROCUREMENT_PREFETCH_OPTIONS
 
 const columns = defineDataGridColumns<ProcurementGridRow>()([
   {

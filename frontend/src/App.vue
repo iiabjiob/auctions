@@ -61,6 +61,12 @@ import {
   type AuctionServerGridSummary,
 } from './datagrid/auctionServerDatasource'
 import { AUCTION_GRID_EDITABLE_COLUMN_IDS } from './datagrid/auctionGridEdits'
+import {
+  catalogAdvancedFilterOptions,
+  catalogQuickFilter,
+  catalogRowModelPrefetchOptions,
+  catalogVirtualizationOptions,
+} from './datagrid/auctionGridUiConfig'
 import { useAuthStore } from './stores/auth'
 import { workspaceDataGridTheme } from './theme/dataGridTheme'
 import type { ActionRecommendation, DecisionLevel, LotDecisionReport } from './types/decisionReport'
@@ -816,26 +822,6 @@ const AUCTION_GRID_CHANGES_REFRESH_DEBOUNCE_MS = 300
 const CATALOG_TOTAL_ROW_LIMIT = 1_000_000
 const CATALOG_SERVER_FETCH_LIMIT = 10_000
 const CATALOG_ROW_CACHE_LIMIT = 20_000
-const CATALOG_VIEWPORT_ROW_OVERSCAN = 18
-const CATALOG_VIEWPORT_COLUMN_OVERSCAN = 2
-const CATALOG_ROW_MODEL_PREFETCH_TRIGGER_VIEWPORT_FACTOR = 1
-const CATALOG_ROW_MODEL_PREFETCH_WINDOW_VIEWPORT_FACTOR = 1
-const CATALOG_ROW_MODEL_PREFETCH_MIN_BATCH_SIZE = 128
-const CATALOG_ROW_MODEL_PREFETCH_MAX_BATCH_SIZE = 256
-const catalogVirtualizationOptions = {
-  rows: true,
-  columns: true,
-  rowOverscan: CATALOG_VIEWPORT_ROW_OVERSCAN,
-  columnOverscan: CATALOG_VIEWPORT_COLUMN_OVERSCAN,
-}
-const catalogRowModelPrefetchOptions = {
-  enabled: true,
-  triggerViewportFactor: CATALOG_ROW_MODEL_PREFETCH_TRIGGER_VIEWPORT_FACTOR,
-  windowViewportFactor: CATALOG_ROW_MODEL_PREFETCH_WINDOW_VIEWPORT_FACTOR,
-  minBatchSize: CATALOG_ROW_MODEL_PREFETCH_MIN_BATCH_SIZE,
-  maxBatchSize: CATALOG_ROW_MODEL_PREFETCH_MAX_BATCH_SIZE,
-  directionalBias: 'scroll-direction' as const,
-}
 const DETAIL_PANE_DEFAULT_WIDTH = 720
 const DETAIL_PANE_MIN_WIDTH = 420
 const DETAIL_PANE_MAX_WIDTH = 980
@@ -843,6 +829,8 @@ const LOTS_RELOAD_DELAY_MS = 400
 const CATALOG_FILTER_SYNC_DELAY_MS = LOTS_RELOAD_DELAY_MS
 const SYNC_PROGRESS_RELOAD_INTERVAL_MS = 30_000
 const SERVER_ROW_MODEL_INITIAL_FETCH_SIZE = 256
+const advancedFilterOptions = catalogAdvancedFilterOptions
+const quickFilter = catalogQuickFilter
 const DETAIL_FETCH_TIMEOUT_MS = 15_000
 const DETAIL_RENDER_RAW_FIELDS_LIMIT = 120
 const DETAIL_RENDER_DOCUMENTS_LIMIT = 120
@@ -1568,67 +1556,6 @@ const columnLayoutOptions = {
     moveUp: 'Выше',
     moveDown: 'Ниже',
   },
-}
-const advancedFilterOptions = {
-  buttonLabel: 'Расширенный фильтр',
-  labels: {
-    buttonLabel: 'Расширенный фильтр',
-    eyebrow: 'Расширенный фильтр',
-    title: 'Условия фильтрации',
-    close: 'Закрыть',
-    appliedEyebrow: 'Применено к таблице',
-    appliedTitle: 'Текущие фильтры',
-    resetAllFilters: 'Сбросить все фильтры',
-    noFiltersApplied: 'Фильтры не применены',
-    joinLabel: 'Связка',
-    joinAriaLabel: 'Логическая связка',
-    columnLabel: 'Колонка',
-    columnAriaLabel: 'Колонка',
-    operatorLabel: 'Условие',
-    operatorAriaLabel: 'Условие фильтра',
-    valueLabel: 'Значение',
-    valuePlaceholder: 'Значение',
-    valueAriaLabel: 'Значение условия',
-    clearClause: 'Очистить',
-    removeClause: 'Удалить',
-    addClause: 'Добавить условие',
-    cancel: 'Отмена',
-    apply: 'Применить',
-    activeSummaryPrefix: 'Расширенный',
-    activeSummaryFallback: 'активен',
-    valuesSummaryLabel: 'значения',
-    blankValueLabel: '(Пустые)',
-    betweenJoiner: 'и',
-    notOperatorLabel: 'НЕ',
-    operators: {
-      contains: 'Содержит',
-      in: 'В списке',
-      equals: 'Равно',
-      'not-equals': 'Не равно',
-      'starts-with': 'Начинается с',
-      'ends-with': 'Заканчивается на',
-      gt: '>',
-      gte: '>=',
-      lt: '<',
-      lte: '<=',
-      between: 'между',
-      'is-empty': 'пусто',
-      'not-empty': 'не пусто',
-      'is-null': 'нет значения',
-      'not-null': 'есть значение',
-    },
-    joins: {
-      and: 'И',
-      or: 'ИЛИ',
-    },
-  },
-}
-const quickFilter = {
-  placeholder: 'Поиск: название, организатор, номер, регион',
-  columns: ['lotName', 'organizer', 'auctionNumber', 'location', 'sourceTitle', 'analysisCategory'],
-  mode: 'tokens' as const,
-  applyMode: 'debounce' as const,
-  debounceMs: 400,
 }
 const gridStatePersistence = {
   key: GRID_STATE_PERSISTENCE_KEY,
