@@ -12,7 +12,6 @@ import {
   UiMenuTrigger,
 } from '@affino/menu-vue'
 import {
-  DataGrid,
   defineDataGridColumnMenu,
   defineDataGridColumns,
   type DataGridAppColumnFilterOptions,
@@ -52,6 +51,7 @@ import AuthLoginScreen from './components/AuthLoginScreen.vue'
 import AnalysisSignalTooltip from './components/AnalysisSignalTooltip.vue'
 import LotNameCell from './components/LotNameCell.vue'
 import RatingInfoTooltip from './components/RatingInfoTooltip.vue'
+import AuctionWorkspace from './components/AuctionWorkspace.vue'
 import ProcurementTenderGrid from './components/ProcurementTenderGrid.vue'
 import SourceDiagnosticsView from './components/SourceDiagnosticsView.vue'
 import {
@@ -619,6 +619,15 @@ type CatalogRowModel = DataSourceBackedRowModel<GridLotRow> & {
   dataSource: CatalogDataSource
 }
 
+type AuctionWorkspaceExposed = {
+  getApi: DataGridExposed<GridLotRow>['getApi']
+  getRuntime: DataGridExposed<GridLotRow>['getRuntime']
+  getSavedView: DataGridExposed<GridLotRow>['getSavedView']
+  applySavedView: DataGridExposed<GridLotRow>['applySavedView']
+  restoreFocusAnchor: DataGridExposed<GridLotRow>['restoreFocusAnchor']
+  captureFocusAnchor: DataGridExposed<GridLotRow>['captureFocusAnchor']
+}
+
 type GridHistoryStatusLike = {
   canUndo?: boolean
   canRedo?: boolean
@@ -848,7 +857,7 @@ const LOADING_SKELETON_ROW_HEIGHT = 26
 const CATALOG_QUERY_PLACEHOLDER_SHOW_DELAY_MS = 180
 const CATALOG_QUERY_PLACEHOLDER_MIN_VISIBLE_MS = 140
 const detailPaneWidth = ref(readStoredDetailPaneWidth())
-const gridRef = ref<DataGridExposed<GridLotRow> | null>(null)
+const gridRef = ref<AuctionWorkspaceExposed | null>(null)
 const gridSurfaceRef = ref<HTMLElement | null>(null)
 const gridColumnWidths = ref<GridColumnWidthsState>(readStoredGridColumnWidths())
 const gridRowsById = shallowRef(new Map<string, GridLotRow>())
@@ -5120,73 +5129,32 @@ onUnmounted(() => {
             :class="['grid-surface', { 'grid-surface--query-busy': catalogViewportDimmed }]"
             :aria-busy="loading || catalogViewportDimmed"
           >
-            <div
-              v-if="loading && allRows.length === 0 && !catalogGridHasLoadedOnce"
-              class="loading-state"
-              role="status"
-              aria-live="polite"
-            >
-              <div class="table-skeleton" :style="{ '--skeleton-columns': loadingSkeletonTemplate }">
-                <div class="table-skeleton__toolbar">
-                  <span class="table-skeleton__status">Загружаю лоты</span>
-                  <span class="table-skeleton__pill"></span>
-                  <span class="table-skeleton__pill table-skeleton__pill--short"></span>
-                </div>
-                <div class="table-skeleton__viewport">
-                  <div class="table-skeleton__head" :style="{ gridTemplateColumns: loadingSkeletonTemplate }">
-                    <span v-for="column in loadingSkeletonColumns" :key="column.key">
-                      {{ column.label }}
-                    </span>
-                  </div>
-                  <div class="table-skeleton__body">
-                    <div
-                      v-for="rowIndex in loadingSkeletonRows"
-                      :key="rowIndex"
-                      class="table-skeleton__row"
-                      :style="{ gridTemplateColumns: loadingSkeletonTemplate, '--row-delay': `${rowIndex * 38}ms` }"
-                    >
-                      <span v-for="column in loadingSkeletonColumns" :key="column.key" class="table-skeleton__cell">
-                        <i :style="{ width: column.placeholderWidth }"></i>
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-            <DataGrid
-              v-else-if="catalogRowModel"
-              v-show="catalogGridHasLoadedOnce || !loading || allRows.length > 0"
+            <AuctionWorkspace
+              v-if="catalogRowModel"
               ref="gridRef"
+              :loading="loading"
+              :all-rows-length="allRows.length"
+              :catalog-grid-has-loaded-once="catalogGridHasLoadedOnce"
+              :catalog-query-placeholder-visible="catalogQueryPlaceholderVisible"
+              :catalog-viewport-dimmed="catalogViewportDimmed"
+              :loading-skeleton-template="loadingSkeletonTemplate"
+              :loading-skeleton-columns="loadingSkeletonColumns"
+              :loading-skeleton-rows="loadingSkeletonRows"
               :row-model="catalogRowModel"
               :columns="columns"
-              :column-widths="gridColumnWidths"
-              :base-row-height="26"
-              :theme="workspaceDataGridTheme"
-              :is-cell-editable="isGridCellEditable"
-              :cell-style="editableGridCellStyle"
-              :virtualization="catalogVirtualizationOptions"
-              :advanced-filter="advancedFilterOptions"
+              :grid-column-widths="gridColumnWidths"
+              :grid-state-persistence="gridStatePersistence"
+              :is-grid-cell-editable="isGridCellEditable"
+              :editable-grid-cell-style="editableGridCellStyle"
+              :catalog-virtualization-options="catalogVirtualizationOptions"
+              :advanced-filter-options="advancedFilterOptions"
               :quick-filter="quickFilter"
-              :state-persistence="gridStatePersistence"
-              :column-menu="columnMenuOptions"
-              :column-layout="columnLayoutOptions"
-              fill-handle
-              range-move
-              layout-mode="fill"
-              :row-selection="false"
-              :cell-menu="true"
-              :chrome="{ toolbarPlacement: 'integrated', density: 'compact', toolbarGap: 0, workspaceGap: 8 }"
-              :history="auctionGridHistoryOptions"
+              :workspace-data-grid-theme="workspaceDataGridTheme"
+              :column-menu-options="columnMenuOptions"
+              :column-layout-options="columnLayoutOptions"
+              :auction-grid-history-options="auctionGridHistoryOptions"
               @update:column-widths="persistGridColumnWidths"
             />
-            <div
-              v-if="catalogQueryPlaceholderVisible && catalogGridHasLoadedOnce"
-              class="grid-query-placeholder"
-              role="status"
-              aria-live="polite"
-            >
-              <span>Обновляем срез</span>
-            </div>
           </section>
 
           <aside

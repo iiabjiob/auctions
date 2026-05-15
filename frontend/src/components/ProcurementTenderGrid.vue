@@ -371,6 +371,17 @@ const quickFilter = {
   applyMode: 'debounce' as const,
   debounceMs: 400,
 }
+const loadingSkeletonColumns = [
+  { key: 'score', label: 'Рейтинг', placeholderWidth: '42px' },
+  { key: 'source', label: 'Площадка', placeholderWidth: '72px' },
+  { key: 'registryNumber', label: 'Закупка', placeholderWidth: '120px' },
+  { key: 'title', label: 'Наименование', placeholderWidth: '280px' },
+  { key: 'customerName', label: 'Заказчик', placeholderWidth: '180px' },
+  { key: 'initialPrice', label: 'Начальная цена', placeholderWidth: '96px' },
+  { key: 'applicationDeadline', label: 'Прием заявок до', placeholderWidth: '120px' },
+] as const
+const loadingSkeletonRows = Array.from({ length: 16 }, (_, index) => index)
+const loadingSkeletonTemplate = loadingSkeletonColumns.map((column) => column.placeholderWidth).join(' ')
 const advancedFilterOptions = {
   buttonLabel: 'Фильтр',
 }
@@ -1241,9 +1252,38 @@ onUnmounted(() => {
 
     <section class="procurement-content" :class="procurementContentClass" :style="selectedRow ? { '--detail-pane-width': `${detailPaneWidth}px` } : undefined">
       <section class="grid-surface procurement-grid-surface" aria-label="Таблица закупок">
+        <div v-if="loading && !loadedOnce" class="loading-state" role="status" aria-live="polite">
+          <div class="table-skeleton" :style="{ '--skeleton-columns': loadingSkeletonTemplate }">
+            <div class="table-skeleton__toolbar">
+              <span class="table-skeleton__status">Загружаю закупки</span>
+              <span class="table-skeleton__pill"></span>
+              <span class="table-skeleton__pill table-skeleton__pill--short"></span>
+            </div>
+            <div class="table-skeleton__viewport">
+              <div class="table-skeleton__head" :style="{ gridTemplateColumns: loadingSkeletonTemplate }">
+                <span v-for="column in loadingSkeletonColumns" :key="column.key">
+                  {{ column.label }}
+                </span>
+              </div>
+              <div class="table-skeleton__body">
+                <div
+                  v-for="rowIndex in loadingSkeletonRows"
+                  :key="rowIndex"
+                  class="table-skeleton__row"
+                  :style="{ gridTemplateColumns: loadingSkeletonTemplate, '--row-delay': `${rowIndex * 38}ms` }"
+                >
+                  <span v-for="column in loadingSkeletonColumns" :key="column.key" class="table-skeleton__cell">
+                    <i :style="{ width: column.placeholderWidth }"></i>
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
         <DataGrid
-          v-if="rowModel"
+          v-else-if="rowModel"
           ref="gridRef"
+          v-show="loadedOnce || !loading || total > 0"
           :row-model="rowModel"
           :columns="columns"
           :column-widths="gridColumnWidths"
