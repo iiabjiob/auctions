@@ -1455,7 +1455,7 @@ function snapshotGridWorkState(row: GridLotRow): GridWorkSnapshot {
     otherCosts: row.otherCosts,
     targetProfit: row.targetProfit,
     excludeFromAnalysis: row.excludeFromAnalysis,
-    exclusionReason: row.exclusionReason.trim(),
+    exclusionReason: (row.exclusionReason ?? '').trim(),
   }
 }
 

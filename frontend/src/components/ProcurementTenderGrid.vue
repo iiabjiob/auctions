@@ -56,8 +56,8 @@ const emit = defineEmits<{
   toggleMobileRail: []
 }>()
 
-function resolveSignalTone(level: string) {
-  const normalized = level.trim().toLowerCase()
+function resolveSignalTone(level: string | null | undefined) {
+  const normalized = (level ?? '').trim().toLowerCase()
   if (normalized === 'priority') return 'green'
   if (normalized === 'watch') return 'yellow'
   if (normalized === 'low') return 'orange'
@@ -65,13 +65,13 @@ function resolveSignalTone(level: string) {
   return 'gray'
 }
 
-function formatSignalLevel(level: string) {
-  const normalized = level.trim().toLowerCase()
+function formatSignalLevel(level: string | null | undefined) {
+  const normalized = (level ?? '').trim().toLowerCase()
   if (normalized === 'priority') return 'Приоритет'
   if (normalized === 'watch') return 'Наблюдать'
   if (normalized === 'low') return 'Слабый'
   if (normalized === 'reject') return 'Отказ'
-  return level
+  return level ?? '—'
 }
 
 type PresetDialogMode = 'create' | 'update' | 'delete'
