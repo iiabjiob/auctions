@@ -8,9 +8,9 @@ import {
   defineDataGridStructuralRowActionHandler,
   type DataGridCellEditEvent,
   type DataGridCellClassResolver,
-  type DataGridCellStyleResolver,
   type DataGridExposed,
   type DataGridHistoryProp,
+  type DataGridStatePersistenceProp,
   type DataGridStructuralRowActionContext,
   type DataGridStructuralRowActionHandler,
 } from '@affino/datagrid-vue-app'
@@ -48,6 +48,8 @@ type AnalysisConfigDictionaryRow = {
   term: string
 }
 
+type AnalysisConfigEditorSection = 'categories' | 'dictionaries'
+
 type AnalysisConfigDraft = {
   categoryRules: AnalysisConfigDraftRule[]
   dictionaryRows: AnalysisConfigDictionaryRow[]
@@ -66,6 +68,7 @@ type AnalysisTabState = {
 type GridChangeEvent<TRow> = {
   snapshot?: {
     rowCount?: number
+    groupBy?: unknown
   }
   patch?: {
     rowId: string | number
@@ -83,9 +86,12 @@ const sourceTabLabels: Record<AnalysisConfigSource, string> = {
   procurement: 'Тендеры',
 }
 
+const ACTIVE_SOURCE_STORAGE_KEY = 'analysis-config-active-source-v1'
+const ACTIVE_EDITOR_SECTION_STORAGE_KEY_PREFIX = 'analysis-config-active-section-v1'
+
 const route = useRoute()
 const router = useRouter()
-const initialSource = parseSource(route.query.source)
+const initialSource = route.query.source === undefined ? readStoredSource() : parseSource(route.query.source)
 const tabs = useTabsController<AnalysisConfigSource>(initialSource)
 const activeSource = computed(() => tabs.state.value.value ?? initialSource)
 let ruleSeed = 0
@@ -95,7 +101,13 @@ const states = reactive<Record<AnalysisConfigSource, AnalysisTabState>>({
   procurement: createState(),
 })
 
+const activeEditorSections = reactive<Record<AnalysisConfigSource, AnalysisConfigEditorSection>>({
+  auction: readStoredEditorSection('auction'),
+  procurement: readStoredEditorSection('procurement'),
+})
+
 const activeState = computed(() => states[activeSource.value])
+const activeEditorSection = computed(() => activeEditorSections[activeSource.value])
 const isAuctionTab = computed(() => activeSource.value === 'auction')
 const activeUpdatedAt = computed(() => activeState.value.config?.updated_at ?? null)
 const activeLoading = computed(() => activeState.value.loading)
@@ -119,7 +131,8 @@ const gridHistory = {
   controls: 'toolbar',
 } satisfies DataGridHistoryProp
 
-const editableCellStyle: DataGridCellStyleResolver = () => ({ backgroundColor: 'rgba(255, 244, 199, 0.28)' })
+const categoryGridStatePersistence = computed(() => createGridStatePersistence(activeSource.value, 'categories'))
+const dictionaryGridStatePersistence = computed(() => createGridStatePersistence(activeSource.value, 'dictionaries'))
 
 const categoryCellClass = defineDataGridCellClassResolver<AnalysisConfigDraftRule>()((row, _rowIndex, column) => {
   const rowData = row.data as Partial<AnalysisConfigDraftRule> | undefined
@@ -166,13 +179,27 @@ const categoryColumns = defineDataGridColumns<AnalysisConfigDraftRule>()([
   },
 ])
 
+const dictionaryGroupLabels: Record<AnalysisConfigDictionaryGroup, string> = {
+  exclude: 'Исключение',
+  high: 'Высокий риск',
+  medium: 'Средний риск',
+  category: 'Категория риска',
+}
+
+const dictionaryGroupOptions = (Object.entries(dictionaryGroupLabels) as Array<[AnalysisConfigDictionaryGroup, string]>).map(
+  ([value, label]) => ({ value, label }),
+)
+
 const dictionaryColumns = defineDataGridColumns<AnalysisConfigDictionaryRow>()([
   {
     key: 'risk_group',
     label: 'Группа',
     initialState: { width: 132 },
+    presentation: { options: dictionaryGroupOptions },
     capabilities: { sortable: false, filterable: true, editable: true },
-    cellRenderer: ({ row, displayValue }) => dictionaryGroupLabels[row?.risk_group ?? parseDictionaryGroup(displayValue)],
+    cellRenderer: ({ row, displayValue }) => renderDictionaryGroupLabel(row?.risk_group ?? displayValue),
+    groupCellRenderer: ({ group, rowNode }) =>
+      renderDictionaryGroupHeader(group.value, group.childrenCount, rowNode.state.expanded, group.toggle),
   },
   {
     key: 'term',
@@ -182,13 +209,6 @@ const dictionaryColumns = defineDataGridColumns<AnalysisConfigDictionaryRow>()([
     capabilities: { sortable: false, filterable: true, editable: true },
   },
 ])
-
-const dictionaryGroupLabels: Record<AnalysisConfigDictionaryGroup, string> = {
-  exclude: 'Исключение',
-  high: 'Высокий риск',
-  medium: 'Средний риск',
-  category: 'Категория риска',
-}
 
 function createState(): AnalysisTabState {
   return {
@@ -233,6 +253,19 @@ function createDictionaryRow(risk_group: AnalysisConfigDictionaryGroup = 'exclud
 function createRowId(prefix: string) {
   ruleSeed += 1
   return `${prefix}-${ruleSeed}`
+}
+
+function createGridStatePersistence(
+  source: AnalysisConfigSource,
+  section: AnalysisConfigEditorSection,
+): DataGridStatePersistenceProp {
+  return {
+    key: `analysis-config-grid-state-v1:${source}:${section}`,
+    storage: 'local',
+    includeViewportPosition: false,
+    restoreOnReady: true,
+    debounceMs: 250,
+  }
 }
 
 function applyConfigToDraft(source: AnalysisConfigSource, config: AnalysisConfigResponse) {
@@ -316,6 +349,48 @@ function parseSource(value: unknown): AnalysisConfigSource {
   return value === 'procurement' ? 'procurement' : 'auction'
 }
 
+function parseEditorSection(value: unknown): AnalysisConfigEditorSection {
+  return value === 'dictionaries' ? 'dictionaries' : 'categories'
+}
+
+function readStoredSource(): AnalysisConfigSource {
+  return parseSource(readLocalStorageValue(ACTIVE_SOURCE_STORAGE_KEY))
+}
+
+function readStoredEditorSection(source: AnalysisConfigSource): AnalysisConfigEditorSection {
+  return parseEditorSection(readLocalStorageValue(getEditorSectionStorageKey(source)))
+}
+
+function persistActiveSource(source: AnalysisConfigSource) {
+  writeLocalStorageValue(ACTIVE_SOURCE_STORAGE_KEY, source)
+}
+
+function persistEditorSection(source: AnalysisConfigSource, section: AnalysisConfigEditorSection) {
+  writeLocalStorageValue(getEditorSectionStorageKey(source), section)
+}
+
+function getEditorSectionStorageKey(source: AnalysisConfigSource) {
+  return `${ACTIVE_EDITOR_SECTION_STORAGE_KEY_PREFIX}:${source}`
+}
+
+function readLocalStorageValue(key: string) {
+  if (typeof window === 'undefined') return null
+  try {
+    return window.localStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
+function writeLocalStorageValue(key: string, value: string) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(key, value)
+  } catch {
+    // localStorage can be unavailable in private modes; tab state is non-critical.
+  }
+}
+
 async function syncRoute(source: AnalysisConfigSource) {
   if (parseSource(route.query.source) === source) return
   await router.replace({ query: { ...route.query, source } })
@@ -354,25 +429,6 @@ async function saveSourceConfig(source: AnalysisConfigSource) {
   } finally {
     state.saving = false
   }
-}
-
-function addCategoryRule(source: AnalysisConfigSource) {
-  const rules = normalizeVisiblePriorities(states[source].draft.categoryRules)
-  states[source].draft.categoryRules = [...rules, createDraftRule('', [], rules.length + 1)]
-}
-
-function addDictionaryRow(source: AnalysisConfigSource, risk_group: AnalysisConfigDictionaryGroup = 'exclude') {
-  states[source].draft.dictionaryRows = [...states[source].draft.dictionaryRows, createDictionaryRow(risk_group)]
-}
-
-function compactCategoryRules(source: AnalysisConfigSource) {
-  states[source].draft.categoryRules = normalizeVisiblePriorities(
-    states[source].draft.categoryRules.filter((rule) => String(rule.category ?? '').trim() || splitLines(rule.keywords).length > 0),
-  )
-}
-
-function compactDictionaryRows(source: AnalysisConfigSource) {
-  states[source].draft.dictionaryRows = states[source].draft.dictionaryRows.filter((row) => String(row.term ?? '').trim())
 }
 
 function normalizeVisiblePriorities(rows: AnalysisConfigDraftRule[]) {
@@ -523,13 +579,46 @@ function parseDictionaryGroup(value: unknown): AnalysisConfigDictionaryGroup {
   return 'exclude'
 }
 
+function renderDictionaryGroupLabel(value: unknown) {
+  return dictionaryGroupLabels[parseDictionaryGroup(value)]
+}
+
+function renderDictionaryGroupHeader(value: unknown, count: number, expanded: boolean, toggle: () => void) {
+  const toggleGroup = (event: Event) => {
+    event.preventDefault()
+    event.stopPropagation()
+    toggle()
+  }
+  const handleKeydown = (event: KeyboardEvent) => {
+    if (event.key !== 'Enter' && event.key !== ' ' && event.key !== 'Spacebar') return
+    toggleGroup(event)
+  }
+
+  return h(
+    'span',
+    {
+      class: 'analysis-config-group-label',
+      role: 'button',
+      tabindex: 0,
+      'aria-expanded': String(expanded),
+      onClick: toggleGroup,
+      onKeydown: handleKeydown,
+    },
+    [
+      h('span', { class: 'analysis-config-group-label__caret', 'aria-hidden': 'true' }, expanded ? '▾' : '▸'),
+      h('span', { class: 'analysis-config-group-label__title' }, renderDictionaryGroupLabel(value)),
+      h('span', { class: 'analysis-config-group-label__count' }, String(count)),
+    ],
+  )
+}
+
 function renderDelimitedCell(value: unknown) {
   const parts = splitLines(String(value ?? ''))
   if (!parts.length) return ''
   return h(
     'span',
     { class: 'analysis-config-keyword-preview' },
-    parts.slice(0, 8).map((part) => h('span', { class: 'analysis-config-keyword-preview__chip' }, part)),
+    parts.map((part) => h('span', { class: 'analysis-config-keyword-preview__chip' }, part)),
   )
 }
 
@@ -543,6 +632,12 @@ function syncRowsFromGrid(
   const api = refValue?.getApi()
 
   if (!api) {
+    applyGridPatch(kind, event)
+    return
+  }
+
+  const snapshot = event?.snapshot ?? api.rows.getSnapshot()
+  if (isGroupedGridSnapshot(snapshot)) {
     applyGridPatch(kind, event)
     return
   }
@@ -565,6 +660,18 @@ function syncRowsFromGrid(
   if (serializeDictionaryRows(state.draft.dictionaryRows) !== serializeDictionaryRows(dictionaryRows)) {
     state.draft.dictionaryRows = dictionaryRows
   }
+}
+
+function isGroupedGridSnapshot(snapshot: GridChangeEvent<unknown>['snapshot'] | undefined) {
+  const groupBy = snapshot?.groupBy
+  if (!groupBy) return false
+  if (Array.isArray(groupBy)) return groupBy.length > 0
+  if (typeof groupBy === 'object') {
+    const fields = (groupBy as { fields?: unknown }).fields
+    if (Array.isArray(fields)) return fields.length > 0
+    return Object.keys(groupBy).length > 0
+  }
+  return true
 }
 
 function applyGridPatch(kind: 'category' | 'dictionary', event?: GridChangeEvent<AnalysisConfigDraftRule | AnalysisConfigDictionaryRow>) {
@@ -618,6 +725,14 @@ function handleDictionaryGridChange(event: unknown) {
   syncRowsFromGrid('dictionary', event as GridChangeEvent<AnalysisConfigDraftRule | AnalysisConfigDictionaryRow>)
 }
 
+function syncActiveGrid() {
+  if (activeEditorSection.value === 'categories') {
+    syncRowsFromGrid('category')
+    return
+  }
+  syncRowsFromGrid('dictionary')
+}
+
 function runStructuralRowAction(
   kind: 'category' | 'dictionary',
   context: DataGridStructuralRowActionContext<AnalysisConfigDraftRule | AnalysisConfigDictionaryRow>,
@@ -663,6 +778,7 @@ watch(
 watch(
   activeSource,
   (source) => {
+    persistActiveSource(source)
     void syncRoute(source)
     void loadSourceConfig(source)
   },
@@ -670,7 +786,15 @@ watch(
 )
 
 function switchTab(source: AnalysisConfigSource) {
+  syncActiveGrid()
   tabs.select(source)
+}
+
+function switchEditorSection(section: AnalysisConfigEditorSection) {
+  if (activeEditorSection.value === section) return
+  syncActiveGrid()
+  activeEditorSections[activeSource.value] = section
+  persistEditorSection(activeSource.value, section)
 }
 </script>
 
@@ -710,105 +834,131 @@ function switchTab(source: AnalysisConfigSource) {
       </button>
     </div>
 
-    <p v-if="activeUpdatedAt" class="route-page__meta">
-      Последнее обновление: {{ activeUpdatedAt }}
-    </p>
-    <p v-if="activeError" class="error-banner error-banner--inline">{{ activeError }}</p>
-    <div v-if="duplicateCategoryCount || duplicateDictionaryTermCount || hasPriorityConflicts" class="analysis-config-warning">
-      <span v-if="hasPriorityConflicts">Есть повторяющиеся приоритеты: при сохранении порядок будет нормализован.</span>
-      <span v-if="duplicateCategoryCount">Повторяющиеся категории: {{ duplicateCategoryCount }}.</span>
-      <span v-if="duplicateDictionaryTermCount">Повторяющиеся словарные термины: {{ duplicateDictionaryTermCount }}.</span>
+    <div class="analysis-config-status">
+      <p v-if="activeUpdatedAt" class="route-page__meta">
+        Последнее обновление: {{ activeUpdatedAt }}
+      </p>
+      <p v-if="activeError" class="error-banner error-banner--inline">{{ activeError }}</p>
+      <div v-if="duplicateCategoryCount || duplicateDictionaryTermCount || hasPriorityConflicts" class="analysis-config-warning">
+        <span v-if="hasPriorityConflicts">Есть повторяющиеся приоритеты: при сохранении порядок будет нормализован.</span>
+        <span v-if="duplicateCategoryCount">Повторяющиеся категории: {{ duplicateCategoryCount }}.</span>
+        <span v-if="duplicateDictionaryTermCount">Повторяющиеся словарные термины: {{ duplicateDictionaryTermCount }}.</span>
+      </div>
     </div>
 
     <div v-if="activeLoading" class="route-page__state">Загружаю актуальный конфиг анализа</div>
-    <template v-else>
-      <div class="analysis-config-layout analysis-config-layout--grid" :class="{ 'analysis-config-layout--compact': !isAuctionTab }">
-        <section class="analysis-config-section route-card analysis-config-section--categories">
-          <div class="analysis-config-section__header">
-            <div>
-              <span class="eyebrow">Правила категорий</span>
-              <p class="analysis-config-section__hint">Порядок важен: категория назначается по первому совпавшему правилу.</p>
-            </div>
-            <div class="analysis-config-section__actions">
-              <button class="secondary-button" type="button" @click="compactCategoryRules(activeSource)">Убрать пустые</button>
-              <button class="secondary-button" type="button" @click="addCategoryRule(activeSource)">Добавить правило</button>
-            </div>
-          </div>
-
-          <div class="analysis-config-grid-shell analysis-config-grid-shell--categories">
-            <DataGrid
-              ref="categoryGridRef"
-              :rows="activeState.draft.categoryRules"
-              :columns="categoryColumns"
-              :theme="workspaceDataGridTheme"
-              :base-row-height="28"
-              :cell-style="editableCellStyle"
-              :cell-class="categoryCellClassForGrid"
-              :history="gridHistory"
-              :placeholder-rows="{ count: 6, materializeOn: ['edit', 'paste'], createRowAt: () => createDraftRule('', [], activeState.draft.categoryRules.length + 1) }"
-              :row-reorder="true"
-              :row-selection="true"
-              :row-index-menu="true"
-              :run-structural-row-action="runCategoryStructuralRowActionForGrid"
-              fill-handle
-              range-move
-              layout-mode="fill"
-              :chrome="{ toolbarPlacement: 'integrated', density: 'compact', toolbarGap: 0, workspaceGap: 8 }"
-              @cell-edit="handleCategoryCellEdit"
-              @cell-change="handleCategoryGridChange"
-            />
-          </div>
-        </section>
-
-        <section class="analysis-config-section analysis-config-section--dictionaries route-card">
-          <div class="analysis-config-section__header">
-            <div>
-              <span class="eyebrow">{{ isAuctionTab ? 'Юридические риски' : 'Словари анализа' }}</span>
-              <p class="analysis-config-section__hint">
-                Группа "Исключение" сохраняется в {{ isAuctionTab ? 'исключения лотов' : 'стоп-слова тендеров' }}.
-              </p>
-            </div>
-            <div class="analysis-config-section__actions">
-              <button class="secondary-button" type="button" @click="compactDictionaryRows(activeSource)">Убрать пустые</button>
-              <button class="secondary-button" type="button" @click="addDictionaryRow(activeSource, 'exclude')">Исключение</button>
-              <button v-if="isAuctionTab" class="secondary-button" type="button" @click="addDictionaryRow(activeSource, 'high')">Высокий риск</button>
-              <button v-if="isAuctionTab" class="secondary-button" type="button" @click="addDictionaryRow(activeSource, 'medium')">Средний риск</button>
-              <button v-if="isAuctionTab" class="secondary-button" type="button" @click="addDictionaryRow(activeSource, 'category')">Категория риска</button>
-            </div>
-          </div>
-
-          <div class="analysis-config-grid-shell analysis-config-grid-shell--dictionaries">
-            <DataGrid
-              ref="dictionaryGridRef"
-              :rows="activeState.draft.dictionaryRows"
-              :columns="dictionaryColumns"
-              :theme="workspaceDataGridTheme"
-              :base-row-height="28"
-              :cell-style="editableCellStyle"
-              :cell-class="dictionaryCellClassForGrid"
-              :history="gridHistory"
-              :placeholder-rows="{ count: 6, materializeOn: ['edit', 'paste'], createRowAt: () => createDictionaryRow('exclude') }"
-              :row-selection="true"
-              :row-index-menu="true"
-              :run-structural-row-action="runDictionaryStructuralRowActionForGrid"
-              fill-handle
-              range-move
-              layout-mode="fill"
-              :chrome="{ toolbarPlacement: 'integrated', density: 'compact', toolbarGap: 0, workspaceGap: 8 }"
-              @cell-edit="handleDictionaryCellEdit"
-              @cell-change="handleDictionaryGridChange"
-            />
-          </div>
-        </section>
+    <div v-else class="analysis-config-workspace">
+      <div class="analysis-config-subtabs" role="tablist" aria-label="Раздел конфигурации">
+        <button
+          type="button"
+          class="analysis-config-subtabs__tab"
+          :class="{ 'analysis-config-subtabs__tab--active': activeEditorSection === 'categories' }"
+          role="tab"
+          :aria-selected="activeEditorSection === 'categories'"
+          @click="switchEditorSection('categories')"
+        >
+          Правила категорий
+        </button>
+        <button
+          type="button"
+          class="analysis-config-subtabs__tab"
+          :class="{ 'analysis-config-subtabs__tab--active': activeEditorSection === 'dictionaries' }"
+          role="tab"
+          :aria-selected="activeEditorSection === 'dictionaries'"
+          @click="switchEditorSection('dictionaries')"
+        >
+          {{ isAuctionTab ? 'Юридические риски' : 'Словари анализа' }}
+        </button>
       </div>
-    </template>
+
+      <section
+        v-if="activeEditorSection === 'categories'"
+        class="analysis-config-section route-card analysis-config-section--categories analysis-config-section--single"
+      >
+        <div class="analysis-config-section__header">
+          <div>
+            <span class="eyebrow">Правила категорий</span>
+            <p class="analysis-config-section__hint">Порядок важен: категория назначается по первому совпавшему правилу.</p>
+          </div>
+        </div>
+
+        <div class="analysis-config-grid-shell analysis-config-grid-shell--categories">
+          <DataGrid
+            ref="categoryGridRef"
+            :rows="activeState.draft.categoryRules"
+            :columns="categoryColumns"
+            :theme="workspaceDataGridTheme"
+            row-height-mode="auto"
+            :base-row-height="34"
+            :cell-class="categoryCellClassForGrid"
+            :history="gridHistory"
+            :state-persistence="categoryGridStatePersistence"
+            :placeholder-rows="{ count: 1, materializeOn: ['edit', 'paste'], createRowAt: () => createDraftRule('', [], activeState.draft.categoryRules.length + 1) }"
+            :row-reorder="true"
+            :row-selection="false"
+            :row-index-menu="true"
+            :run-structural-row-action="runCategoryStructuralRowActionForGrid"
+            fill-handle
+            range-move
+            layout-mode="fill"
+            :chrome="{ toolbarPlacement: 'integrated', density: 'compact', toolbarGap: 0, workspaceGap: 8 }"
+            @cell-edit="handleCategoryCellEdit"
+            @cell-change="handleCategoryGridChange"
+          />
+        </div>
+      </section>
+
+      <section
+        v-else
+        class="analysis-config-section analysis-config-section--dictionaries route-card analysis-config-section--single"
+      >
+        <div class="analysis-config-section__header">
+          <div>
+            <span class="eyebrow">{{ isAuctionTab ? 'Юридические риски' : 'Словари анализа' }}</span>
+            <p class="analysis-config-section__hint">
+              Группа "Исключение" сохраняется в {{ isAuctionTab ? 'исключения лотов' : 'стоп-слова тендеров' }}.
+            </p>
+          </div>
+        </div>
+
+        <div class="analysis-config-grid-shell analysis-config-grid-shell--dictionaries">
+          <DataGrid
+            ref="dictionaryGridRef"
+            :rows="activeState.draft.dictionaryRows"
+            :columns="dictionaryColumns"
+            :theme="workspaceDataGridTheme"
+            :base-row-height="28"
+            :cell-class="dictionaryCellClassForGrid"
+            :history="gridHistory"
+            :state-persistence="dictionaryGridStatePersistence"
+            :placeholder-rows="{ count: 1, materializeOn: ['edit', 'paste'], createRowAt: () => createDictionaryRow('exclude') }"
+            :row-selection="false"
+            :row-index-menu="true"
+            :run-structural-row-action="runDictionaryStructuralRowActionForGrid"
+            fill-handle
+            range-move
+            layout-mode="fill"
+            :chrome="{ toolbarPlacement: 'integrated', density: 'compact', toolbarGap: 0, workspaceGap: 8 }"
+            @cell-edit="handleDictionaryCellEdit"
+            @cell-change="handleDictionaryGridChange"
+          />
+        </div>
+      </section>
+    </div>
   </section>
 </template>
 
 <style scoped>
+.route-page--analysis {
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  height: 100%;
+  overflow: hidden;
+}
+
 .analysis-config-tabs {
   display: flex;
   gap: 8px;
+  margin: 0 28px;
   padding: 4px;
   border: 1px solid var(--color-border);
   border-radius: 16px;
@@ -818,15 +968,70 @@ function switchTab(source: AnalysisConfigSource) {
 .analysis-config-tabs__tab {
   border: 0;
   border-radius: 12px;
-  padding: 10px 14px;
+  padding: 11px 18px;
   color: var(--color-text-muted);
   background: transparent;
-  font-weight: 600;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.2;
   cursor: pointer;
   transition: background-color 120ms ease, color 120ms ease, box-shadow 120ms ease;
 }
 
 .analysis-config-tabs__tab--active {
+  color: var(--color-text-strong);
+  background: var(--color-surface);
+  box-shadow: 0 6px 14px rgba(37, 52, 71, 0.08);
+}
+
+.analysis-config-status {
+  display: grid;
+  gap: 8px;
+  min-height: 0;
+  margin: 0 28px;
+}
+
+.analysis-config-status:empty {
+  display: none;
+}
+
+.analysis-config-status .route-page__meta {
+  padding: 0;
+}
+
+.analysis-config-workspace {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.analysis-config-subtabs {
+  display: flex;
+  gap: 8px;
+  margin: 0 28px;
+  padding: 3px;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-surface-muted);
+}
+
+.analysis-config-subtabs__tab {
+  border: 0;
+  border-radius: 9px;
+  padding: 7px 11px;
+  color: var(--color-text-muted);
+  background: transparent;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease, box-shadow 120ms ease;
+}
+
+.analysis-config-subtabs__tab--active {
   color: var(--color-text-strong);
   background: var(--color-surface);
   box-shadow: 0 6px 14px rgba(37, 52, 71, 0.08);
@@ -843,7 +1048,7 @@ function switchTab(source: AnalysisConfigSource) {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin: 0 28px;
+  margin: 0;
   padding: 10px 12px;
   border: 1px solid #f1c96b;
   border-radius: 12px;
@@ -869,6 +1074,15 @@ function switchTab(source: AnalysisConfigSource) {
   gap: 8px;
 }
 
+.analysis-config-section--single {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  margin: 0 28px;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .analysis-config-section--dictionaries {
   display: grid;
   gap: 12px;
@@ -877,8 +1091,8 @@ function switchTab(source: AnalysisConfigSource) {
 
 .analysis-config-grid-shell {
   min-width: 0;
-  min-height: 420px;
-  height: min(62vh, 680px);
+  min-height: 0;
+  height: 100%;
   border: 1px solid var(--color-border);
   border-radius: 16px;
   overflow: hidden;
@@ -886,37 +1100,88 @@ function switchTab(source: AnalysisConfigSource) {
 }
 
 .analysis-config-grid-shell--dictionaries {
-  min-height: 420px;
+  min-height: 0;
 }
 
 :deep(.analysis-config-grid-cell--warning) {
   background: #fff1c7 !important;
 }
 
-:deep(.analysis-config-keyword-preview) {
+:deep(.analysis-config-group-label) {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  max-width: 100%;
+  gap: 8px;
+  min-width: 0;
+  cursor: pointer;
+  outline: none;
+}
+
+:deep(.analysis-config-group-label:focus-visible) {
+  border-radius: 8px;
+  box-shadow: 0 0 0 2px rgba(31, 143, 82, 0.16);
+}
+
+:deep(.analysis-config-group-label__caret) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  color: var(--color-accent);
+  font-size: 12px;
+  line-height: 1;
+}
+
+:deep(.analysis-config-group-label__title) {
   overflow: hidden;
+  color: var(--color-text-strong);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:deep(.analysis-config-group-label__count) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  min-height: 20px;
+  padding: 0 7px;
+  border-radius: 999px;
+  color: #31543f;
+  background: #dcece2;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+:deep(.analysis-config-keyword-preview) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 5px;
+  max-width: 100%;
+  padding: 3px 0;
+  overflow: visible;
   vertical-align: middle;
+  white-space: normal;
 }
 
 :deep(.analysis-config-keyword-preview__chip) {
   display: inline-flex;
   align-items: center;
-  max-width: 160px;
+  max-width: 100%;
   padding: 2px 7px;
   overflow: hidden;
   border-radius: 999px;
   color: #264534;
   background: #edf7ef;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 @media (max-width: 900px) {
-  .analysis-config-tabs {
+  .analysis-config-tabs,
+  .analysis-config-subtabs {
     flex-wrap: wrap;
   }
 
@@ -929,8 +1194,11 @@ function switchTab(source: AnalysisConfigSource) {
     margin: 0;
   }
 
-  .analysis-config-grid-shell {
-    height: 520px;
+  .analysis-config-subtabs,
+  .analysis-config-tabs,
+  .analysis-config-section--single {
+    margin: 0;
   }
+
 }
 </style>
