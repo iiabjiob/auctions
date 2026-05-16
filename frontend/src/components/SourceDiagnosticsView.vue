@@ -9,7 +9,7 @@ import {
   type SourceDiagnosticsResponse,
 } from '@/api/sourceDiagnostics'
 
-const props = defineProps<{
+defineProps<{
   mobileRailOpen: boolean
 }>()
 
@@ -504,8 +504,10 @@ watch(selectedKind, () => {
   gap: 16px;
   min-width: 0;
   min-height: 0;
-  overflow: visible;
-  padding-right: 2px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 8px;
+  -webkit-overflow-scrolling: touch;
 }
 
 .source-diagnostics__header {

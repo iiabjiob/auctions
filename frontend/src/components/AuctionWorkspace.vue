@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch, type PropType } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type PropType } from 'vue'
 import {
   DataGrid,
   type DataGridAdvancedFilterProp,
@@ -16,11 +16,10 @@ import {
 } from '@affino/datagrid-vue-app'
 import type { DataGridRowModel } from '@affino/datagrid-vue'
 import {
+  AUCTION_GRID_FOCUS_ANCHOR_STORAGE_KEY,
   registerGridFocusPersistence,
   restoreStoredGridFocusAnchor,
 } from '@/datagrid/gridFocusPersistence'
-
-const AUCTION_GRID_FOCUS_ANCHOR_STORAGE_KEY = 'auction-grid-focus-anchor-v1'
 
 type GridCellEditablePredicate = (context: { column: { key: string } }) => boolean
 
@@ -143,7 +142,7 @@ onMounted(() => {
   cleanupGridFocusPersistence = registerGridFocusPersistence(gridRef, AUCTION_GRID_FOCUS_ANCHOR_STORAGE_KEY)
 })
 
-onUnmounted(() => {
+onBeforeUnmount(() => {
   cleanupGridFocusPersistence?.()
   cleanupGridFocusPersistence = null
 })

@@ -12,6 +12,9 @@ const DEFAULT_RESTORE_OPTIONS: DataGridRestoreFocusAnchorOptions = {
   retries: 8,
 }
 
+export const AUCTION_GRID_FOCUS_ANCHOR_STORAGE_KEY = 'auction-grid-focus-anchor-v1'
+export const PROCUREMENT_GRID_FOCUS_ANCHOR_STORAGE_KEY = 'procurement-grid-focus-anchor-v1'
+
 export function persistGridFocusAnchor(gridRef: DataGridRef, storageKey: string) {
   const anchor = gridRef.value?.captureFocusAnchor({
     includeSelection: true,

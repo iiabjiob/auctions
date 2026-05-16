@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, h, nextTick, onMounted, onUnmounted, reactive, ref, shallowRef, watch } from 'vue'
+import { computed, h, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
+import { onBeforeRouteLeave } from 'vue-router'
 import {
   DataGrid,
   defineDataGridColumnMenu,
@@ -23,6 +24,8 @@ import { sanitizeGridSavedView } from '@/app/persistence'
 import type { FilterPreset } from '@/app/types'
 import { PROCUREMENT_GRID_EDITABLE_COLUMN_IDS } from '@/datagrid/procurementGridEdits'
 import {
+  PROCUREMENT_GRID_FOCUS_ANCHOR_STORAGE_KEY,
+  persistGridFocusAnchor,
   registerGridFocusPersistence,
   restoreStoredGridFocusAnchor,
 } from '@/datagrid/gridFocusPersistence'
@@ -302,7 +305,6 @@ type HistoryStatusSource = {
 }
 
 const GRID_COLUMN_WIDTHS_STORAGE_KEY = 'procurement-grid-column-widths-v1'
-const GRID_FOCUS_ANCHOR_STORAGE_KEY = 'procurement-grid-focus-anchor-v1'
 const DETAIL_PANE_WIDTH_STORAGE_KEY = 'procurement-detail-pane-width'
 const PROCUREMENT_LOTS_TABLE_ID = 'procurement-lots'
 const SERVER_ROW_MODEL_INITIAL_FETCH_SIZE = 160
@@ -586,7 +588,7 @@ async function focusFirstCell() {
 }
 
 async function restoreGridFocus() {
-  return restoreStoredGridFocusAnchor(gridRef, GRID_FOCUS_ANCHOR_STORAGE_KEY)
+  return restoreStoredGridFocusAnchor(gridRef, PROCUREMENT_GRID_FOCUS_ANCHOR_STORAGE_KEY)
 }
 
 watch(
@@ -1541,7 +1543,7 @@ onMounted(() => {
   void loadPresets()
   subscribeHistoryStatus()
   void loadPipelineHealth()
-  cleanupGridFocusPersistence = registerGridFocusPersistence(gridRef, GRID_FOCUS_ANCHOR_STORAGE_KEY)
+  cleanupGridFocusPersistence = registerGridFocusPersistence(gridRef, PROCUREMENT_GRID_FOCUS_ANCHOR_STORAGE_KEY)
   document.addEventListener('visibilitychange', handleGridVisibilityChange)
 })
 
@@ -1549,7 +1551,11 @@ watch(filters, () => {
   scheduleFilterSync()
 }, { deep: true })
 
-onUnmounted(() => {
+onBeforeRouteLeave(() => {
+  persistGridFocusAnchor(gridRef, PROCUREMENT_GRID_FOCUS_ANCHOR_STORAGE_KEY)
+})
+
+onBeforeUnmount(() => {
   cleanupGridFocusPersistence?.()
   cleanupGridFocusPersistence = null
   historyStatusUnsubscribe?.()
