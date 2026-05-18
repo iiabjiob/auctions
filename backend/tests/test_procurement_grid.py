@@ -35,6 +35,7 @@ class ProcurementGridSchemaTests(unittest.TestCase):
                 "sortModel": [{"colId": "score", "sort": "desc"}],
                 "workflowStatus": "new",
                 "minScore": 75,
+                "includeInactive": True,
             }
         )
         nested = ProcurementLotsGridPullRequest.model_validate({"range": {"startRow": 0, "endRow": 50}})
@@ -43,6 +44,7 @@ class ProcurementGridSchemaTests(unittest.TestCase):
         self.assertEqual(flat.resolved_end_row, 20)
         self.assertEqual(flat.workflow_status, "new")
         self.assertEqual(flat.min_score, 75)
+        self.assertTrue(flat.include_inactive)
         self.assertEqual(nested.resolved_start_row, 0)
         self.assertEqual(nested.resolved_end_row, 50)
 
@@ -135,6 +137,13 @@ class ProcurementGridSqlTests(unittest.TestCase):
         self.assertIn("LIKE", sql)
         self.assertNotIn("LIMIT", sql)
 
+    def test_procurement_statement_can_include_inactive_lots(self) -> None:
+        statement = _build_procurement_lots_statement(include_inactive=True)
+        sql = str(statement.compile(dialect=postgresql.dialect()))
+
+        self.assertIn("procurement_lot_records", sql)
+        self.assertNotIn("WHERE", sql)
+
     def test_grid_sort_is_applied_at_sql_level(self) -> None:
         statement = _apply_record_sort(
             _build_procurement_lots_statement(),
@@ -195,14 +204,20 @@ class ProcurementGridRowTests(unittest.TestCase):
 
 class ProcurementGridPullServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_pull_response_indexes_are_viewport_positions(self) -> None:
-        request = ProcurementLotsGridPullRequest.model_validate({"startRow": 10, "endRow": 12})
+        request = ProcurementLotsGridPullRequest.model_validate({"startRow": 10, "endRow": 12, "includeInactive": True})
         records = [SimpleNamespace(source_code="zakupki", external_id="101"), SimpleNamespace(source_code="zakupki", external_id="204")]
         rows = [{"id": "zakupki:101"}, {"id": "zakupki:204"}]
 
         with (
             patch("app.services.procurement_grid.read_procurement_grid_dataset_version", AsyncMock(return_value=7)),
-            patch("app.services.procurement_grid.pull_procurement_lots_for_grid", AsyncMock(return_value=(list(zip(records, rows)), 100))),
-            patch("app.services.procurement_grid.summarize_procurement_lots_for_grid", AsyncMock(return_value=ProcurementLotsGridSummary(total=100, new_count=4))),
+            patch(
+                "app.services.procurement_grid.pull_procurement_lots_for_grid",
+                AsyncMock(return_value=(list(zip(records, rows)), 100)),
+            ) as pull_mock,
+            patch(
+                "app.services.procurement_grid.summarize_procurement_lots_for_grid",
+                AsyncMock(return_value=ProcurementLotsGridSummary(total=100, new_count=4)),
+            ) as summary_mock,
         ):
             response = await pull_procurement_lots_grid(AsyncMock(), request)
 
@@ -211,3 +226,5 @@ class ProcurementGridPullServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.total, 100)
         self.assertEqual(response.dataset_version, 7)
         self.assertEqual(response.summary.new_count, 4)
+        self.assertTrue(pull_mock.await_args.kwargs["include_inactive"])
+        self.assertTrue(summary_mock.await_args.kwargs["include_inactive"])

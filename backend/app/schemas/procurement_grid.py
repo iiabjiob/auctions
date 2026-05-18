@@ -29,6 +29,7 @@ class ProcurementLotsGridQueryOptions(BaseModel):
     max_price: Decimal | None = Field(default=None, alias="maxPrice")
     min_score: int | None = Field(default=None, ge=0, le=100, alias="minScore")
     only_new: bool = Field(default=False, alias="onlyNew")
+    include_inactive: bool = Field(default=False, alias="includeInactive")
     sort_model: list[dict[str, Any]] = Field(default_factory=list, alias="sortModel")
     filter_model: dict[str, Any] | None = Field(default=None, alias="filterModel")
 

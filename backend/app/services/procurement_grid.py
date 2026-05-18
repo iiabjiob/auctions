@@ -84,8 +84,13 @@ async def pull_procurement_lots_grid(
         end_row=request.resolved_end_row,
         sort_model=_normalize_sort_model(request.sort_model),
         grid_filter=grid_filter,
+        include_inactive=request.include_inactive,
     )
-    summary = await summarize_procurement_lots_for_grid(session, grid_filter=grid_filter)
+    summary = await summarize_procurement_lots_for_grid(
+        session,
+        grid_filter=grid_filter,
+        include_inactive=request.include_inactive,
+    )
     return ProcurementLotsGridPullResponse(
         rows=[
             ProcurementLotsGridPullRow(
@@ -117,6 +122,7 @@ async def get_procurement_lots_grid_histogram(
         histogram_options=request.options,
         sort_model=_normalize_sort_model(request.sort_model),
         grid_filter=grid_filter,
+        include_inactive=request.include_inactive,
     )
     return ProcurementLotsGridHistogramResponse(column_id=request.column_id, entries=entries)
 
@@ -128,9 +134,10 @@ async def pull_procurement_lots_for_grid(
     end_row: int,
     sort_model: list[dict[str, str]] | None = None,
     grid_filter: dict[str, Any] | None = None,
+    include_inactive: bool = False,
 ) -> tuple[list[tuple[ProcurementLotRecord, dict[str, Any]]], int]:
     limit = max(0, end_row - start_row)
-    statement = _build_procurement_lots_statement(grid_filter=grid_filter)
+    statement = _build_procurement_lots_statement(grid_filter=grid_filter, include_inactive=include_inactive)
     total = await _count_procurement_lots(session, statement)
     if limit <= 0:
         return [], total
@@ -152,8 +159,9 @@ async def summarize_procurement_lots_for_grid(
     session: AsyncSession,
     *,
     grid_filter: dict[str, Any] | None = None,
+    include_inactive: bool = False,
 ) -> ProcurementLotsGridSummary:
-    statement = _build_procurement_lots_statement(grid_filter=grid_filter)
+    statement = _build_procurement_lots_statement(grid_filter=grid_filter, include_inactive=include_inactive)
     subquery = statement.order_by(None).subquery()
     total, new_count, relevant_count, high_score_count, decision_pending_count = (
         await session.execute(
@@ -182,13 +190,14 @@ async def list_procurement_lot_column_histogram(
     histogram_options: dict[str, Any] | None = None,
     sort_model: list[dict[str, str]] | None = None,
     grid_filter: dict[str, Any] | None = None,
+    include_inactive: bool = False,
 ) -> list[LotDatagridHistogramEntry]:
     expression, value_type = _grid_column_expression(column_id)
     if expression is None:
         return []
     options = histogram_options or {}
     limit = _histogram_limit(options.get("limit"))
-    statement = _build_procurement_lots_statement(grid_filter=grid_filter)
+    statement = _build_procurement_lots_statement(grid_filter=grid_filter, include_inactive=include_inactive)
     base = statement.order_by(None).subquery()
     base_expression = getattr(base.c, _column_key_for_expression(column_id), None)
     expression = base_expression if base_expression is not None else expression
@@ -280,13 +289,15 @@ def build_procurement_grid_row(record: ProcurementLotRecord) -> dict[str, Any]:
     }
 
 
-def _build_procurement_lots_statement(*, grid_filter: dict[str, Any] | None = None):
-    statement = select(ProcurementLotRecord).where(
-        or_(
-            ProcurementLotRecord.lifecycle_status == "active",
-            ProcurementLotRecord.lifecycle_status.is_(None),
+def _build_procurement_lots_statement(*, grid_filter: dict[str, Any] | None = None, include_inactive: bool = False):
+    statement = select(ProcurementLotRecord)
+    if not include_inactive:
+        statement = statement.where(
+            or_(
+                ProcurementLotRecord.lifecycle_status == "active",
+                ProcurementLotRecord.lifecycle_status.is_(None),
+            )
         )
-    )
     predicate = _grid_filter_predicate(grid_filter)
     if predicate is not None:
         statement = statement.where(predicate)

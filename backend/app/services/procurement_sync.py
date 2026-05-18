@@ -25,6 +25,7 @@ from app.services.procurement_enrichment import classify_procurement_enrichment,
 from app.services.procurement_scoring import apply_procurement_score
 from app.services.procurement_grid_state import bump_procurement_lot_dataset_version
 from app.services.procurement_notifications import enqueue_procurement_telegram_notifications
+from app.services.procurement_actuality import classify_procurement_actuality
 from app.services.auction_analysis_config import auction_analysis_config_service, AnalysisRuntimeConfig
 from app.services.procurement_sources import (
     get_procurement_source_provider,
@@ -374,6 +375,7 @@ async def _sync_procurement_items(
                 requested_at=observed_at,
                 force=True,
             )
+            _sync_procurement_record_actuality(record, checked_at=observed_at)
             session.add(record)
             await session.flush()
             await _add_procurement_observation(session, record)
@@ -383,10 +385,12 @@ async def _sync_procurement_items(
                 event_type="row_inserted",
                 payload={"source": "procurement_sync", "source_code": info.code},
             )
-            await enqueue_procurement_telegram_notifications(session, record, now=observed_at)
+            if _is_active_lifecycle(record.lifecycle_status):
+                await enqueue_procurement_telegram_notifications(session, record, now=observed_at)
             result.created += 1
             continue
 
+        previous_lifecycle_status = _normalize_lifecycle_status(record.lifecycle_status)
         status_changed = record.status != item.status
         content_changed = record.content_hash != prepared.content_hash
         record.last_seen_at = observed_at
@@ -426,6 +430,8 @@ async def _sync_procurement_items(
             requested_at=observed_at,
             force=content_changed,
         )
+        next_lifecycle_status = _sync_procurement_record_actuality(record, checked_at=observed_at)
+        lifecycle_changed = previous_lifecycle_status != next_lifecycle_status
         if status_changed:
             record.status_changed_at = observed_at
             result.status_changed += 1
@@ -433,24 +439,77 @@ async def _sync_procurement_items(
             record.content_hash = prepared.content_hash
             result.updated += 1
             await _add_procurement_observation(session, record)
+        else:
+            result.unchanged += 1
+
+        event_type = _procurement_lifecycle_event_type(previous_lifecycle_status, next_lifecycle_status)
+        if event_type is None and content_changed:
+            event_type = "row_updated"
+        if event_type is not None:
             await bump_procurement_lot_dataset_version(
                 session,
                 record,
-                event_type="row_updated",
+                event_type=event_type,
                 payload={
                     "source": "procurement_sync",
                     "source_code": info.code,
                     "status_changed": status_changed,
+                    "lifecycle_changed": lifecycle_changed,
+                    "lifecycle_status": next_lifecycle_status,
                 },
             )
-        else:
-            result.unchanged += 1
-        await enqueue_procurement_telegram_notifications(session, record, now=observed_at)
+        if _is_active_lifecycle(record.lifecycle_status):
+            await enqueue_procurement_telegram_notifications(session, record, now=observed_at)
 
 
 def _provider_search_keywords(provider: ProcurementSourceProvider) -> tuple[str, ...]:
     del provider
     return tuple(dict.fromkeys(keyword.strip() for keyword in DEFAULT_SEARCH_KEYWORDS if keyword.strip()))
+
+
+def _sync_procurement_record_actuality(record: ProcurementLotRecord, *, checked_at: datetime) -> str:
+    actuality = classify_procurement_actuality(record, current_time=checked_at)
+    record.lifecycle_status = actuality.lifecycle_status
+    record.finished_at = actuality.finished_at
+    record.actuality_checked_at = checked_at
+    if actuality.lifecycle_status == "active":
+        record.archived_at = None
+        record.archive_reason = None
+    else:
+        record.archived_at = checked_at
+        record.archive_reason = actuality.archive_reason
+        _clear_procurement_enrichment_state(record)
+    return _normalize_lifecycle_status(actuality.lifecycle_status)
+
+
+def _procurement_lifecycle_event_type(previous_status: str, next_status: str) -> str | None:
+    if previous_status == next_status:
+        return None
+    if previous_status != "active" and next_status == "active":
+        return "row_inserted"
+    if previous_status == "active" and next_status != "active":
+        return "row_deleted"
+    return "row_updated"
+
+
+def _normalize_lifecycle_status(value: object) -> str:
+    return str(value or "active").strip().lower() or "active"
+
+
+def _is_active_lifecycle(value: object) -> bool:
+    return _normalize_lifecycle_status(value) == "active"
+
+
+def _clear_procurement_enrichment_state(record: ProcurementLotRecord) -> None:
+    record.enrichment_requested_at = None
+    record.enrichment_requested_reason = None
+    record.last_enrichment_attempt_at = None
+    record.enrichment_attempt_count = 0
+    record.next_enrichment_attempt_at = None
+    record.last_enrichment_error = None
+    record.enrichment_claimed_at = None
+    record.enrichment_claimed_by = None
+    record.enrichment_claim_expires_at = None
 
 
 def _normalize_sync_cursor(value: object) -> dict[str, object]:

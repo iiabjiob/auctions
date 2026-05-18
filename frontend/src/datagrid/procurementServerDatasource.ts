@@ -28,6 +28,7 @@ export type ProcurementServerGridFilters = {
   maxPrice: number | null
   minScore: number | null
   onlyNew: boolean
+  includeInactive: boolean
 }
 
 export type ProcurementServerGridSummary = {

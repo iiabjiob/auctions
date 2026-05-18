@@ -209,6 +209,7 @@ def _saved_slice_query_options(filters: dict, grid_view: dict | None = None) -> 
         max_price=_decimal_filter(filters, "maxPrice", "max_price"),
         min_score=_int_filter(filters, "minScore", "min_score"),
         only_new=bool(filters.get("onlyNew") or filters.get("only_new")),
+        include_inactive=bool(filters.get("includeInactive") or filters.get("include_inactive")),
         filter_model=_normalize_saved_slice_grid_filter(grid_view) or None,
     )
 
@@ -234,7 +235,7 @@ def _normalize_saved_slice_filters(filters: dict | None) -> dict[str, object]:
             number = _int_filter({key: value}, key)
             if number is not None:
                 normalized[key] = number
-        elif key in {"onlyNew", "only_new"}:
+        elif key in {"onlyNew", "only_new", "includeInactive", "include_inactive"}:
             normalized[key] = bool(value)
         else:
             normalized[key] = value

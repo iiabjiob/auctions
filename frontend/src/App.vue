@@ -1851,6 +1851,7 @@ function telegramPresetFilterChips(preset: FilterPreset): TelegramPresetFilterCh
     if (typeof filters.maxPrice === 'string' && filters.maxPrice.trim()) addTelegramPresetChip(chips, seen, `НМЦК до ${filters.maxPrice.trim()}`)
     if (typeof filters.minScore === 'number' && filters.minScore > 0) addTelegramPresetChip(chips, seen, `Оценка >= ${filters.minScore}`)
     if (filters.onlyNew === true) addTelegramPresetChip(chips, seen, 'Только новые')
+    if (filters.includeInactive === true) addTelegramPresetChip(chips, seen, 'Архив/истекшие')
   } else {
     const auctionFilters = sanitizeServerFilters(preset.filters, DEFAULT_SERVER_FILTERS)
     addTelegramPresetChip(chips, seen, `Период: ${TELEGRAM_PRESET_PERIOD_LABELS[auctionFilters.period]}`)

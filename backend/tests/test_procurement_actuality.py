@@ -10,6 +10,7 @@ from app.services.procurement_actuality import (
     parse_procurement_datetime,
     run_procurement_actuality_sweep,
 )
+from app.services.procurement_sync import _sync_procurement_record_actuality
 
 
 NOW = datetime(2026, 5, 14, 12, tzinfo=UTC)
@@ -104,6 +105,22 @@ class ProcurementActualityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(record.enrichment_requested_at)
         bump.assert_awaited_once()
         self.assertEqual(bump.await_args.kwargs["event_type"], "row_deleted")
+
+    def test_sync_actuality_restores_reappeared_active_record(self) -> None:
+        record = make_record(
+            application_deadline_at=NOW + timedelta(days=5),
+            lifecycle_status="expired",
+            archived_at=NOW - timedelta(days=1),
+            archive_reason="application_deadline_passed",
+        )
+
+        next_status = _sync_procurement_record_actuality(record, checked_at=NOW)
+
+        self.assertEqual(next_status, "active")
+        self.assertEqual(record.lifecycle_status, "active")
+        self.assertIsNone(record.archived_at)
+        self.assertIsNone(record.archive_reason)
+        self.assertEqual(record.actuality_checked_at, NOW)
 
 
 if __name__ == "__main__":

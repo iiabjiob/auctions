@@ -364,6 +364,7 @@ const defaultFilters = {
   maxPrice: '',
   minScore: 0,
   onlyNew: false,
+  includeInactive: false,
 }
 const filters = reactive({ ...defaultFilters })
 let gridChangesPollTimer: ReturnType<typeof window.setTimeout> | null = null
@@ -377,6 +378,7 @@ let resizeStartWidth = 0
 let historyStatusUnsubscribe: (() => void) | null = null
 let filterSyncTimer: ReturnType<typeof window.setTimeout> | null = null
 let filterSyncSignature = ''
+let queryScopeSyncSignature = ''
 
 const procurementContentClass = computed(() => ({
   'procurement-content--with-detail': Boolean(selectedRow.value),
@@ -432,6 +434,7 @@ function buildServerFilters(): ProcurementServerGridFilters {
     maxPrice: null,
     minScore: null,
     onlyNew: false,
+    includeInactive: filters.includeInactive,
   }
 }
 
@@ -488,6 +491,10 @@ function serializeNativeFilterModel() {
   return JSON.stringify(buildNativeFilterModel())
 }
 
+function serializeQueryScope() {
+  return JSON.stringify({ includeInactive: filters.includeInactive })
+}
+
 function clearFilterSyncTimer() {
   if (filterSyncTimer === null) return
   window.clearTimeout(filterSyncTimer)
@@ -496,10 +503,18 @@ function clearFilterSyncTimer() {
 
 function syncFilterModel() {
   clearFilterSyncTimer()
-  const nextSignature = serializeNativeFilterModel()
-  if (nextSignature === filterSyncSignature) return
-  filterSyncSignature = nextSignature
-  rowModel.value?.setFilterModel(buildNativeFilterModel())
+  const nextFilterSignature = serializeNativeFilterModel()
+  const nextQueryScopeSignature = serializeQueryScope()
+  const filterChanged = nextFilterSignature !== filterSyncSignature
+  const queryScopeChanged = nextQueryScopeSignature !== queryScopeSyncSignature
+  if (!filterChanged && !queryScopeChanged) return
+  filterSyncSignature = nextFilterSignature
+  queryScopeSyncSignature = nextQueryScopeSignature
+  if (filterChanged) {
+    rowModel.value?.setFilterModel(buildNativeFilterModel())
+    return
+  }
+  void rowModel.value?.refresh('manual')
 }
 
 function scheduleFilterSync() {
@@ -1540,6 +1555,7 @@ function emptySummary(total: number): ProcurementServerGridSummary {
 onMounted(() => {
   rowModel.value = createGridRowModel()
   filterSyncSignature = serializeNativeFilterModel()
+  queryScopeSyncSignature = serializeQueryScope()
   void loadPresets()
   subscribeHistoryStatus()
   void loadPipelineHealth()
@@ -1614,6 +1630,10 @@ onBeforeUnmount(() => {
           @change="applyPresetById"
         />
         <div class="summary-strip__buttons">
+          <label class="summary-strip__toggle">
+            <input v-model="filters.includeInactive" type="checkbox" />
+            <span>Архив/истекшие</span>
+          </label>
           <button v-if="canUpdatePreset" class="secondary-button" type="button" @click="openPresetDialog('update')">
             Обновить срез
           </button>
